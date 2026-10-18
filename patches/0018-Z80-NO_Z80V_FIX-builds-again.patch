@@ -1,0 +1,53 @@
+From 9502f1dadb755f845d4c8416ba5cbf6ec390acaf Mon Sep 17 00:00:00 2001
+From: John Stringer <jcec_1@yahoo.co.uk>
+Date: Sun, 18 Oct 2026 22:20:16 +0100
+Subject: [PATCH 18/20] Z80: NO_Z80V_FIX builds again
+
+The switch's macro needs the operand passed in.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ src/cpc/z80/z80macros.h | 12 ++++++------
+ 1 file changed, 6 insertions(+), 6 deletions(-)
+
+diff --git a/src/cpc/z80/z80macros.h b/src/cpc/z80/z80macros.h
+index 6f16aff..8a3891f 100644
+--- a/src/cpc/z80/z80macros.h
++++ b/src/cpc/z80/z80macros.h
+@@ -32,11 +32,11 @@
+  * code does for every signed compare (SDCC: sub/sbc; jp po; xor 80h; jp m):
+  * Puzzle Bobble's aiming line looped for ever. NO_Z80V_FIX: the old flag. */
+ #ifdef NO_Z80V_FIX
+-#define Z80V_A8 Reg
+-#define Z80V_HL Reg
++#define Z80V_A8(Reg) Reg
++#define Z80V_HL(Reg) Reg
+ #else
+-#define Z80V_A8 R.AF.B.h
+-#define Z80V_HL R.HL.W
++#define Z80V_A8(Reg) R.AF.B.h
++#define Z80V_HL(Reg) R.HL.W
+ #endif
+ 
+ /* overflow caused, when both are + or -, and result is different. */
+@@ -46,7 +46,7 @@
+ 
+ #define SET_OVERFLOW_FLAG_A_SUB(Reg, Result) \
+         Z80_FLAGS_REG &= (0x0ff^Z80_PARITY_FLAG);                   \
+-        Z80_FLAGS_REG |= (((Reg^R.AF.B.h)&(Z80V_A8^Result)&0x080)>>(7-Z80_PARITY_FLAG_BIT))
++        Z80_FLAGS_REG |= (((Reg^R.AF.B.h)&(Z80V_A8(Reg)^Result)&0x080)>>(7-Z80_PARITY_FLAG_BIT))
+ 
+ #define SET_HALFCARRY(Reg, Result)              \
+         Z80_FLAGS_REG &= (0x0ff^Z80_HALFCARRY_FLAG);        \
+@@ -75,7 +75,7 @@
+ 
+ #define SET_OVERFLOW_FLAG_HL_SUB(Reg, Result) \
+         Z80_FLAGS_REG &= (0x0ff^Z80_PARITY_FLAG);           \
+-        Z80_FLAGS_REG |= (((Reg^R.HL.W)&(Z80V_HL^Result)&0x8000)>>13)
++        Z80_FLAGS_REG |= (((Reg^R.HL.W)&(Z80V_HL(Reg)^Result)&0x8000)>>13)
+                 
+ 
+ #if 0
+-- 
+2.50.0.windows.2
+

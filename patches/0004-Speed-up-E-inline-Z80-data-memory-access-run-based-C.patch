@@ -1,0 +1,439 @@
+From b0dd93ff4247d891f5bbf62f07d2f8249b7e08e6 Mon Sep 17 00:00:00 2001
+From: John Stringer <jcec_1@yahoo.co.uk>
+Date: Sun, 18 Oct 2026 22:20:10 +0100
+Subject: [PATCH 04/20] Speed-up E: inline Z80 data memory access, run-based
+ CRTC stepping
+
+The CRTC is stepped in runs up to its next event instead of one character at
+a time, and Z80 data reads/writes through the memory map are inlined.
+Pixel-exact on the test set; NO_E restores the per-step loop.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ src/cpc/cpc.c     |  11 ++
+ src/cpc/crtc.c    | 304 ++++++++++++++++++++++++++++++++++++++++++++--
+ src/cpc/render5.c |   1 +
+ src/cpc/z80/z80.c |  25 ++++
+ 4 files changed, 332 insertions(+), 9 deletions(-)
+
+diff --git a/src/cpc/cpc.c b/src/cpc/cpc.c
+index 13e32b6..837aa58 100644
+--- a/src/cpc/cpc.c
++++ b/src/cpc/cpc.c
+@@ -2271,6 +2271,11 @@ void CPC_WriteMemory(Z80_WORD Addr,Z80_BYTE Data)
+ /* write a byte to emulator memory with paging */
+ void CPCPlus_WriteMemoryWithASICRamEnabled(Z80_WORD Addr,Z80_BYTE Data)
+ {
++	/* Amiga port: ASIC registers (&6000-&7FFF: sprite position/size, palette,
++	 * split, scroll, DMA) may change what the CRTC draws next; sprite pixel
++	 * data (&4000-&4FFF) is read live by the sprite path. */
++	if ((Addr & 0x0e000) == 0x06000)
++		CRTC_InvalidateRun();
+         unsigned int MemBlock;
+         unsigned char           *pAddr;
+ 
+@@ -2703,8 +2708,14 @@ void	KCCompact_Out(Z80_WORD Port, Z80_BYTE Data)
+ 
+ 
+ /* Write data to a I/O port */
++void CRTC_InvalidateRun(void);   /* Amiga port: crtc.c run-based stepping */
+ void    Z80_DoOut(Z80_WORD Port,Z80_BYTE Data)
+ {
++	/* Amiga port: an OUT that reaches the CRTC (A14 = 0) or the Gate Array
++	 * (A15 = 0: pens, mode, ROM/RAM and ASIC paging) may change what the CRTC
++	 * draws next; PPI/PSG, FDC and printer writes cannot. */
++	if ((Port & 0x0c000) != 0x0c000)
++		CRTC_InvalidateRun();
+ 	switch (CPC_GetHardware())
+ 	{
+ 		case CPC_HW_CPC:
+diff --git a/src/cpc/crtc.c b/src/cpc/crtc.c
+index bfcf7b8..e82a7ae 100644
+--- a/src/cpc/crtc.c
++++ b/src/cpc/crtc.c
+@@ -3657,16 +3657,10 @@ void	Monitor_UpdateHorizontal(void)
+ 
+ 
+ /* executed each NOP cycle performed by the Z80 */
+-void CRTC_DoCycles(int Cycles)
++/* Amiga port: one microsecond of CRTC time - the original body of the
++ * CRTC_DoCycles loop, unchanged. */
++static __inline__ void CRTC_DoOneCycle(void)
+ {
+-    int i;
+-
+-	/* update light pen */
+-//	CRTC_LightPen_Update(Cycles);
+-
+-
+-	for (i=Cycles-1; i>=0; i--)
+-    {
+             /* increment horizontal count */
+             CRTC_InternalState.HCount=(unsigned char)((CRTC_InternalState.HCount+1) & 0x0ff);
+ 
+@@ -3914,8 +3908,298 @@ void CRTC_DoCycles(int Cycles)
+ 		Graphics_Update();
+ 
+ 	}
++
++/* ---- Amiga port: run-based CRTC stepping (13 Oct 2026) ----------------
++ * CRTC_DoCycles used to run the whole per-microsecond body for every cycle.
++ * Between two events the only effects of a cycle are counter increments
++ * (HCount, MonitorHorizontalCount, CharsAfterHsync, and HorizontalSyncCount
++ * while HSYNC runs) and one Graphics_Update cell at an unchanging render
++ * type. Those "quiet" cycles go through CRTC_RunCells using a context that
++ * CRTC_PrepareRun computes once: the distance to the next event cycle and
++ * everything the cells need. Event cycles run CRTC_DoOneCycle, the original
++ * body verbatim, and invalidate the context. So does anything between calls
++ * that could change it: Z80 OUT (CRTC, GA pens/mode, ASIC paging), writes
++ * while ASIC RAM is paged in, CRTC_SetRenderState and CRTC_Reset
++ * (CRTC_InvalidateRun). NO_E (diagnostic) restores the per-cycle loop. */
++
++static struct
++{
++	int valid;                 /* 0: CRTC_PrepareRun before the next run */
++	int left;                  /* quiet cycles before the next event cycle */
++	int draw;                  /* 0 nothing (DontRender/retrace), 1 graphics, 2 border, 3 sync */
++	int plus, step1, cb, visible, x0, x1, scroll, hs;
++	unsigned char *pRow;
++	const RENDER_PIXCACHE *cache;
++	unsigned long stamp;
++	unsigned int maline, rasterma, fill;
++	unsigned char o1, o2, o3;
++	unsigned long cm0, cm1;
++} CRTC_Run;
++
++void CRTC_InvalidateRun(void)
++{
++	CRTC_Run.valid = 0;
++}
++
++static __inline__ int CRTC_Distance8(unsigned int Target, unsigned int Now)
++{
++	/* cycles until an 8-bit counter, incremented before each compare, equals Target */
++	int d = (int)((Target - Now) & 0x0ff);
++	return d ? d : 256;
+ }
+ 
++static void CRTC_PrepareRun(void)
++{
++	int best, d;
++	unsigned int hc = CRTC_InternalState.HCount;
++
++	CRTC_Run.valid = 1;
++
++	/* distance to the next event cycle */
++	if (CRTC_InternalState.CRTC_Flags & CRTC_HTOT_FLAG)
++		best = 1;
++	else
++	{
++		best = CRTC_Distance8(CRTCRegisters[0], hc);
++		d = CRTC_Distance8(CRTCRegisters[0] >> 1, hc);			if (d < best) best = d;
++		d = CRTC_Distance8(CRTCRegisters[2], hc);				if (d < best) best = d;
++		d = CRTC_Distance8(CRTC_InternalState.HStart, hc);		if (d < best) best = d;
++		d = CRTC_Distance8(CRTC_InternalState.HEnd, hc);		if (d < best) best = d;
++		if (CRTC_InternalState.HorizontalSyncWidth == 0)
++		{
++			/* monitor hsync once CharsAfterHsync (incremented first) reaches 64 */
++			d = 64 - CRTC_InternalState.Monitor_State.CharsAfterHsync;
++			if (d < 1) d = 1;
++			if (d < best) best = d;
++		}
++		if (CRTC_InternalState.CRTC_Flags & CRTC_HS_FLAG)
++		{
++			/* HSYNC counting: GA width (monitor hsync) and R3 width compares */
++			unsigned int c = CRTC_InternalState.HorizontalSyncCount;
++			d = CRTC_Distance8(CRTC_InternalState.GA_State.GA_HSyncWidth, c);	if (d < best) best = d;
++			d = CRTC_Distance8(CRTC_InternalState.HorizontalSyncWidth, c);		if (d < best) best = d;
++		}
++	}
++	CRTC_Run.left = best - 1;
++	CRTC_Run.hs = (CRTC_InternalState.CRTC_Flags & CRTC_HS_FLAG) != 0;
++
++	/* what the quiet cells draw */
++	if (!CRTC_PalettedFast || CRTC_InternalState.DontRender ||
++		CRTC_InternalState.Monitor_State.VSyncRetraceCount != 0 ||
++		CRTC_InternalState.Monitor_State.HSyncRetraceCount != 0)
++	{
++		CRTC_Run.draw = CRTC_PalettedFast ? 0 : -1;
++		return;
++	}
++	CRTC_SetRenderingFunction();          /* constant until the next event */
++	CRTC_Run.plus = (CRTC_RenderMode == RENDER_MODE_ASIC_FEATURES);
++	CRTC_Run.step1 = (PIXEL_STEP == 1);
++	CRTC_Run.cb = Render_CellBytes;
++	CRTC_Run.visible = RenderRowVisible;
++	CRTC_Run.x0 = Render_VisX0;
++	CRTC_Run.x1 = Render_VisX1;
++	CRTC_Run.pRow = pRowStart;
++	switch (CRTC_InternalState.CRTC_RenderType)
++	{
++		case CRTC_RENDER_GRAPHICS:
++			CRTC_Run.draw = 1;
++			CRTC_Run.cache = pPixCache;
++			CRTC_Run.stamp = Render_RemapStamp;
++			CRTC_Run.scroll = ModeHorizontalPixelScroll;
++			if (CRTC_Run.plus)
++			{
++				CRTC_Run.maline = (unsigned int)ASICCRTC_MALine;
++				CRTC_Run.rasterma = (unsigned int)ASIC_RasterMA;
++				if (!ASIC_ColMaskValid) ASIC_BuildColMask();
++				CRTC_Run.cm0 = ASIC_ColMask[0];
++				CRTC_Run.cm1 = ASIC_ColMask[1];
++			}
++			else
++			{
++				CRTC_Run.maline = (unsigned int)CRTC_InternalState.MALine;
++				CRTC_Run.rasterma = (unsigned int)CRTC_InternalState.RasterMA;
++				CRTC_Run.cm0 = CRTC_Run.cm1 = 0;
++			}
++			break;
++		case CRTC_RENDER_BORDER:
++		{
++			unsigned v = ConvertedColourTable[16];
++			const unsigned char *bcol = (const unsigned char *)&v;
++			CRTC_Run.draw = 2;
++			CRTC_Run.fill = (unsigned int)bcol[0] * 0x01010101U;
++			CRTC_Run.o1 = bcol[1]; CRTC_Run.o2 = bcol[2]; CRTC_Run.o3 = bcol[3];
++			break;
++		}
++		default:
++			CRTC_Run.draw = 3;
++			CRTC_Run.fill = (unsigned int)(unsigned char)Render_PaletteIndexBlack * 0x01010101U;
++			break;
++	}
++}
++
++/* Count quiet cycles (Count <= CRTC_Run.left) */
++static void CRTC_RunCells(int Count)
++{
++	int k, total = Count;
++	unsigned int hc = CRTC_InternalState.HCount;
++
++	if (CRTC_Run.draw < 0)
++	{
++		/* not the paletted renderer: the original per-cycle sequence */
++		for (k = 0; k < Count; k++)
++		{
++			CRTC_InternalState.HCount = (unsigned char)((CRTC_InternalState.HCount + 1) & 0x0ff);
++			CRTC_InternalState.Monitor_State.MonitorHorizontalCount = (unsigned char)((CRTC_InternalState.Monitor_State.MonitorHorizontalCount + 1) & 0x03f);
++			CRTC_InternalState.Monitor_State.CharsAfterHsync++;
++			if (CRTC_Run.hs) CRTC_InternalState.HorizontalSyncCount++;
++			Graphics_Update();
++		}
++		return;
++	}
++
++	if (CRTC_Run.draw == 0)
++		hc = (hc + Count) & 0x0ff;
++	else
++	{
++		unsigned char *pLine = pScreenLine;
++		unsigned char *pRow = CRTC_Run.pRow;
++		const int visible = CRTC_Run.visible, x0 = CRTC_Run.x0, x1 = CRTC_Run.x1, cb = CRTC_Run.cb;
++		const int step1 = CRTC_Run.step1;
++
++		if (CRTC_Run.draw == 1)
++		{
++			const RENDER_PIXCACHE *cache = CRTC_Run.cache;
++			const unsigned long stamp = CRTC_Run.stamp;
++			const unsigned char *ram = Z80MemoryBase;
++			unsigned long glong = CRTC_InternalState.GraphicsLong;
++			const int scroll = CRTC_Run.scroll, plus = CRTC_Run.plus;
++			const unsigned int maline = CRTC_Run.maline, rasterma = CRTC_Run.rasterma;
++			const unsigned long cm0 = CRTC_Run.cm0, cm1 = CRTC_Run.cm1;
++
++			for (k = 0; k < Count; k++)
++			{
++				unsigned short LocalMA, Addr;
++				int col;
++				hc = (hc + 1) & 0x0ff;
++				LocalMA = (unsigned short)(maline + hc);
++				Addr = (unsigned short)((((LocalMA & 0x03000) << 2) | ((LocalMA & 0x03ff) << 1)) | rasterma);
++				col = (int)(pLine - pRow);
++				if (!(visible && col + cb >= x0 && col < x1))
++				{
++					/* hidden: pointer moves on; Plus still shifts GraphicsLong */
++					if (plus)
++						glong = (glong << 16) | ((unsigned long)ram[Addr] << 8) | ram[(unsigned long)Addr + 1];
++					pLine += cb;
++					continue;
++				}
++				if (plus)
++				{
++					int c = hc & 0x03f;
++					glong = (glong << 16) | ((unsigned long)ram[Addr] << 8) | ram[(unsigned long)Addr + 1];
++					if ((c < 32 ? cm0 : cm1) & (1UL << (c & 31)))
++					{
++						/* a sprite may be here: the original path, on the globals */
++						unsigned long Mask;
++						int done = k + 1;
++						CRTC_InternalState.HCount = (unsigned char)hc;
++						CRTC_InternalState.Monitor_State.MonitorHorizontalCount = (unsigned char)((CRTC_InternalState.Monitor_State.MonitorHorizontalCount + done) & 0x03f);
++						CRTC_InternalState.Monitor_State.CharsAfterHsync += done;
++						if (CRTC_Run.hs) CRTC_InternalState.HorizontalSyncCount = (unsigned char)(CRTC_InternalState.HorizontalSyncCount + done);
++						CRTC_InternalState.GraphicsLong = glong;
++						pScreenLine = pLine;
++						Mask = ASIC_BuildDisplayReturnMaskWithPixels(ASICCRTC_Line, CRTC_InternalState.HCount, CRTC_InternalState.Pixels);
++						Render_Paletted_PutDataWordPLUS(CRTC_InternalState.Monitor_State.MonitorHorizontalCount, CRTC_InternalState.GraphicsLong, CRTC_InternalState.Monitor_State.MonitorScanLineCount, Mask, CRTC_InternalState.Pixels);
++						pLine = pScreenLine;
++						Count -= done; total = Count; k = -1;   /* counters are written up to here */
++						continue;
++					}
++					{
++						unsigned Data = (unsigned)glong >> scroll;
++						unsigned b;
++						const RENDER_PIXCACHE *e;
++						b = (Data & 0x0ff00) >> 8;
++						e = &cache[b]; if (e->Stamp != stamp) e = Render_CachedPixels(b);
++						((unsigned int *)pLine)[0] = e->u.l[0];
++						if (step1) ((unsigned int *)pLine)[1] = e->u.l[1];
++						pLine += cb >> 1;
++						b = Data & 0x0ff;
++						e = &cache[b]; if (e->Stamp != stamp) e = Render_CachedPixels(b);
++						((unsigned int *)pLine)[0] = e->u.l[0];
++						if (step1) ((unsigned int *)pLine)[1] = e->u.l[1];
++						pLine += cb >> 1;
++					}
++				}
++				else
++				{
++					unsigned b;
++					const RENDER_PIXCACHE *e;
++					b = ram[Addr];
++					e = &cache[b]; if (e->Stamp != stamp) e = Render_CachedPixels(b);
++					((unsigned int *)pLine)[0] = e->u.l[0];
++					if (step1) ((unsigned int *)pLine)[1] = e->u.l[1];
++					pLine += cb >> 1;
++					b = ram[(unsigned long)Addr + 1];
++					e = &cache[b]; if (e->Stamp != stamp) e = Render_CachedPixels(b);
++					((unsigned int *)pLine)[0] = e->u.l[0];
++					if (step1) ((unsigned int *)pLine)[1] = e->u.l[1];
++					pLine += cb >> 1;
++				}
++			}
++			CRTC_InternalState.GraphicsLong = glong;
++		}
++		else
++		{
++			/* border (2) or sync (3): the same fill each cell */
++			const unsigned int fill = CRTC_Run.fill;
++			const int border = (CRTC_Run.draw == 2);
++			for (k = 0; k < Count; k++)
++			{
++				int col = (int)(pLine - pRow);
++				hc = (hc + 1) & 0x0ff;
++				if (visible && col + cb >= x0 && col < x1)
++				{
++					unsigned int *d = (unsigned int *)pLine;
++					d[0] = fill; d[1] = fill;
++					if (step1) { d[2] = fill; d[3] = fill; }
++					if (border) { pLine[cb] = CRTC_Run.o1; pLine[cb + 1] = CRTC_Run.o2; pLine[cb + 2] = CRTC_Run.o3; }
++				}
++				pLine += cb;
++			}
++		}
++		pScreenLine = pLine;
++	}
++
++	CRTC_InternalState.HCount = (unsigned char)hc;
++	CRTC_InternalState.Monitor_State.MonitorHorizontalCount = (unsigned char)((CRTC_InternalState.Monitor_State.MonitorHorizontalCount + total) & 0x03f);
++	CRTC_InternalState.Monitor_State.CharsAfterHsync += total;
++	if (CRTC_Run.hs) CRTC_InternalState.HorizontalSyncCount = (unsigned char)(CRTC_InternalState.HorizontalSyncCount + total);
++}
++
++void CRTC_DoCycles(int Cycles)
++{
++#ifdef NO_E
++	while (Cycles-- > 0)
++		CRTC_DoOneCycle();
++#else
++	while (Cycles > 0)
++	{
++		if (!CRTC_Run.valid) CRTC_PrepareRun();
++		if (CRTC_Run.left > 0)
++		{
++			int m = CRTC_Run.left < Cycles ? CRTC_Run.left : Cycles;
++			CRTC_RunCells(m);
++			CRTC_Run.left -= m;
++			Cycles -= m;
++			if (Cycles == 0) break;
++		}
++		CRTC_DoOneCycle();      /* the event cycle */
++		CRTC_Run.valid = 0;
++		Cycles--;
++	}
++#endif
++}
++
++
+ #if 0
+ 
+ /* HStage_Types */
+@@ -4041,6 +4325,7 @@ static void	CRTC_FirstRenderStage(void)
+ 
+ void    CRTC_Reset(void)
+ {
++	CRTC_InvalidateRun();   /* Amiga port */
+         int i;
+ 
+ 
+@@ -4102,6 +4387,7 @@ void    CRTC_Reset(void)
+ 
+ void	CRTC_SetRenderState(BOOL State)
+ {
++	CRTC_InvalidateRun();   /* Amiga port */
+ 	CRTC_InternalState.DontRender = State;
+ }
+ 
+diff --git a/src/cpc/render5.c b/src/cpc/render5.c
+index 2a23179..b3fad1a 100644
+--- a/src/cpc/render5.c
++++ b/src/cpc/render5.c
+@@ -1720,6 +1720,7 @@ BOOL InitialiseRender(int ScreenResX, int ScreenResY, int BPP)
+ 
+ 	/* Amiga port: the part of each row Render_DumpScreen4 copies out, in bytes,
+ 	 * and the rows it copies (see Render_SkipCellIfHidden). */
++	{ extern void CRTC_InvalidateRun(void); CRTC_InvalidateRun(); }   /* render geometry changed */
+ 	Render_VisX0 = Render_CPCXOffset * BytesPerPixel;
+ 	Render_VisX1 = Render_VisX0 + Render_CPCRenderWidth * BytesPerPixel;
+ 	Render_VisTop = Render_CPCYOffset;
+diff --git a/src/cpc/z80/z80.c b/src/cpc/z80/z80.c
+index 35e5398..867e303 100644
+--- a/src/cpc/z80/z80.c
++++ b/src/cpc/z80/z80.c
+@@ -24,6 +24,31 @@
+ Z80_REGISTERS R;
+ #include "z80funcs.h"
+ #include "z80funcs2.h"
++
++/* Amiga port: data memory access inline (the out-of-line Z80_RD_MEM /
++ * Z80_WR_MEM calls cost a call per data access; same arithmetic as cpc.c).
++ * Writes take the function pointer unless it is plain CPC_WriteMemory (ASIC
++ * RAM paged in uses CPCPlus_WriteMemoryWithASICRamEnabled). */
++extern unsigned char *pReadRamPtr[8];
++extern unsigned char *pWriteRamPtr[8];
++extern void (*pWriteMemory)(Z80_WORD Addr, Z80_BYTE Data);
++void CPC_WriteMemory(Z80_WORD Addr, Z80_BYTE Data);
++static __inline__ Z80_BYTE Z80_RD_MEM_Inline(Z80_WORD Addr)
++{
++	return pReadRamPtr[Addr >> 13][Addr];
++}
++static __inline__ void Z80_WR_MEM_Inline(Z80_WORD Addr, Z80_BYTE Data)
++{
++	if (pWriteMemory == CPC_WriteMemory)
++		pWriteRamPtr[(Addr >> 13) & 0x07][Addr] = Data;
++	else
++		pWriteMemory(Addr, Data);
++}
++#undef Z80_RD_MEM
++#undef Z80_WR_MEM
++#define Z80_RD_MEM(Addr) Z80_RD_MEM_Inline((Z80_WORD)(Addr))
++#define Z80_WR_MEM(Addr, Data) Z80_WR_MEM_Inline((Z80_WORD)(Addr), (Z80_BYTE)(Data))
++
+ /***************************************************************************/
+ INLINE static int Z80_FD_CB_ExecuteInstruction(void)
+ {
+-- 
+2.50.0.windows.2
+

@@ -1,0 +1,52 @@
+From 5b0bb4397508d1cd035790781e8dc45de2cd60b3 Mon Sep 17 00:00:00 2001
+From: John Stringer <jcec_1@yahoo.co.uk>
+Date: Sun, 18 Oct 2026 22:20:14 +0100
+Subject: [PATCH 15/20] CPC_PowerCycleMemory: what a power cycle clears and a
+ reset does not
+
+Clears main RAM, expansion RAM and the ASIC's RAM (to its start-up value), for
+a host's Power ON, so a game starts as it does from cold whatever ran before.
+Not called by the core itself.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ src/cpc/cpc.c | 16 ++++++++++++++++
+ 1 file changed, 16 insertions(+)
+
+diff --git a/src/cpc/cpc.c b/src/cpc/cpc.c
+index 837aa58..02cc203 100644
+--- a/src/cpc/cpc.c
++++ b/src/cpc/cpc.c
+@@ -1727,6 +1727,21 @@ unsigned char   *Z80MemoryBase=NULL;                    /* Location of memory bl
+ static unsigned char	*Amstrad_MemoryPages[32]={NULL};
+ /* extra ram */
+ unsigned char	*Amstrad_ExtraRam = NULL;
++static unsigned long Amstrad_ExtraRamSize = 0;
++
++/* Amiga port (18 Oct 2026): what a power cycle clears and CPC_Reset does not:
++ * main RAM, expansion RAM and the ASIC's RAM (sprite pixels, palette and the
++ * rest of its page). A host's "Power ON" calls this before CPC_Reset so a game
++ * starts as it would from cold, not on top of the previous game's memory
++ * (Sonic GX started after another cartridge differed from a fresh start). */
++void CPC_PowerCycleMemory(void)
++{
++	extern unsigned char *ASIC_GetRamPtr(void);
++	unsigned char *a = ASIC_GetRamPtr();
++	if (Z80MemoryBase) memset(Z80MemoryBase, 0, 64 * 1024);
++	if (Amstrad_ExtraRam && Amstrad_ExtraRamSize) memset(Amstrad_ExtraRam, 0, Amstrad_ExtraRamSize);
++	if (a) memset(a, 0x0b0, 16384);   /* ASIC_UNUSED_RAM_DATA, as at start-up */
++}
+ 
+ /* free ram pages allocated */
+ static void	FreeExtraRam(void)
+@@ -1953,6 +1968,7 @@ static void	AllocateRamPages(void)
+ 
+ 	/* allocate extra ram required */
+ 	Amstrad_ExtraRam = malloc(RamRequired);
++	Amstrad_ExtraRamSize = Amstrad_ExtraRam ? RamRequired : 0;
+ 
+ 	if (Amstrad_ExtraRam!=NULL)
+ 	{
+-- 
+2.50.0.windows.2
+

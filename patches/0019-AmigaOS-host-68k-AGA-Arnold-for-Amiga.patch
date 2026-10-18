@@ -1,0 +1,2992 @@
+From b7e113bb4928980992ba81e5c7ae65f4ce76f647 Mon Sep 17 00:00:00 2001
+From: John Stringer <jcec_1@yahoo.co.uk>
+Date: Sun, 18 Oct 2026 22:20:17 +0100
+Subject: [PATCH 19/20] AmigaOS host (68k AGA): Arnold for Amiga
+
+src/amiga: the AmigaOS 3.x host (AGA screen with chunky-to-planar and triple
+buffering, Paula sound, rawkey keyboard matrix, joystick/CD32 pads and keys as
+joystick, GadTools menu, prefs and per-game settings, Workbench icons and
+presets, screenshots, key scripts for test runs). Built with bebbo's
+amiga-gcc (-noixemul): see src/amiga/Makefile.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ src/amiga/Makefile     |  38 ++
+ src/amiga/amiga_iff.c  | 100 +++++
+ src/amiga/amiga_logo.c | 153 +++++++
+ src/amiga/amiga_logo.h |   6 +
+ src/amiga/amiga_menu.c | 452 +++++++++++++++++++++
+ src/amiga/amiga_sys.c  | 883 +++++++++++++++++++++++++++++++++++++++++
+ src/amiga/amiga_sys.h  |  95 +++++
+ src/amiga/amiga_wb.c   |  85 ++++
+ src/amiga/audio_conv.h |  15 +
+ src/amiga/host_amiga.c | 634 +++++++++++++++++++++++++++++
+ src/amiga/keyscript.c  | 137 +++++++
+ src/amiga/keyscript.h  |   9 +
+ src/amiga/padtest.c    | 125 ++++++
+ src/amiga/screenshot.c | 115 ++++++
+ src/amiga/screenshot.h |   7 +
+ 15 files changed, 2854 insertions(+)
+ create mode 100644 src/amiga/Makefile
+ create mode 100644 src/amiga/amiga_iff.c
+ create mode 100644 src/amiga/amiga_logo.c
+ create mode 100644 src/amiga/amiga_logo.h
+ create mode 100644 src/amiga/amiga_menu.c
+ create mode 100644 src/amiga/amiga_sys.c
+ create mode 100644 src/amiga/amiga_sys.h
+ create mode 100644 src/amiga/amiga_wb.c
+ create mode 100644 src/amiga/audio_conv.h
+ create mode 100644 src/amiga/host_amiga.c
+ create mode 100644 src/amiga/keyscript.c
+ create mode 100644 src/amiga/keyscript.h
+ create mode 100644 src/amiga/padtest.c
+ create mode 100644 src/amiga/screenshot.c
+ create mode 100644 src/amiga/screenshot.h
+
+diff --git a/src/amiga/Makefile b/src/amiga/Makefile
+new file mode 100644
+index 0000000..6869e91
+--- /dev/null
++++ b/src/amiga/Makefile
+@@ -0,0 +1,38 @@
++# Arnold (Kevin Thacker, GPL-2.0) for AmigaOS (AGA, 68040+ / PiStorm Emu68).
++# Needs bebbo's m68k-amigaos-gcc on the PATH (WSL: /opt/amiga/bin).
++#   make            -> Arnold (68040)
++#   make CPU=68020  -> Arnold-020
++CPU ?= 68040
++# FPU: software floating point by default (14 Oct 2026): the core only uses floats in
++# the sound set-up, and BigMig's 68060 core has no FPU. FPU=-m68881 would use one.
++FPU ?= -msoft-float
++# OPT: optimisation flags (variants for speed tests, e.g. OPT="-O3 -funroll-loops")
++OPT ?= -O2
++CC = m68k-amigaos-gcc
++CFLAGS = -m$(CPU) $(FPU) $(OPT) -fomit-frame-pointer -std=gnu89 -fcommon -noixemul -w -I.. -DCPC_NODEBUGGER
++LDFLAGS = -noixemul -s
++LIBS = -lm
++
++# objects.mak may have CRLF line endings (Windows checkout): strip \r first.
++CORE := $(addprefix ../,$(shell tr -d '\r' < ../objects.mak | sed -n '/^CPC_O=/,/^$$/p' | tr -d '\\' | sed 's/CPC_O=//;s/\.o/.c/g'))
++OBJDIR ?= obj-$(CPU)
++OBJS := $(patsubst ../%.c,$(OBJDIR)/%.o,$(CORE)) $(OBJDIR)/host_amiga.o $(OBJDIR)/amiga_sys.o $(OBJDIR)/amiga_menu.o $(OBJDIR)/amiga_wb.o $(OBJDIR)/amiga_iff.o $(OBJDIR)/amiga_logo.o $(OBJDIR)/screenshot.o $(OBJDIR)/keyscript.o
++TARGET ?= $(if $(filter 68040,$(CPU)),Arnold,Arnold-$(subst 680,0,$(CPU)))
++
++all: $(TARGET)
++
++$(TARGET): $(OBJS)
++	$(CC) $(LDFLAGS) -m$(CPU) $(FPU) -o $@ $(OBJS) $(LIBS)
++
++$(OBJDIR)/%.o: ../%.c
++	@mkdir -p $(dir $@)
++	$(CC) $(CFLAGS) -c -o $@ $<
++
++$(OBJDIR)/%.o: %.c amiga_sys.h
++	@mkdir -p $(dir $@)
++	$(CC) $(CFLAGS) -c -o $@ $<
++
++clean:
++	rm -rf $(OBJDIR) $(TARGET)
++
++.PHONY: all clean
+diff --git a/src/amiga/amiga_iff.c b/src/amiga/amiga_iff.c
+new file mode 100644
+index 0000000..934c57a
+--- /dev/null
++++ b/src/amiga/amiga_iff.c
+@@ -0,0 +1,100 @@
++/* Arnold on AmigaOS: show an IFF ILBM picture (the keyboard map) in a window
++ * on the menu screen. Uncompressed or ByteRun1, up to 8 planes; the picture's
++ * CMAP is loaded into the screen's pens 0..n (the menu uses pens 0-3 too, so
++ * the picture is drawn with the same four colours it was made with). */
++#include <exec/types.h>
++#include <exec/memory.h>
++#include <intuition/intuition.h>
++#include <intuition/screens.h>
++#include <graphics/gfx.h>
++#include <proto/exec.h>
++#include <proto/intuition.h>
++#include <proto/graphics.h>
++#include <proto/dos.h>
++#include <stdio.h>
++#include <string.h>
++#include "amiga_sys.h"
++
++static ULONG be32(const UBYTE *p) { return ((ULONG)p[0] << 24) | ((ULONG)p[1] << 16) | ((ULONG)p[2] << 8) | p[3]; }
++static UWORD be16(const UBYTE *p) { return (p[0] << 8) | p[1]; }
++
++/* Decode into an allocated BitMap; returns NULL on any problem. */
++static struct BitMap *load_ilbm(const char *name, int *pw, int *ph, UBYTE *cmap, int *ncol)
++{
++	FILE *f = fopen(name, "rb");
++	long size; UBYTE *buf, *p, *end;
++	int w = 0, h = 0, depth = 0, comp = 0;
++	struct BitMap *bm = NULL;
++	if (!f) return NULL;
++	fseek(f, 0, SEEK_END); size = ftell(f); fseek(f, 0, SEEK_SET);
++	buf = AllocVec(size, MEMF_ANY);
++	if (!buf || fread(buf, 1, size, f) != (size_t)size) { fclose(f); if (buf) FreeVec(buf); return NULL; }
++	fclose(f);
++	if (size < 12 || memcmp(buf, "FORM", 4) || memcmp(buf + 8, "ILBM", 4)) { FreeVec(buf); return NULL; }
++	p = buf + 12; end = buf + size; *ncol = 0;
++	while (p + 8 <= end) {
++		ULONG len = be32(p + 4); UBYTE *d = p + 8;
++		if (!memcmp(p, "BMHD", 4)) { w = be16(d); h = be16(d + 2); depth = d[8]; comp = d[10]; }
++		else if (!memcmp(p, "CMAP", 4)) { *ncol = len / 3; if (*ncol > 256) *ncol = 256; memcpy(cmap, d, *ncol * 3); }
++		else if (!memcmp(p, "BODY", 4) && w && h && depth <= 8) {
++			int rowbytes = ((w + 15) / 16) * 2, y, pl;
++			UBYTE *s = d, *se = d + len;
++			bm = AllocBitMap(w, h, depth, BMF_CLEAR, NULL);
++			if (!bm) break;
++			for (y = 0; y < h; y++) for (pl = 0; pl < depth; pl++) {
++				UBYTE *row = bm->Planes[pl] + (LONG)y * bm->BytesPerRow;
++				int n = 0;
++				if (comp == 0) { if (s + rowbytes > se) break; memcpy(row, s, rowbytes); s += rowbytes; }
++				else while (n < rowbytes && s < se) {
++					signed char c = (signed char)*s++;
++					if (c >= 0) { int k = c + 1; if (s + k > se) break; if (n + k > rowbytes) k = rowbytes - n; memcpy(row + n, s, k); s += c + 1; n += k; }
++					else if (c != -128) { int k = 1 - c; UBYTE v = *s++; if (n + k > rowbytes) k = rowbytes - n; memset(row + n, v, k); n += k; }
++				}
++			}
++			break;
++		}
++		p = d + len + (len & 1);
++	}
++	FreeVec(buf);
++	*pw = w; *ph = h;
++	return bm;
++}
++
++/* Modal: shows the picture on the given screen until a key or mouse click. */
++void Sys_ShowPicture(void *screen, const char *name)
++{
++	struct Screen *scr = (struct Screen *)screen;
++	struct Window *win;
++	struct BitMap *bm;
++	UBYTE cmap[768];
++	int w, h, ncol, i;
++	ULONG pal[2 + 256 * 3];
++	bm = load_ilbm(name, &w, &h, cmap, &ncol);
++	if (!bm) { Sys_MenuError("Can't load the keyboard picture\n(Keyboard.iff beside Arnold)"); return; }
++	win = OpenWindowTags(NULL, WA_CustomScreen, (ULONG)scr,
++		WA_Left, (scr->Width - w) / 2 < 0 ? 0 : (scr->Width - w) / 2, WA_Top, scr->BarHeight + 1,
++		WA_Width, w > scr->Width ? scr->Width : w, WA_Height, h,
++		WA_Borderless, TRUE, WA_Activate, TRUE, WA_RMBTrap, TRUE, WA_SimpleRefresh, TRUE,
++		WA_IDCMP, IDCMP_RAWKEY | IDCMP_MOUSEBUTTONS | IDCMP_EXTENDEDMOUSE, TAG_DONE);
++	if (win) {
++		if (ncol > 0 && ncol <= (1 << scr->RastPort.BitMap->Depth)) {
++			pal[0] = ((ULONG)ncol << 16);
++			for (i = 0; i < ncol; i++) { pal[1 + i * 3] = cmap[i * 3] * 0x01010101UL; pal[2 + i * 3] = cmap[i * 3 + 1] * 0x01010101UL; pal[3 + i * 3] = cmap[i * 3 + 2] * 0x01010101UL; }
++			pal[1 + ncol * 3] = 0;
++			LoadRGB32(&scr->ViewPort, pal);
++		}
++		BltBitMapRastPort(bm, 0, 0, win->RPort, 0, 0, win->Width, win->Height, 0xc0);
++		for (;;) {
++			struct IntuiMessage *msg;
++			int done = 0;
++			WaitPort(win->UserPort);
++			while ((msg = (struct IntuiMessage *)GetMsg(win->UserPort))) {
++				if (msg->Class == IDCMP_MOUSEBUTTONS || (msg->Class == IDCMP_RAWKEY && !(msg->Code & 0x80))) done = 1;
++				ReplyMsg((struct Message *)msg);
++			}
++			if (done) break;
++		}
++		CloseWindow(win);
++	}
++	FreeBitMap(bm);
++}
+diff --git a/src/amiga/amiga_logo.c b/src/amiga/amiga_logo.c
+new file mode 100644
+index 0000000..c814c69
+--- /dev/null
++++ b/src/amiga/amiga_logo.c
+@@ -0,0 +1,153 @@
++/* Arnold menu logo: horizontal runs (pen, x, y, length) on a black panel, and
++ * the RGB of pens 8-15 (the GX4000 picture). Made by tools/make_logo.py; do not edit. */
++#include "amiga_logo.h"
++const int Arnold_LogoWidth = 296, Arnold_LogoHeight = 44;
++const int Arnold_LogoRuns = 855;
++const unsigned char Arnold_LogoPalette[8][3] = {
++	{250,250,250}, {240,238,228}, {222,219,206}, {196,192,178}, {160,156,143}, {85,84,82}, {174,26,34}, {0,0,0},
++};
++const unsigned short Arnold_Logo[][4] = {
++	{13,8,6,118}, {13,8,7,2}, {10,10,7,32}, {13,42,7,2}, {10,44,7,4}, {13,48,7,2},
++	{10,50,7,4}, {13,54,7,2}, {10,56,7,2}, {13,58,7,2}, {10,60,7,4}, {13,64,7,2},
++	{10,66,7,4}, {13,70,7,2}, {10,72,7,4}, {13,76,7,2}, {10,78,7,4}, {13,82,7,2},
++	{10,84,7,2}, {13,86,7,2}, {10,88,7,38}, {13,126,7,2}, {13,6,8,2}, {10,8,8,22},
++	{12,30,8,12}, {10,42,8,2}, {13,44,8,2}, {10,46,8,4}, {13,50,8,2}, {10,52,8,4},
++	{13,56,8,2}, {10,58,8,2}, {13,60,8,2}, {10,62,8,4}, {13,66,8,2}, {10,68,8,4},
++	{13,72,8,2}, {10,74,8,4}, {13,78,8,2}, {10,80,8,2}, {13,82,8,2}, {10,84,8,4},
++	{13,88,8,2}, {10,90,8,2}, {12,92,8,12}, {10,104,8,22}, {13,126,8,2}, {13,6,9,2},
++	{10,8,9,18}, {12,26,9,4}, {9,30,9,12}, {12,42,9,4}, {10,46,9,4}, {13,50,9,2},
++	{10,52,9,4}, {13,56,9,2}, {10,58,9,2}, {13,60,9,2}, {10,62,9,4}, {13,66,9,2},
++	{10,68,9,4}, {13,72,9,2}, {10,74,9,4}, {13,78,9,2}, {10,80,9,2}, {13,82,9,2},
++	{10,84,9,4}, {12,88,9,4}, {9,92,9,12}, {12,104,9,4}, {10,108,9,18}, {13,126,9,2},
++	{2,155,9,8}, {6,163,9,1}, {2,235,9,7}, {2,258,9,7}, {13,6,10,2}, {12,8,10,12},
++	{10,20,10,6}, {12,26,10,2}, {9,28,10,16}, {12,44,10,2}, {10,46,10,42}, {12,88,10,2},
++	{9,90,10,16}, {12,106,10,2}, {10,108,10,6}, {12,114,10,12}, {13,126,10,2}, {2,155,10,9},
++	{2,235,10,7}, {2,258,10,7}, {13,6,11,2}, {12,8,11,2}, {11,10,11,8}, {12,18,11,2},
++	{10,20,11,4}, {12,24,11,2}, {9,26,11,20}, {12,46,11,2}, {10,48,11,38}, {12,86,11,2},
++	{9,88,11,20}, {12,108,11,2}, {10,110,11,4}, {12,114,11,2}, {11,116,11,8}, {12,124,11,2},
++	{13,126,11,2}, {2,154,11,10}, {2,235,11,7}, {2,258,11,7}, {13,6,12,2}, {12,8,12,2},
++	{11,10,12,8}, {12,18,12,2}, {10,20,12,4}, {12,24,12,2}, {9,26,12,20}, {12,46,12,2},
++	{10,48,12,38}, {12,86,12,2}, {9,88,12,20}, {12,108,12,2}, {10,110,12,4}, {12,114,12,2},
++	{11,116,12,8}, {12,124,12,2}, {13,126,12,2}, {2,154,12,11}, {2,235,12,7}, {2,258,12,7},
++	{13,6,13,2}, {12,8,13,2}, {11,10,13,8}, {12,18,13,2}, {10,20,13,4}, {12,24,13,2},
++	{9,26,13,4}, {13,30,13,12}, {9,42,13,4}, {12,46,13,2}, {10,48,13,38}, {12,86,13,2},
++	{9,88,13,4}, {13,92,13,12}, {9,104,13,4}, {12,108,13,2}, {10,110,13,4}, {12,114,13,2},
++	{11,116,13,8}, {12,124,13,2}, {13,126,13,2}, {5,153,13,1}, {2,154,13,11}, {2,235,13,7},
++	{2,258,13,7}, {13,6,14,2}, {12,8,14,2}, {11,10,14,8}, {12,18,14,2}, {9,20,14,4},
++	{12,24,14,2}, {9,26,14,20}, {12,46,14,2}, {9,48,14,38}, {12,86,14,2}, {9,88,14,20},
++	{12,108,14,2}, {9,110,14,4}, {12,114,14,2}, {11,116,14,8}, {12,124,14,2}, {13,126,14,2},
++	{2,153,14,12}, {2,235,14,7}, {2,258,14,7}, {13,6,15,2}, {12,8,15,2}, {11,10,15,8},
++	{12,18,15,2}, {10,20,15,4}, {12,24,15,2}, {9,26,15,20}, {12,46,15,2}, {10,48,15,38},
++	{12,86,15,2}, {9,88,15,20}, {12,108,15,2}, {10,110,15,4}, {12,114,15,2}, {11,116,15,8},
++	{12,124,15,2}, {13,126,15,2}, {2,153,15,13}, {5,183,15,1}, {2,184,15,3}, {2,200,15,4},
++	{5,204,15,1}, {5,218,15,1}, {2,219,15,5}, {6,224,15,1}, {2,235,15,7}, {5,250,15,1},
++	{2,251,15,4}, {2,258,15,7}, {13,6,16,2}, {12,8,16,2}, {11,10,16,8}, {12,18,16,2},
++	{10,20,16,4}, {12,24,16,2}, {9,26,16,4}, {13,30,16,12}, {9,42,16,4}, {12,46,16,2},
++	{10,48,16,38}, {12,86,16,2}, {9,88,16,4}, {13,92,16,12}, {9,104,16,4}, {12,108,16,2},
++	{10,110,16,4}, {12,114,16,2}, {11,116,16,8}, {12,124,16,2}, {13,126,16,2}, {6,152,16,1},
++	{2,153,16,6}, {2,160,16,6}, {6,174,16,1}, {2,175,16,6}, {2,182,16,6}, {6,189,16,1},
++	{2,190,16,6}, {2,198,16,8}, {2,216,16,11}, {2,235,16,7}, {2,249,16,8}, {2,258,16,7},
++	{13,6,17,2}, {12,8,17,2}, {11,10,17,8}, {12,18,17,2}, {10,20,17,4}, {12,24,17,2},
++	{9,26,17,20}, {12,46,17,2}, {10,48,17,38}, {12,86,17,2}, {9,88,17,20}, {12,108,17,2},
++	{10,110,17,4}, {12,114,17,2}, {11,116,17,8}, {12,124,17,2}, {13,126,17,2}, {2,152,17,6},
++	{6,158,17,1}, {2,160,17,6}, {6,166,17,1}, {5,174,17,1}, {2,175,17,6}, {2,182,17,6},
++	{5,189,17,1}, {2,190,17,6}, {2,197,17,10}, {5,214,17,1}, {2,215,17,14}, {2,235,17,7},
++	{2,248,17,17}, {13,6,18,2}, {12,8,18,2}, {11,10,18,8}, {12,18,18,2}, {10,20,18,4},
++	{12,24,18,2}, {9,26,18,4}, {13,30,18,12}, {9,42,18,4}, {12,46,18,2}, {10,48,18,38},
++	{12,86,18,2}, {9,88,18,4}, {13,92,18,12}, {9,104,18,4}, {12,108,18,2}, {10,110,18,4},
++	{12,114,18,2}, {11,116,18,8}, {12,124,18,2}, {13,126,18,2}, {2,152,18,6}, {2,160,18,7},
++	{5,174,18,1}, {2,175,18,12}, {6,187,18,1}, {5,189,18,1}, {2,190,18,18}, {2,214,18,16},
++	{2,235,18,7}, {2,247,18,18}, {13,6,19,2}, {12,8,19,2}, {11,10,19,8}, {12,18,19,2},
++	{10,20,19,4}, {12,24,19,2}, {9,26,19,20}, {12,46,19,2}, {10,48,19,38}, {12,86,19,2},
++	{9,88,19,20}, {12,108,19,2}, {10,110,19,4}, {12,114,19,2}, {11,116,19,8}, {12,124,19,2},
++	{13,126,19,2}, {2,151,19,7}, {2,160,19,7}, {5,174,19,1}, {2,175,19,12}, {5,189,19,1},
++	{2,190,19,18}, {2,213,19,17}, {2,235,19,7}, {2,246,19,19}, {13,6,20,2}, {12,8,20,2},
++	{11,10,20,8}, {12,18,20,8}, {9,26,20,20}, {12,46,20,42}, {9,88,20,20}, {12,108,20,8},
++	{11,116,20,8}, {12,124,20,2}, {13,126,20,2}, {2,151,20,7}, {2,161,20,7}, {5,174,20,1},
++	{2,175,20,9}, {6,184,20,1}, {2,185,20,2}, {5,189,20,1}, {2,190,20,8}, {6,198,20,2},
++	{2,200,20,8}, {2,212,20,8}, {5,223,20,1}, {2,224,20,7}, {2,235,20,7}, {2,246,20,8},
++	{2,256,20,9}, {13,6,21,2}, {12,8,21,2}, {11,10,21,8}, {12,18,21,2}, {9,20,21,4},
++	{12,24,21,2}, {9,26,21,20}, {12,46,21,2}, {9,48,21,38}, {12,86,21,2}, {9,88,21,20},
++	{12,108,21,2}, {9,110,21,4}, {12,114,21,2}, {11,116,21,8}, {12,124,21,2}, {13,126,21,2},
++	{5,150,21,1}, {2,151,21,6}, {5,157,21,1}, {2,161,21,7}, {5,174,21,1}, {2,175,21,7},
++	{6,182,21,1}, {5,189,21,1}, {2,190,21,7}, {2,201,21,7}, {2,212,21,7}, {2,224,21,7},
++	{2,235,21,7}, {2,246,21,7}, {2,257,21,8}, {13,6,22,2}, {12,8,22,2}, {11,10,22,8},
++	{12,18,22,2}, {10,20,22,4}, {12,24,22,2}, {9,26,22,20}, {12,46,22,2}, {10,48,22,38},
++	{12,86,22,2}, {9,88,22,10}, {14,98,22,6}, {9,104,22,4}, {12,108,22,2}, {10,110,22,4},
++	{12,114,22,2}, {11,116,22,8}, {12,124,22,2}, {13,126,22,2}, {2,150,22,7}, {2,161,22,7},
++	{5,168,22,1}, {5,174,22,1}, {2,175,22,7}, {5,189,22,1}, {2,190,22,6}, {6,196,22,1},
++	{2,201,22,7}, {2,212,22,6}, {5,218,22,1}, {2,225,22,6}, {6,231,22,1}, {2,235,22,7},
++	{5,245,22,1}, {2,246,22,6}, {5,252,22,1}, {2,258,22,7}, {13,6,23,2}, {12,8,23,2},
++	{11,10,23,8}, {12,18,23,2}, {10,20,23,4}, {12,24,23,2}, {9,26,23,20}, {12,46,23,2},
++	{10,48,23,38}, {12,86,23,2}, {9,88,23,10}, {14,98,23,6}, {9,104,23,4}, {12,108,23,2},
++	{10,110,23,4}, {12,114,23,2}, {11,116,23,8}, {12,124,23,2}, {13,126,23,2}, {2,150,23,7},
++	{2,162,23,7}, {5,174,23,1}, {2,175,23,7}, {5,189,23,1}, {2,190,23,6}, {2,201,23,7},
++	{6,211,23,1}, {2,212,23,6}, {2,225,23,7}, {2,235,23,7}, {6,245,23,1}, {2,246,23,6},
++	{2,258,23,7}, {13,6,24,2}, {12,8,24,2}, {11,10,24,8}, {12,18,24,2}, {10,20,24,4},
++	{12,24,24,2}, {9,26,24,4}, {13,30,24,12}, {9,42,24,4}, {12,46,24,2}, {10,48,24,6},
++	{13,54,24,26}, {10,80,24,6}, {12,86,24,2}, {9,88,24,4}, {13,92,24,6}, {14,98,24,6},
++	{9,104,24,4}, {12,108,24,2}, {10,110,24,4}, {12,114,24,2}, {11,116,24,8}, {12,124,24,2},
++	{13,126,24,2}, {6,149,24,1}, {2,150,24,19}, {5,174,24,1}, {2,175,24,6}, {6,181,24,1},
++	{5,189,24,1}, {2,190,24,6}, {2,201,24,7}, {6,211,24,1}, {2,212,24,6}, {2,225,24,7},
++	{2,235,24,7}, {6,245,24,1}, {2,246,24,6}, {2,258,24,7}, {13,6,25,2}, {12,8,25,2},
++	{11,10,25,8}, {12,18,25,2}, {10,20,25,4}, {12,24,25,2}, {9,26,25,20}, {12,46,25,2},
++	{10,48,25,6}, {13,54,25,26}, {10,80,25,6}, {12,86,25,2}, {9,88,25,10}, {14,98,25,6},
++	{9,104,25,4}, {12,108,25,2}, {10,110,25,4}, {12,114,25,2}, {11,116,25,8}, {12,124,25,2},
++	{13,126,25,2}, {2,149,25,20}, {6,169,25,1}, {5,174,25,1}, {2,175,25,6}, {6,181,25,1},
++	{5,189,25,1}, {2,190,25,6}, {2,201,25,7}, {6,211,25,1}, {2,212,25,6}, {2,225,25,7},
++	{2,235,25,7}, {6,245,25,1}, {2,246,25,6}, {2,258,25,7}, {13,6,26,2}, {12,8,26,2},
++	{11,10,26,8}, {12,18,26,2}, {10,20,26,4}, {12,24,26,2}, {9,26,26,20}, {12,46,26,2},
++	{10,48,26,6}, {13,54,26,26}, {10,80,26,6}, {12,86,26,2}, {9,88,26,10}, {14,98,26,6},
++	{9,104,26,4}, {12,108,26,2}, {10,110,26,4}, {12,114,26,2}, {11,116,26,8}, {12,124,26,2},
++	{13,126,26,2}, {2,149,26,21}, {5,174,26,1}, {2,175,26,6}, {5,181,26,1}, {5,189,26,1},
++	{2,190,26,6}, {2,201,26,7}, {5,211,26,1}, {2,212,26,6}, {5,218,26,1}, {2,225,26,6},
++	{6,231,26,1}, {2,235,26,7}, {5,245,26,1}, {2,246,26,6}, {2,258,26,7}, {13,6,27,2},
++	{12,8,27,2}, {11,10,27,8}, {12,18,27,8}, {9,26,27,20}, {12,46,27,8}, {13,54,27,26},
++	{12,80,27,8}, {9,88,27,6}, {12,94,27,8}, {14,102,27,2}, {9,104,27,4}, {12,108,27,8},
++	{11,116,27,8}, {12,124,27,2}, {13,126,27,2}, {2,148,27,22}, {5,174,27,1}, {2,175,27,6},
++	{5,181,27,1}, {5,189,27,1}, {2,190,27,6}, {2,201,27,7}, {2,212,27,7}, {6,224,27,1},
++	{2,225,27,6}, {2,235,27,7}, {2,246,27,7}, {6,257,27,1}, {2,258,27,7}, {13,6,28,2},
++	{12,8,28,2}, {11,10,28,8}, {12,18,28,2}, {9,20,28,4}, {12,24,28,2}, {9,26,28,20},
++	{12,46,28,2}, {9,48,28,6}, {13,54,28,26}, {9,80,28,6}, {12,86,28,2}, {9,88,28,4},
++	{12,92,28,12}, {9,104,28,4}, {12,108,28,2}, {9,110,28,4}, {12,114,28,2}, {11,116,28,8},
++	{12,124,28,2}, {13,126,28,2}, {2,148,28,23}, {5,174,28,1}, {2,175,28,6}, {5,181,28,1},
++	{5,189,28,1}, {2,190,28,6}, {2,201,28,7}, {2,212,28,7}, {2,224,28,7}, {2,235,28,7},
++	{2,246,28,7}, {6,253,28,1}, {5,256,28,1}, {2,257,28,8}, {13,6,29,2}, {12,8,29,2},
++	{11,10,29,8}, {12,18,29,2}, {10,20,29,4}, {12,24,29,2}, {9,26,29,4}, {13,30,29,12},
++	{9,42,29,4}, {12,46,29,2}, {10,48,29,38}, {12,86,29,2}, {9,88,29,2}, {12,90,29,16},
++	{9,106,29,2}, {12,108,29,2}, {10,110,29,4}, {12,114,29,2}, {11,116,29,8}, {12,124,29,2},
++	{13,126,29,2}, {5,147,29,1}, {2,148,29,7}, {5,155,29,1}, {6,156,29,6}, {5,162,29,1},
++	{2,163,29,8}, {5,174,29,1}, {2,175,29,6}, {5,181,29,1}, {5,189,29,1}, {2,190,29,6},
++	{2,201,29,7}, {2,213,29,8}, {6,221,29,1}, {2,222,29,8}, {6,230,29,1}, {2,235,29,7},
++	{2,246,29,19}, {13,6,30,2}, {12,8,30,2}, {11,10,30,8}, {12,18,30,2}, {10,20,30,4},
++	{12,24,30,2}, {9,26,30,20}, {12,46,30,2}, {10,48,30,38}, {12,86,30,10}, {13,96,30,4},
++	{12,100,30,10}, {10,110,30,4}, {12,114,30,2}, {11,116,30,8}, {12,124,30,2}, {13,126,30,2},
++	{2,147,30,7}, {6,154,30,1}, {2,164,30,7}, {5,171,30,1}, {5,174,30,1}, {2,175,30,6},
++	{5,181,30,1}, {5,189,30,1}, {2,190,30,6}, {2,201,30,7}, {2,213,30,17}, {2,235,30,7},
++	{2,247,30,18}, {13,6,31,2}, {12,8,31,2}, {11,10,31,8}, {12,18,31,2}, {10,20,31,4},
++	{12,24,31,2}, {9,26,31,4}, {13,30,31,12}, {9,42,31,4}, {12,46,31,2}, {10,48,31,38},
++	{12,86,31,10}, {13,96,31,4}, {12,100,31,10}, {10,110,31,4}, {12,114,31,2}, {11,116,31,8},
++	{12,124,31,2}, {13,126,31,2}, {2,147,31,7}, {2,164,31,8}, {5,174,31,1}, {2,175,31,6},
++	{5,181,31,1}, {6,189,31,1}, {2,190,31,6}, {2,201,31,7}, {2,214,31,15}, {2,235,31,7},
++	{5,247,31,1}, {2,248,31,10}, {5,258,31,1}, {2,259,31,6}, {13,6,32,2}, {12,8,32,2},
++	{11,10,32,8}, {12,18,32,2}, {10,20,32,4}, {12,24,32,2}, {9,26,32,20}, {12,46,32,2},
++	{10,48,32,38}, {12,86,32,24}, {10,110,32,4}, {12,114,32,2}, {11,116,32,8}, {12,124,32,2},
++	{13,126,32,2}, {2,146,32,8}, {2,164,32,8}, {5,174,32,1}, {2,175,32,6}, {5,181,32,1},
++	{6,189,32,1}, {2,190,32,6}, {2,201,32,7}, {5,215,32,1}, {2,216,32,11}, {6,227,32,1},
++	{2,235,32,7}, {6,248,32,1}, {2,249,32,8}, {5,258,32,1}, {2,259,32,6}, {13,6,33,2},
++	{12,8,33,20}, {9,28,33,16}, {12,44,33,46}, {9,90,33,16}, {12,106,33,20}, {13,126,33,2},
++	{6,146,33,8}, {6,165,33,6}, {2,171,33,1}, {6,175,33,6}, {6,190,33,5}, {2,195,33,1},
++	{5,201,33,1}, {6,202,33,5}, {2,207,33,1}, {5,217,33,1}, {2,218,33,7}, {5,225,33,1},
++	{6,235,33,6}, {2,241,33,1}, {2,250,33,5}, {6,255,33,1}, {6,259,33,6}, {13,6,34,2},
++	{11,8,34,18}, {12,26,34,4}, {9,30,34,12}, {12,42,34,4}, {11,46,34,10}, {13,56,34,12},
++	{14,68,34,4}, {13,72,34,6}, {11,78,34,10}, {12,88,34,4}, {9,92,34,12}, {12,104,34,4},
++	{11,108,34,18}, {13,126,34,2}, {13,6,35,2}, {11,8,35,22}, {12,30,35,12}, {11,42,35,14},
++	{13,56,35,12}, {14,68,35,4}, {13,72,35,6}, {11,78,35,14}, {12,92,35,12}, {11,104,35,22},
++	{13,126,35,2}, {13,14,36,4}, {11,18,36,38}, {13,56,36,2}, {8,58,36,10}, {14,68,36,2},
++	{13,70,36,8}, {11,78,36,38}, {13,116,36,6}, {13,24,37,8}, {10,32,37,4}, {11,36,37,20},
++	{13,56,37,10}, {14,66,37,4}, {13,70,37,8}, {11,78,37,20}, {10,98,37,4}, {13,102,37,8},
++	{13,32,38,8}, {11,40,38,16}, {13,56,38,8}, {14,64,38,4}, {13,68,38,10}, {11,78,38,16},
++	{10,94,38,2}, {13,96,38,6}, {13,40,39,4}, {10,44,39,2}, {11,46,39,42}, {10,88,39,4},
++	{13,92,39,4}, {4,148,39,142}, {13,44,40,4}, {10,48,40,2}, {11,50,40,34}, {10,84,40,4},
++	{13,88,40,4}, {4,148,40,142}, {13,48,41,40},
++};
+diff --git a/src/amiga/amiga_logo.h b/src/amiga/amiga_logo.h
+new file mode 100644
+index 0000000..b22b3c7
+--- /dev/null
++++ b/src/amiga/amiga_logo.h
+@@ -0,0 +1,6 @@
++#ifndef AMIGA_LOGO_H
++#define AMIGA_LOGO_H
++extern const int Arnold_LogoWidth, Arnold_LogoHeight, Arnold_LogoRuns;
++extern const unsigned char Arnold_LogoPalette[8][3];   /* pens 8-15 */
++extern const unsigned short Arnold_Logo[][4];   /* pen, x, y, length */
++#endif
+diff --git a/src/amiga/amiga_menu.c b/src/amiga/amiga_menu.c
+new file mode 100644
+index 0000000..545c6e5
+--- /dev/null
++++ b/src/amiga/amiga_menu.c
+@@ -0,0 +1,452 @@
++/* Arnold on AmigaOS: the menu screen (GadTools), styled after the OS 3.2 prefs
++ * editors. 17 Oct 2026 (John): the settings live in pull-down menus (Options,
++ * Controls) and the window keeps what changes from game to game: the media,
++ * the per-game buttons and the Reset / Power ON / Continue / Exit row, with a
++ * read-only summary of the current settings. Help in the emulation brings it
++ * up; Continue goes back. OS side only: no Arnold headers (see amiga_sys.h). */
++#include <exec/types.h>
++#include <exec/memory.h>
++#include <intuition/intuition.h>
++#include <intuition/screens.h>
++#include <intuition/gadgetclass.h>
++#include <libraries/gadtools.h>
++#include <libraries/asl.h>
++#include <graphics/modeid.h>
++#include <proto/exec.h>
++#include <proto/intuition.h>
++#include <proto/graphics.h>
++#include <proto/gadtools.h>
++#include <proto/asl.h>
++#include <proto/dos.h>
++#include <stdio.h>
++#include <string.h>
++#include "amiga_sys.h"
++#include "amiga_logo.h"
++
++struct Library *GadToolsBase, *AslBase;
++int Sys_MenuKeyLog;   /* host sets it with KEYLOG: raw keys seen by the menu go to PROGDIR:menukeys.log */
++static FILE *mkeylog;
++
++enum { G_CART, G_CARTLOAD, G_CARTEJECT, G_DISKA, G_DISKALOAD, G_DISKAEJECT,
++       G_DISKB, G_DISKBLOAD, G_DISKBEJECT,
++       G_RESET, G_POWER, G_CONTINUE, G_QUIT, G_SAVEGAME, G_FORGETGAME, G_KEYS, G_SHOT, G_COUNT };
++
++/* menu item ids (nm_UserData) */
++enum { M_NONE, M_LOADCART, M_LOADA, M_LOADB, M_EJECTALL, M_KEYS, M_SHOT, M_SAVE, M_SAVEGAME, M_FORGETGAME, M_QUIT,
++       M_SOUND, M_HIRES, M_SKIP0, M_SKIP1, M_SKIP2, M_SKIP3, M_SKIP5, M_REF1, M_REF2, M_REF3, M_REF4,
++       M_JOY0, M_JOY1, M_JOY2, M_PAD0, M_PAD1 };
++
++/* Pens of the 16-colour menu screen (16 Oct 2026, styled after the OS 3.2
++ * prefs editors at John's request): the classic grey / black / white / blue
++ * Workbench look with black text, 3D bevels and a blue active title bar.
++ * Pens 8-15 are the GX4000 picture in the logo (amiga_logo.c). */
++enum { P_BG = 0, P_BLACK, P_WHITE, P_BLUE, P_RED, P_DARK, P_LIGHT, P_DBLUE };
++static ULONG menupal[2 + 16 * 3] = { 16 << 16,
++	0xAAAAAAAA, 0xAAAAAAAA, 0xAAAAAAAA,   /* 0 grey: background */
++	0x00000000, 0x00000000, 0x00000000,   /* 1 black: text, shadows */
++	0xFFFFFFFF, 0xFFFFFFFF, 0xFFFFFFFF,   /* 2 white: shine, highlighted text */
++	0x66666666, 0x88888888, 0xBBBBBBBB,   /* 3 blue: active title bar, selections */
++	0xDDDDDDDD, 0x22222222, 0x22222222,   /* 4 red: the logo's stripe */
++	0x77777777, 0x77777777, 0x77777777,   /* 5 dark grey */
++	0xCCCCCCCC, 0xCCCCCCCC, 0xCCCCCCCC,   /* 6 light grey */
++	0x33333333, 0x55555555, 0x88888888,   /* 7 dark blue */
++	0 };
++/* DrawInfo pens as the 3.x defaults: black text, white shine, blue fill */
++static UWORD menupens[] = { 0, 1, 1, 2, 1, 3, 1, 0, 2, 1, 2, 1, (UWORD)~0 };
++
++static struct Screen *mscr;
++static struct Window *mwin;
++static struct Gadget *glist, *gad[G_COUNT];
++static struct Menu *menustrip;
++static APTR vi;
++static struct TextAttr topaz8 = { (STRPTR)"topaz.font", 8, 0, 0 };
++static const char *skip_labels[] = { "Off", "Up to 1", "Up to 2", "Up to 3", "Up to 5" };
++static const int skip_values[] = { 0, 1, 2, 3, 5 };
++static const char *refresh_labels[] = { "All", "1 in 2", "1 in 3", "1 in 4" };
++static const char *joykey_labels[] = { "Off", "Cursors+Z/X", "QAOP+Space/M" };
++static const char *pad_labels[] = { "Normal", "CD32" };
++
++/* The pull-down menus. Checked items are set from the settings before
++ * CreateMenus; the sub-items of a radio group exclude each other. */
++#define X(i) (~(1UL << (i)))
++static struct NewMenu nm[] = {
++	{ NM_TITLE, (STRPTR)"Project", NULL, 0, 0, NULL },
++	{ NM_ITEM, (STRPTR)"Load cartridge...", (STRPTR)"C", 0, 0, (APTR)M_LOADCART },
++	{ NM_ITEM, (STRPTR)"Load disk A...", (STRPTR)"A", 0, 0, (APTR)M_LOADA },
++	{ NM_ITEM, (STRPTR)"Load disk B...", (STRPTR)"B", 0, 0, (APTR)M_LOADB },
++	{ NM_ITEM, (STRPTR)"Eject all", NULL, 0, 0, (APTR)M_EJECTALL },
++	{ NM_ITEM, NM_BARLABEL, NULL, 0, 0, NULL },
++	{ NM_ITEM, (STRPTR)"Keyboard map...", (STRPTR)"K", 0, 0, (APTR)M_KEYS },
++	{ NM_ITEM, (STRPTR)"Screenshot", (STRPTR)"X", 0, 0, (APTR)M_SHOT },
++	{ NM_ITEM, NM_BARLABEL, NULL, 0, 0, NULL },
++	{ NM_ITEM, (STRPTR)"Save Prefs", (STRPTR)"S", 0, 0, (APTR)M_SAVE },
++	{ NM_ITEM, (STRPTR)"Save for game", NULL, 0, 0, (APTR)M_SAVEGAME },
++	{ NM_ITEM, (STRPTR)"Forget for game", NULL, 0, 0, (APTR)M_FORGETGAME },
++	{ NM_ITEM, NM_BARLABEL, NULL, 0, 0, NULL },
++	{ NM_ITEM, (STRPTR)"Quit", (STRPTR)"Q", 0, 0, (APTR)M_QUIT },
++	{ NM_TITLE, (STRPTR)"Options", NULL, 0, 0, NULL },
++	{ NM_ITEM, (STRPTR)"Sound (Paula)", NULL, CHECKIT | MENUTOGGLE, 0, (APTR)M_SOUND },
++	{ NM_ITEM, (STRPTR)"Hires screen", NULL, CHECKIT | MENUTOGGLE, 0, (APTR)M_HIRES },
++	{ NM_ITEM, NM_BARLABEL, NULL, 0, 0, NULL },
++	{ NM_ITEM, (STRPTR)"Frame skip", NULL, 0, 0, NULL },
++	{ NM_SUB, (STRPTR)"Off", NULL, CHECKIT, X(0), (APTR)M_SKIP0 },
++	{ NM_SUB, (STRPTR)"Up to 1", NULL, CHECKIT, X(1), (APTR)M_SKIP1 },
++	{ NM_SUB, (STRPTR)"Up to 2", NULL, CHECKIT, X(2), (APTR)M_SKIP2 },
++	{ NM_SUB, (STRPTR)"Up to 3", NULL, CHECKIT, X(3), (APTR)M_SKIP3 },
++	{ NM_SUB, (STRPTR)"Up to 5", NULL, CHECKIT, X(4), (APTR)M_SKIP5 },
++	{ NM_ITEM, (STRPTR)"Refresh", NULL, 0, 0, NULL },
++	{ NM_SUB, (STRPTR)"Every frame", NULL, CHECKIT, X(0), (APTR)M_REF1 },
++	{ NM_SUB, (STRPTR)"1 frame in 2", NULL, CHECKIT, X(1), (APTR)M_REF2 },
++	{ NM_SUB, (STRPTR)"1 frame in 3", NULL, CHECKIT, X(2), (APTR)M_REF3 },
++	{ NM_SUB, (STRPTR)"1 frame in 4", NULL, CHECKIT, X(3), (APTR)M_REF4 },
++	{ NM_TITLE, (STRPTR)"Controls", NULL, 0, 0, NULL },
++	{ NM_ITEM, (STRPTR)"Keyboard as joystick", NULL, 0, 0, NULL },
++	{ NM_SUB, (STRPTR)"Off", NULL, CHECKIT, X(0), (APTR)M_JOY0 },
++	{ NM_SUB, (STRPTR)"Cursors + Z / X", NULL, CHECKIT, X(1), (APTR)M_JOY1 },
++	{ NM_SUB, (STRPTR)"Q A O P + Space / M", NULL, CHECKIT, X(2), (APTR)M_JOY2 },
++	{ NM_ITEM, (STRPTR)"Pad in port 2", NULL, 0, 0, NULL },
++	{ NM_SUB, (STRPTR)"Normal joystick / 2-button pad", NULL, CHECKIT, X(0), (APTR)M_PAD0 },
++	{ NM_SUB, (STRPTR)"CD32 pad", NULL, CHECKIT, X(1), (APTR)M_PAD1 },
++	{ NM_END, NULL, NULL, 0, 0, NULL }
++};
++#undef X
++
++/* Everything is laid out in the window interior: OX/OY are its offsets from
++ * the window corner (the borders and title bar), set before the gadgets. */
++static int OX, OY;
++
++static void text_at(int x, int y, int pen, const char *t)
++{
++	struct RastPort *rp = mwin->RPort;
++	SetAPen(rp, pen); SetBPen(rp, P_BG); SetDrMd(rp, JAM2);
++	Move(rp, OX + x, OY + y); Text(rp, (STRPTR)t, strlen(t));
++}
++
++/* a group: an etched (ridge) frame with its title on the top line, as the
++ * OS 3.2 prefs editors draw them */
++static void box(int x, int y, int w, int h, const char *title)
++{
++	DrawBevelBox(mwin->RPort, OX + x, OY + y, w, h, GT_VisualInfo, (ULONG)vi, GTBB_FrameType, BBFT_RIDGE, TAG_DONE);
++	if (title) text_at(x + 10, y + 3, P_BLACK, title);
++}
++
++/* a label right-aligned to the gadget that starts at x */
++static void label(int x, int y, const char *t)
++{
++	text_at(x - 6 - TextLength(mwin->RPort, (STRPTR)t, strlen(t)), y, P_BLACK, t);
++}
++
++static void status(const char *t)
++{
++	struct RastPort *rp = mwin->RPort;
++	int w;
++	text_at(20, 225, P_BLACK, t);
++	w = TextLength(rp, (STRPTR)t, strlen(t));
++	if (w < 596) { SetAPen(rp, P_BG); RectFill(rp, OX + 20 + w, OY + 218, OX + 624, OY + 227); }
++}
++
++static void logo(int x, int y)
++{
++	struct RastPort *rp = mwin->RPort;
++	int i;
++	x += OX; y += OY;
++	SetAPen(rp, P_BLACK);
++	RectFill(rp, x, y - 1, x + 299, y + 48);   /* meets the bevel: rows y-2 and y+49 */
++	for (i = 0; i < Arnold_LogoRuns; i++) {
++		const unsigned short *r = Arnold_Logo[i];
++		SetAPen(rp, r[0]);
++		RectFill(rp, x + 2 + r[1], y + 2 + r[2], x + 2 + r[1] + r[3] - 1, y + 2 + r[2]);
++	}
++	DrawBevelBox(rp, x - 2, y - 2, 304, 52, GT_VisualInfo, (ULONG)vi, GTBB_Recessed, TRUE, TAG_DONE);
++}
++
++static int skip_index(int v) { int i; for (i = 4; i > 0; i--) if (v >= skip_values[i]) return i; return 0; }
++static int refresh_index(int v) { return v > 1 ? (v > 4 ? 3 : v - 1) : 0; }
++
++/* the read-only summary of what the menus hold (3 lines, padded so a shorter
++ * value wipes a longer one) */
++static void draw_settings(struct SysMenu *m)
++{
++	char l[48];
++	sprintf(l, "%-34.34s", ""); text_at(352, 147, P_BLACK, l); text_at(352, 164, P_BLACK, l); text_at(352, 181, P_BLACK, l);
++	sprintf(l, "Sound: %-8s Screen: %s", m->sound ? "Paula" : "Off", m->hires ? "Hires" : "Lores");
++	text_at(352, 147, P_BLACK, l);
++	sprintf(l, "Skip: %-9s Refresh: %s", skip_labels[skip_index(m->skip)], refresh_labels[refresh_index(m->refresh)]);
++	text_at(352, 164, P_BLACK, l);
++	sprintf(l, "Joykeys: %-12s Pad: %s", joykey_labels[m->joykeys >= 0 && m->joykeys <= 2 ? m->joykeys : 0], pad_labels[m->pad ? 1 : 0]);
++	text_at(352, 181, P_BLACK, l);
++}
++
++/* ASL file requester; writes the full path into buf (SYS_PATH). 1 if chosen. */
++static int ask_file(const char *title, char *buf)
++{
++	struct FileRequester *fr;
++	char drawer[SYS_PATH], *p;
++	int ok = 0;
++	strcpy(drawer, buf);
++	p = (char *)PathPart((STRPTR)drawer); *p = 0;
++	fr = AllocAslRequestTags(ASL_FileRequest,
++		ASLFR_TitleText, (ULONG)title, ASLFR_Window, (ULONG)mwin,
++		ASLFR_InitialDrawer, (ULONG)drawer, ASLFR_InitialFile, (ULONG)FilePart((STRPTR)buf),
++		ASLFR_RejectIcons, TRUE, TAG_DONE);
++	if (!fr) return 0;
++	if (AslRequest(fr, NULL) && fr->fr_File[0]) {
++		strncpy(buf, fr->fr_Drawer, SYS_PATH - 1); buf[SYS_PATH - 1] = 0;
++		if (AddPart((STRPTR)buf, fr->fr_File, SYS_PATH)) ok = 1;
++	}
++	FreeAslRequest(fr);
++	return ok;
++}
++
++static struct Gadget *row(struct Gadget *g, struct NewGadget *ng, int y, const char *value, int idstr, int idload, int ideject)
++{
++	ng->ng_LeftEdge = OX + 120; ng->ng_TopEdge = OY + y; ng->ng_Width = 360; ng->ng_Height = 14;
++	ng->ng_GadgetText = NULL; ng->ng_GadgetID = idstr; ng->ng_Flags = 0;
++	g = gad[idstr] = CreateGadget(STRING_KIND, g, ng, GTST_String, (ULONG)value, GTST_MaxChars, SYS_PATH - 1, TAG_DONE);
++	ng->ng_LeftEdge = OX + 488; ng->ng_Width = 64; ng->ng_GadgetText = (STRPTR)"Load..."; ng->ng_GadgetID = idload;
++	g = gad[idload] = CreateGadget(BUTTON_KIND, g, ng, TAG_DONE);
++	ng->ng_LeftEdge = OX + 558; ng->ng_Width = 60; ng->ng_GadgetText = (STRPTR)"Eject"; ng->ng_GadgetID = ideject;
++	g = gad[ideject] = CreateGadget(BUTTON_KIND, g, ng, TAG_DONE);
++	return g;
++}
++
++static struct Gadget *button(struct Gadget *g, struct NewGadget *ng, int x, int y, int w, int h, int id, const char *label, int disabled)
++{
++	ng->ng_LeftEdge = OX + x; ng->ng_TopEdge = OY + y; ng->ng_Width = w; ng->ng_Height = h;
++	ng->ng_GadgetText = (STRPTR)label; ng->ng_GadgetID = id; ng->ng_Flags = 0;
++	return gad[id] = CreateGadget(BUTTON_KIND, g, ng, GA_Disabled, disabled, TAG_DONE);
++}
++
++static void close_menu(void)
++{
++	if (mwin) { ClearMenuStrip(mwin); CloseWindow(mwin); mwin = NULL; }
++	if (menustrip) { FreeMenus(menustrip); menustrip = NULL; }
++	if (glist) { FreeGadgets(glist); glist = NULL; }
++	if (vi) { FreeVisualInfo(vi); vi = NULL; }
++	if (mscr) { CloseScreen(mscr); mscr = NULL; }
++}
++
++static void draw_frame(struct SysMenu *m)
++{
++	logo(14, 4);
++	DrawBevelBox(mwin->RPort, OX + 330, OY + 2, 298, 52, GT_VisualInfo, (ULONG)vi, TAG_DONE);
++	text_at(330 + (298 - 25 * 8) / 2, 16, P_BLACK, "Amstrad CPC Plus emulator");
++	text_at(330 + (298 - 28 * 8) / 2, 28, P_BLACK, "Arnold core by Kevin Thacker");
++	text_at(330 + (298 - 26 * 8) / 2, 40, P_BLACK, "Amiga port 2026, GPL-2.0");
++
++	/* rows are 17 apart (14-high gadgets, 3 clear), labels sit on the gadget's
++	 * text line (+9) */
++	box(12, 58, 616, 64, " Media ");
++	label(120, 79, "Cartridge:");
++	label(120, 96, "Drive A:");
++	label(120, 113, "Drive B:");
++
++	box(12, 127, 322, 64, " Game ");
++	box(340, 127, 288, 64, " Settings (see the menus) ");
++	draw_settings(m);
++
++	/* the status line sits in a recessed field */
++	DrawBevelBox(mwin->RPort, OX + 12, OY + 216, 616, 14, GT_VisualInfo, (ULONG)vi, GTBB_Recessed, TRUE, TAG_DONE);
++}
++
++/* the checkmarks in the menus from the settings */
++static void set_checks(struct SysMenu *m)
++{
++	int i;
++	int on[] = { M_SOUND, M_HIRES, M_SKIP0 + skip_index(m->skip), M_REF1 + refresh_index(m->refresh),
++	             M_JOY0 + (m->joykeys >= 0 && m->joykeys <= 2 ? m->joykeys : 0), M_PAD0 + (m->pad ? 1 : 0) };
++	for (i = 0; nm[i].nm_Type != NM_END; i++) {
++		int id = (int)(ULONG)nm[i].nm_UserData, k, want = 0;
++		if (!(nm[i].nm_Flags & CHECKIT)) continue;
++		for (k = 0; k < 6; k++) if (on[k] == id) want = 1;
++		if (id == M_SOUND) want = m->sound ? 1 : 0;
++		if (id == M_HIRES) want = m->hires ? 1 : 0;
++		if (want) nm[i].nm_Flags |= CHECKED; else nm[i].nm_Flags &= ~CHECKED;
++	}
++}
++
++static int open_menu(struct SysMenu *m)
++{
++	struct NewGadget ng;
++	struct Gadget *g;
++
++	/* pens 8-15: the logo picture's colours */
++	{
++		int i;
++		for (i = 0; i < 8; i++) {
++			menupal[1 + (8 + i) * 3] = Arnold_LogoPalette[i][0] * 0x01010101UL;
++			menupal[2 + (8 + i) * 3] = Arnold_LogoPalette[i][1] * 0x01010101UL;
++			menupal[3 + (8 + i) * 3] = Arnold_LogoPalette[i][2] * 0x01010101UL;
++		}
++	}
++	mscr = OpenScreenTags(NULL, SA_Width, 640, SA_Height, 256, SA_Depth, 4,
++		SA_DisplayID, PAL_MONITOR_ID | HIRES_KEY, SA_Font, (ULONG)&topaz8,
++		SA_Title, (ULONG)"Arnold - Amstrad CPC Plus emulator.  (c) Kevin Thacker, GPL-2.0", SA_Pens, (ULONG)menupens,
++		SA_ShowTitle, TRUE, SA_Colors32, (ULONG)menupal, TAG_DONE);
++	if (!mscr) return 0;
++	vi = GetVisualInfo(mscr, TAG_DONE);
++	if (!vi) { close_menu(); return 0; }
++	OX = mscr->WBorLeft;
++	OY = mscr->WBorTop + mscr->Font->ta_YSize + 1;
++	g = CreateContext(&glist);
++	memset(&ng, 0, sizeof ng);
++	ng.ng_TextAttr = &topaz8; ng.ng_VisualInfo = vi;
++	g = row(g, &ng, 70, m->cart, G_CART, G_CARTLOAD, G_CARTEJECT);
++	g = row(g, &ng, 87, m->diska, G_DISKA, G_DISKALOAD, G_DISKAEJECT);
++	g = row(g, &ng, 104, m->diskb, G_DISKB, G_DISKBLOAD, G_DISKBEJECT);
++	g = button(g, &ng, 20, 138, 148, 14, G_SAVEGAME, "Save for game", 0);
++	g = button(g, &ng, 174, 138, 152, 14, G_FORGETGAME, "Forget for game", !m->game_prefs);
++	g = button(g, &ng, 20, 164, 148, 14, G_KEYS, "Keyboard...", 0);
++	g = button(g, &ng, 174, 164, 152, 14, G_SHOT, "Screenshot", !m->can_continue);
++	g = button(g, &ng, 20, 196, 140, 15, G_RESET, "Reset", 0);
++	g = button(g, &ng, 173, 196, 140, 15, G_POWER, "Power ON", 0);
++	g = button(g, &ng, 326, 196, 140, 15, G_CONTINUE, "Continue", !m->can_continue);
++	g = button(g, &ng, 479, 196, 140, 15, G_QUIT, "Exit", 0);
++	if (!g) { close_menu(); return 0; }
++	set_checks(m);
++	menustrip = CreateMenus(nm, GTMN_FullMenu, TRUE, TAG_DONE);
++	if (!menustrip || !LayoutMenus(menustrip, vi, GTMN_NewLookMenus, TRUE, TAG_DONE)) { close_menu(); return 0; }
++	mwin = OpenWindowTags(NULL, WA_CustomScreen, (ULONG)mscr, WA_Left, 0, WA_Top, mscr->BarHeight + 1,
++		WA_Width, 640, WA_Height, 256 - mscr->BarHeight - 1,
++		WA_Title, (ULONG)"Arnold for Amiga v0.5.1  (Amstrad CPC Plus / GX4000)  built " __DATE__ " " __TIME__,
++		WA_DepthGadget, TRUE, WA_CloseGadget, TRUE, WA_DragBar, FALSE,
++		WA_Activate, TRUE, WA_NewLookMenus, TRUE,
++		WA_Gadgets, (ULONG)glist, WA_SimpleRefresh, TRUE,
++		WA_IDCMP, IDCMP_GADGETUP | IDCMP_CLOSEWINDOW | IDCMP_REFRESHWINDOW | IDCMP_RAWKEY | IDCMP_MENUPICK | IDCMP_EXTENDEDMOUSE | BUTTONIDCMP | STRINGIDCMP,
++		TAG_DONE);
++	if (!mwin) { close_menu(); return 0; }
++	SetMenuStrip(mwin, menustrip);
++	draw_frame(m);
++	GT_RefreshWindow(mwin, NULL);
++	{
++		char line[SYS_PATH + 32];
++		sprintf(line, "%s  Prefs: %s%s", m->status[0] ? m->status : (m->can_continue ? "Emulation paused: Help returns here, Continue resumes." : "Ready."),
++			m->prefs[0] ? m->prefs : "(none)", m->game_prefs ? "  (game settings in use)" : "");
++		m->status[0] = 0;
++		status(line);
++	}
++	return 1;
++}
++
++static void take_strings(struct SysMenu *m)
++{
++	strncpy(m->cart, (char *)((struct StringInfo *)gad[G_CART]->SpecialInfo)->Buffer, SYS_PATH - 1);
++	strncpy(m->diska, (char *)((struct StringInfo *)gad[G_DISKA]->SpecialInfo)->Buffer, SYS_PATH - 1);
++	strncpy(m->diskb, (char *)((struct StringInfo *)gad[G_DISKB]->SpecialInfo)->Buffer, SYS_PATH - 1);
++}
++
++static void set_string(int id, const char *v) { GT_SetGadgetAttrs(gad[id], mwin, NULL, GTST_String, (ULONG)v, TAG_DONE); }
++
++static void redraw_after_picture(struct SysMenu *m)
++{
++	/* the picture changed the pens and the window contents: put both back */
++	LoadRGB32(&mscr->ViewPort, (ULONG *)menupal);
++	SetAPen(mwin->RPort, P_BG);
++	RectFill(mwin->RPort, OX, OY, mwin->Width - mwin->BorderRight - 1, mwin->Height - mwin->BorderBottom - 1);
++	RefreshWindowFrame(mwin);
++	draw_frame(m);
++	RefreshGList(glist, mwin, NULL, -1);
++	GT_RefreshWindow(mwin, NULL);
++}
++
++/* one chosen menu item; returns a SYS_MENU_ result to leave with, or -1 */
++static int menu_pick(struct SysMenu *m, struct MenuItem *item)
++{
++	int id = (int)(ULONG)GTMENUITEM_USERDATA(item);
++	int checked = (item->Flags & CHECKED) != 0;
++	switch (id) {
++	case M_LOADCART: take_strings(m); if (ask_file("Insert cartridge (.cpr)", m->cart)) set_string(G_CART, m->cart); break;
++	case M_LOADA: take_strings(m); if (ask_file("Disk for drive A (.dsk)", m->diska)) set_string(G_DISKA, m->diska); break;
++	case M_LOADB: take_strings(m); if (ask_file("Disk for drive B (.dsk)", m->diskb)) set_string(G_DISKB, m->diskb); break;
++	case M_EJECTALL: set_string(G_CART, ""); set_string(G_DISKA, ""); set_string(G_DISKB, ""); break;
++	case M_KEYS: Sys_ShowPicture(mscr, "PROGDIR:Keyboard.iff"); redraw_after_picture(m); break;
++	case M_SHOT: if (m->can_continue) return SYS_MENU_SHOT; break;
++	case M_SAVE: return SYS_MENU_SAVE;
++	case M_SAVEGAME: return SYS_MENU_SAVEGAME;
++	case M_FORGETGAME: if (m->game_prefs) return SYS_MENU_FORGETGAME; break;
++	case M_QUIT: return SYS_MENU_QUIT;
++	case M_SOUND: m->sound = checked; break;
++	case M_HIRES: m->hires = checked; break;
++	case M_SKIP0: case M_SKIP1: case M_SKIP2: case M_SKIP3: case M_SKIP5: m->skip = skip_values[id - M_SKIP0]; break;
++	case M_REF1: case M_REF2: case M_REF3: case M_REF4: m->refresh = id - M_REF1 + 1; break;
++	case M_JOY0: case M_JOY1: case M_JOY2: m->joykeys = id - M_JOY0; break;
++	case M_PAD0: case M_PAD1: m->pad = id - M_PAD0; break;
++	}
++	draw_settings(m);
++	return -1;
++}
++
++int Sys_Menu(struct SysMenu *m)
++{
++	int result = SYS_MENU_QUIT, done = 0;
++	struct IntuiMessage *msg;
++
++	if (!GadToolsBase) GadToolsBase = OpenLibrary((STRPTR)"gadtools.library", 37);
++	if (!AslBase) AslBase = OpenLibrary((STRPTR)"asl.library", 37);
++	if (!GadToolsBase || !AslBase) return SYS_MENU_QUIT;
++	if (!open_menu(m)) return SYS_MENU_QUIT;
++
++	while (!done) {
++		WaitPort(mwin->UserPort);
++		while ((msg = GT_GetIMsg(mwin->UserPort))) {
++			ULONG cls = msg->Class; UWORD code = msg->Code;
++			struct Gadget *gd = (struct Gadget *)msg->IAddress;
++			GT_ReplyIMsg(msg);
++			if (cls == IDCMP_CLOSEWINDOW) { result = SYS_MENU_QUIT; done = 1; }
++			else if (cls == IDCMP_REFRESHWINDOW) { GT_BeginRefresh(mwin); draw_frame(m); GT_EndRefresh(mwin, TRUE); }
++			else if (cls == IDCMP_MENUPICK) {
++				UWORD sel = code;
++				while (sel != MENUNULL && !done) {
++					struct MenuItem *item = ItemAddress(menustrip, sel);
++					int r;
++					if (!item) break;
++					r = menu_pick(m, item);
++					if (r >= 0) { result = r; done = 1; }
++					sel = item->NextSelect;
++				}
++			}
++			else if (cls == IDCMP_RAWKEY) {
++				if (Sys_MenuKeyLog) { if (!mkeylog) mkeylog = fopen("PROGDIR:menukeys.log", "w"); if (mkeylog) { fprintf(mkeylog, "%02x\n", code); fflush(mkeylog); } }
++				/* Shortcuts (rawkeys): Help/C Continue, P Power ON, R Reset, Q Quit,
++				 * S Save Prefs, K Keyboard picture, X Screenshot. */
++				switch (code) {
++				case 0x5f: case 0x33: if (m->can_continue) { result = SYS_MENU_CONTINUE; done = 1; } break;
++				case 0x19: result = SYS_MENU_POWER; done = 1; break;
++				case 0x13: result = SYS_MENU_RESET; done = 1; break;
++				case 0x10: result = SYS_MENU_QUIT; done = 1; break;
++				case 0x21: result = SYS_MENU_SAVE; done = 1; break;
++				case 0x32: if (m->can_continue) { result = SYS_MENU_SHOT; done = 1; } break;
++				case 0x27: Sys_ShowPicture(mscr, "PROGDIR:Keyboard.iff"); redraw_after_picture(m); break;
++				}
++			}
++			else if (cls == IDCMP_GADGETUP) {
++				switch (gd->GadgetID) {
++				case G_CARTLOAD: take_strings(m); if (ask_file("Insert cartridge (.cpr)", m->cart)) set_string(G_CART, m->cart); break;
++				case G_DISKALOAD: take_strings(m); if (ask_file("Disk for drive A (.dsk)", m->diska)) set_string(G_DISKA, m->diska); break;
++				case G_DISKBLOAD: take_strings(m); if (ask_file("Disk for drive B (.dsk)", m->diskb)) set_string(G_DISKB, m->diskb); break;
++				case G_CARTEJECT: set_string(G_CART, ""); break;
++				case G_DISKAEJECT: set_string(G_DISKA, ""); break;
++				case G_DISKBEJECT: set_string(G_DISKB, ""); break;
++				case G_POWER: result = SYS_MENU_POWER; done = 1; break;
++				case G_CONTINUE: if (m->can_continue) { result = SYS_MENU_CONTINUE; done = 1; } break;
++				case G_RESET: result = SYS_MENU_RESET; done = 1; break;
++				case G_QUIT: result = SYS_MENU_QUIT; done = 1; break;
++				case G_SAVEGAME: result = SYS_MENU_SAVEGAME; done = 1; break;
++				case G_SHOT: result = SYS_MENU_SHOT; done = 1; break;
++				case G_KEYS: Sys_ShowPicture(mscr, "PROGDIR:Keyboard.iff"); redraw_after_picture(m); break;
++				case G_FORGETGAME: result = SYS_MENU_FORGETGAME; done = 1; break;
++				}
++			}
++		}
++	}
++	take_strings(m);
++	close_menu();
++	return result;
++}
++
++void Sys_MenuError(const char *text)
++{
++	struct EasyStruct es = { sizeof(struct EasyStruct), 0, (STRPTR)"Arnold", (STRPTR)"%s", (STRPTR)"OK" };
++	Sys_Log("error: %s", text);
++	EasyRequest(NULL, &es, NULL, (ULONG)text);
++}
+diff --git a/src/amiga/amiga_sys.c b/src/amiga/amiga_sys.c
+new file mode 100644
+index 0000000..cf0a3bf
+--- /dev/null
++++ b/src/amiga/amiga_sys.c
+@@ -0,0 +1,883 @@
++/* Arnold on AmigaOS: screen, c2p, palette, keyboard and joystick.
++ * AmigaOS 3.x, AGA. Built with bebbo's m68k-amigaos-gcc, -noixemul. */
++#include <exec/types.h>
++#include <exec/memory.h>
++#include <exec/execbase.h>
++#include <exec/ports.h>
++#include <intuition/intuition.h>
++#include <intuition/screens.h>
++#include <graphics/gfx.h>
++#include <graphics/gfxbase.h>
++#include <graphics/displayinfo.h>
++#include <graphics/modeid.h>
++#include <hardware/custom.h>
++#include <hardware/cia.h>
++#include <devices/timer.h>
++#include <proto/exec.h>
++#include <proto/intuition.h>
++#include <proto/graphics.h>
++#include <proto/dos.h>
++#include <proto/timer.h>
++#include <stdio.h>
++#include <stdlib.h>
++#include <string.h>
++#include "amiga_sys.h"
++#include <stdarg.h>
++
++unsigned long __stack = 256 * 1024;   /* libnix: enlarge the stack at start */
++static const char ver[] __attribute__((used)) = "$VER: Arnold 0.5.1 (19.10.2026) Amiga port, GPL-2.0";
++
++/* ---- diagnostic log ---- */
++static FILE *logf;
++void Sys_LogOpen(void)
++{
++	logf = fopen("PROGDIR:Arnold.log", "w");
++	if (!logf) logf = fopen("T:Arnold.log", "w");
++}
++void Sys_Log(const char *fmt, ...)
++{
++	va_list ap;
++	if (!logf) return;
++	va_start(ap, fmt);
++	vfprintf(logf, fmt, ap);
++	va_end(ap);
++	fputc('\n', logf);
++	fflush(logf);
++}
++void Sys_LogClose(void)
++{
++	extern struct Library *LowLevelBase;
++	if (LowLevelBase) { CloseLibrary(LowLevelBase); LowLevelBase = NULL; }
++	if (logf) { fclose(logf); logf = NULL; }
++}
++void Sys_MakeDir(const char *path)
++{
++	BPTR l = Lock((STRPTR)path, ACCESS_READ);
++	if (!l) { l = CreateDir((STRPTR)path); if (l) Sys_Log("created %s", path); }
++	if (l) UnLock(l);
++}
++void Sys_LogStart(int argc)
++{
++	Sys_Log("%s: %s start, attnflags %04x, chip free %lu, fast free %lu", ver + 6,
++		argc ? "Shell" : "Workbench", (unsigned)SysBase->AttnFlags, (unsigned long)AvailMem(MEMF_CHIP), (unsigned long)AvailMem(MEMF_FAST));
++}
++
++extern struct Custom custom;
++extern struct CIA ciaa;
++
++static struct Screen *scr;
++static struct Window *win;
++/* Triple buffering: with two buffers the SafeMessage for the old buffer comes a
++ * whole frame after the flip, so every frame waited two VBlanks (25 fps; found
++ * with the PERF figures on 13 Oct 2026). With three, the buffer we draw into was
++ * shown two flips ago and is normally safe already. */
++#define NBUF 3
++static struct ScreenBuffer *sb[NBUF];
++static struct MsgPort *safeport, *dispport;
++static int buf_safe[NBUF];        /* 1: free to draw into */
++static int safe_for[NBUF];        /* sb[i]'s SafeMessage frees buffer safe_for[i] */
++static int safe_out, disp_out;    /* replies still outstanding */
++/* 15 Oct 2026 (A1200 PiStorm freeze with SKIP=0): a ScreenBuffer must not be
++ * passed to ChangeScreenBuffer again until both messages of its previous change
++ * are back, or graphics.library re-sends a message that is still queued and
++ * the port list is corrupted. These flags say which are still out. */
++static int safe_pend[3], disp_pend[3];
++static struct BitMap *own_bm[3];   /* buffers 1-2: allocated by us with the screen's layout */
++static int shown;                 /* buffer on screen (or about to be) */
++static int CW, CH;                /* chunky size */
++static int SW, SH;                /* screen size (<= chunky) */
++static int XOFF, YOFF;            /* centring of the screen in the chunky buffer */
++/* Per chunky line, bit b set = buffer b still has to be converted. Lines are
++ * marked by the core as it copies a changed line (Render_LineChangedHook); this
++ * replaced a per-buffer shadow copy and a full-screen compare every frame,
++ * ~15 ms a frame on BigMig (13 Oct 2026). */
++#define ALL_BUFFERS ((1 << NBUF) - 1)
++static unsigned char *line_dirty;
++static ULONG pal32[1 + 256 * 3 + 1];
++static int pal_dirty, pal_dirty_all, pal_lo, pal_hi;
++/* heartbeat counters (15 Oct 2026: SKIP=0 freezes on the A1200 PiStorm) */
++static unsigned long hb_safe_waits, hb_refused, hb_reuse_waits;
++static int hb_log_waits;
++int Sys_PalAll;   /* PALALL argument (15 Oct 2026: GnG colour scramble test on the A1200) */
++int Sys_AllLines, Sys_SafeFlip;   /* ALLLINES / SAFEFLIP (17 Oct 2026: torn frames on the A1200) */
++int Sys_Osd, Sys_OsdSkip;         /* OSD (18 Oct 2026): which test mode a photo or video shows */
++
++/* The label, drawn into the buffer about to be shown, top left, in palette
++ * entry SYS_OSD_PEN on black: e.g. "SKIP3 SAFEFLIP". The c2p only rewrites
++ * changed lines, so it is drawn again every shown frame. */
++static void draw_osd(struct BitMap *bm)
++{
++	struct RastPort rp;
++	char t[48];
++	sprintf(t, "SKIP%d%s%s%s", Sys_OsdSkip, Sys_SafeFlip ? " SAFEFLIP" : "", Sys_AllLines ? " ALLLINES" : "", Sys_PalAll ? " PALALL" : "");
++	InitRastPort(&rp);
++	rp.BitMap = bm;
++	SetFont(&rp, GfxBase->DefaultFont);
++	SetAPen(&rp, SYS_OSD_PEN); SetBPen(&rp, 0); SetDrMd(&rp, JAM2);
++	Move(&rp, 2, 2 + rp.TxBaseline);
++	Text(&rp, (STRPTR)t, strlen(t));
++}
++static unsigned long frames;
++static UWORD *blankptr;
++#define KQ 64
++static UWORD keyq[KQ], keyqual[KQ];
++static int kq_head, kq_tail;
++static int quit_requested;
++
++/* c2p tables: bit p of a pixel goes to bit 8*p (planes 0-3) or 8*(p-4) (4-7) */
++static ULONG c2p_lo[256], c2p_hi[256];
++
++static void c2p_init(void)
++{
++	int v, p;
++	for (v = 0; v < 256; v++) {
++		ULONG lo = 0, hi = 0;
++		for (p = 0; p < 4; p++) {
++			if (v & (1 << p)) lo |= 1UL << (8 * p);
++			if (v & (16 << p)) hi |= 1UL << (8 * p);
++		}
++		c2p_lo[v] = lo; c2p_hi[v] = hi;
++	}
++}
++
++/* Convert one line of SW pixels into the 8 planes of a bitmap row.
++ * Plain C, 32 pixels per step; to be replaced by an asm c2p once it runs. */
++static void c2p_line(const unsigned char *src, struct BitMap *bm, int y)
++{
++	int p, g;
++	UBYTE *plane[8];
++	for (p = 0; p < 8; p++) plane[p] = bm->Planes[p] + (LONG)y * bm->BytesPerRow;
++	for (g = 0; g < SW; g += 32) {
++		ULONG out[8] = {0,0,0,0,0,0,0,0};
++		int k;
++		for (k = 0; k < 4; k++) {           /* 4 groups of 8 pixels -> 1 byte per plane */
++			ULONG lo, hi;
++			lo  = c2p_lo[src[0]] << 7; hi  = c2p_hi[src[0]] << 7;
++			lo |= c2p_lo[src[1]] << 6; hi |= c2p_hi[src[1]] << 6;
++			lo |= c2p_lo[src[2]] << 5; hi |= c2p_hi[src[2]] << 5;
++			lo |= c2p_lo[src[3]] << 4; hi |= c2p_hi[src[3]] << 4;
++			lo |= c2p_lo[src[4]] << 3; hi |= c2p_hi[src[4]] << 3;
++			lo |= c2p_lo[src[5]] << 2; hi |= c2p_hi[src[5]] << 2;
++			lo |= c2p_lo[src[6]] << 1; hi |= c2p_hi[src[6]] << 1;
++			lo |= c2p_lo[src[7]];      hi |= c2p_hi[src[7]];
++			src += 8;
++			out[0] = (out[0] << 8) | ( lo        & 0xff);
++			out[1] = (out[1] << 8) | ((lo >>  8) & 0xff);
++			out[2] = (out[2] << 8) | ((lo >> 16) & 0xff);
++			out[3] = (out[3] << 8) | ((lo >> 24) & 0xff);
++			out[4] = (out[4] << 8) | ( hi        & 0xff);
++			out[5] = (out[5] << 8) | ((hi >>  8) & 0xff);
++			out[6] = (out[6] << 8) | ((hi >> 16) & 0xff);
++			out[7] = (out[7] << 8) | ((hi >> 24) & 0xff);
++		}
++		for (p = 0; p < 8; p++) { *(ULONG *)plane[p] = out[p]; plane[p] += 4; }
++	}
++}
++
++int Sys_OpenDisplay(int cw, int ch, int hires)
++{
++	struct Rectangle rect;
++	ULONG modeid = PAL_MONITOR_ID | (hires ? HIRES_KEY : LORES_KEY);
++	int i, rw, rh;
++
++	CW = cw; CH = ch;
++	c2p_init();
++	quit_requested = 0; kq_head = kq_tail = 0;
++	/* Standard overscan, not MAX: MAX's rectangle starts further left than a
++	 * monitor shows (first WinUAE run: the left border was off the screen). */
++	if (!QueryOverscan(modeid, &rect, OSCAN_STANDARD)) {
++		rect.MinX = 0; rect.MinY = 0; rect.MaxX = (hires ? 703 : 351); rect.MaxY = 271;
++	}
++	rw = rect.MaxX - rect.MinX + 1;
++	rh = rect.MaxY - rect.MinY + 1;
++	SW = (rw < cw ? rw : cw) & ~31;
++	SH = rh < ch ? rh : ch;
++	Sys_Log("display: mode %08lx overscan %d,%d-%d,%d screen %dx%d chunky %dx%d chip free %lu", (unsigned long)modeid,
++		(int)rect.MinX, (int)rect.MinY, (int)rect.MaxX, (int)rect.MaxY, SW, SH, cw, ch, (unsigned long)AvailMem(MEMF_CHIP));
++	XOFF = (cw - SW) / 2;
++	YOFF = (ch - SH) / 2;
++
++	scr = OpenScreenTags(NULL,
++		SA_Width, SW, SA_Height, SH, SA_Depth, 8,
++		SA_DisplayID, modeid, SA_Overscan, OSCAN_STANDARD,
++		SA_Left, (rw - SW) / 2, SA_Top, (rh - SH) / 2,
++		SA_Quiet, TRUE, SA_ShowTitle, FALSE, SA_Title, (ULONG)"Arnold",
++		SA_Interleaved, TRUE,
++		TAG_DONE);
++	if (!scr) { Sys_Log("display: OpenScreen failed"); return 0; }
++
++	safeport = CreateMsgPort(); dispport = CreateMsgPort();
++	if (!safeport || !dispport) { Sys_CloseDisplay(); return 0; }
++	for (i = 0; i < NBUF; i++) {
++		struct BitMap *sbm = scr->RastPort.BitMap;
++		safe_pend[i] = disp_pend[i] = 0;
++		own_bm[i] = NULL;
++		if (i > 0) {
++			/* 15 Oct 2026: on the A1200 with P96 installed, the system's buffers may
++			 * not match the screen bitmap's layout (interleaved or not), which shows
++			 * as colour soup in frames from those buffers. Make them ourselves as an
++			 * exact friend of the screen bitmap. */
++			ULONG fl = BMF_DISPLAYABLE | BMF_CLEAR | (GetBitMapAttr(sbm, BMA_FLAGS) & BMF_INTERLEAVED);
++			/* no friend bitmap: with P96 installed a friend may be taken as an RTG request */
++			own_bm[i] = AllocBitMap(GetBitMapAttr(sbm, BMA_WIDTH), GetBitMapAttr(sbm, BMA_HEIGHT),
++				GetBitMapAttr(sbm, BMA_DEPTH), fl, NULL);
++			if (own_bm[i])
++				Sys_Log("display: own bitmap %d bpr %d planes +%ld flags %08lx", i, (int)own_bm[i]->BytesPerRow,
++					(long)(own_bm[i]->Planes[1] - own_bm[i]->Planes[0]), (unsigned long)GetBitMapAttr(own_bm[i], BMA_FLAGS));
++		}
++		sb[i] = AllocScreenBuffer(scr, own_bm[i], i == 0 ? SB_SCREEN_BITMAP : 0);
++		if (!sb[i] && own_bm[i]) {
++			/* refused: fall back to the system's buffer (logged below) */
++			Sys_Log("display: AllocScreenBuffer refused own bitmap %d, using the system's", i);
++			FreeBitMap(own_bm[i]); own_bm[i] = NULL;
++			sb[i] = AllocScreenBuffer(scr, NULL, 0);
++		}
++		if (!sb[i]) { Sys_Log("display: AllocScreenBuffer %d failed", i); Sys_CloseDisplay(); return 0; }
++		{
++			struct BitMap *b = sb[i]->sb_BitMap;
++			Sys_Log("display: buffer %d %s bpr %d planes %08lx %08lx (+%ld) flags %08lx", i, own_bm[i] ? "own" : "system",
++				(int)b->BytesPerRow, (unsigned long)b->Planes[0], (unsigned long)b->Planes[1],
++				(long)(b->Planes[1] - b->Planes[0]), (unsigned long)GetBitMapAttr(b, BMA_FLAGS));
++		}
++		sb[i]->sb_DBufInfo->dbi_SafeMessage.mn_ReplyPort = safeport;
++		sb[i]->sb_DBufInfo->dbi_DispMessage.mn_ReplyPort = dispport;
++	}
++	line_dirty = AllocMem(CH, MEMF_ANY);
++	if (!line_dirty) { Sys_CloseDisplay(); return 0; }
++	memset(line_dirty, ALL_BUFFERS, CH);   /* full first conversion into every buffer */
++	for (i = 0; i < NBUF; i++) buf_safe[i] = (i != 0);
++	shown = 0; safe_out = disp_out = 0;
++
++	win = OpenWindowTags(NULL,
++		WA_CustomScreen, (ULONG)scr, WA_Left, 0, WA_Top, 0,
++		WA_Width, SW, WA_Height, SH,
++		WA_Backdrop, TRUE, WA_Borderless, TRUE, WA_Activate, TRUE,
++		WA_RMBTrap, TRUE, WA_SimpleRefresh, TRUE, WA_NoCareRefresh, TRUE,
++		/* EXTENDEDMOUSE: take wheel events ourselves (and drop them); without it
++		 * Intuition turns wheel movement into cursor up/down key presses. */
++		WA_IDCMP, IDCMP_RAWKEY | IDCMP_MOUSEBUTTONS | IDCMP_EXTENDEDMOUSE,
++		TAG_DONE);
++	if (!win) { Sys_Log("display: OpenWindow failed"); Sys_CloseDisplay(); return 0; }
++	blankptr = AllocVec(16, MEMF_CHIP | MEMF_CLEAR);
++	if (blankptr) SetPointer(win, blankptr, 1, 1, 0, 0);
++
++	pal32[0] = 256UL << 16;
++	pal32[1 + 256 * 3] = 0;
++	pal32[1 + SYS_OSD_PEN * 3] = 0xFFFFFFFF; pal32[2 + SYS_OSD_PEN * 3] = 0xDDDDDDDD; pal32[3 + SYS_OSD_PEN * 3] = 0;   /* OSD label: yellow */
++	pal_dirty = 1; pal_dirty_all = 1;   /* new screen: load every pen once */
++	Sys_Log("display: open");
++	return 1;
++}
++
++static void collect_safe(void)
++{
++	struct Message *m;
++	int j;
++	while ((m = GetMsg(safeport))) {
++		for (j = 0; j < NBUF; j++)
++			if (sb[j] && m == &sb[j]->sb_DBufInfo->dbi_SafeMessage) { buf_safe[safe_for[j]] = 1; safe_pend[j] = 0; }
++		safe_out--;
++	}
++}
++
++static void collect_disp(void)
++{
++	struct Message *m;
++	int j;
++	while ((m = GetMsg(dispport))) {
++		for (j = 0; j < NBUF; j++)
++			if (sb[j] && m == &sb[j]->sb_DBufInfo->dbi_DispMessage) disp_pend[j] = 0;
++		disp_out--;
++	}
++}
++
++void Sys_CloseDisplay(void)
++{
++	int i;
++	while (safe_out > 0) { WaitPort(safeport); collect_safe(); }
++	while (disp_out > 0) { WaitPort(dispport); collect_disp(); }
++	if (win) { ClearPointer(win); CloseWindow(win); win = NULL; }
++	if (blankptr) { FreeVec(blankptr); blankptr = NULL; }
++	for (i = 0; i < NBUF; i++) {
++		if (sb[i] && scr) { FreeScreenBuffer(scr, sb[i]); sb[i] = NULL; }
++		if (own_bm[i]) { WaitBlit(); FreeBitMap(own_bm[i]); own_bm[i] = NULL; }
++	}
++	if (line_dirty) { FreeMem(line_dirty, CH); line_dirty = NULL; }
++	if (scr) { CloseScreen(scr); scr = NULL; }
++	if (safeport) { DeleteMsgPort(safeport); safeport = NULL; }
++	if (dispport) { DeleteMsgPort(dispport); dispport = NULL; }
++}
++
++void Sys_SetPaletteEntry(int index, unsigned char r, unsigned char g, unsigned char b)
++{
++	/* The core pushes every pen each frame (Palette_Set); only colours that really
++	 * change are marked. Reloading all 256 every frame cost ~15 ms a frame on
++	 * BigMig (13 Oct 2026: Head Over Heels spent 15 ms "in c2p" converting 1 line). */
++	ULONG *e = &pal32[1 + index * 3];
++	ULONG nr = (ULONG)r * 0x01010101UL, ng = (ULONG)g * 0x01010101UL, nb = (ULONG)b * 0x01010101UL;
++	if (index < 0 || index > 255) return;
++	if (e[0] == nr && e[1] == ng && e[2] == nb && !pal_dirty_all) return;
++	e[0] = nr; e[1] = ng; e[2] = nb;
++	if (!pal_dirty) { pal_lo = pal_hi = index; pal_dirty = 1; }
++	else { if (index < pal_lo) pal_lo = index; if (index > pal_hi) pal_hi = index; }
++}
++
++/* LoadRGB32 for the changed range only: a table that starts with (count<<16 |
++ * first) and the colours from pal32. */
++static void load_palette(void)
++{
++	static ULONG tab[1 + 256 * 3 + 1];
++	int n;
++	if (pal_dirty_all) { pal_lo = 0; pal_hi = 255; pal_dirty_all = 0; }
++	n = pal_hi - pal_lo + 1;
++	tab[0] = ((ULONG)n << 16) | pal_lo;
++	CopyMem(&pal32[1 + pal_lo * 3], &tab[1], n * 3 * sizeof(ULONG));
++	tab[1 + n * 3] = 0;
++	LoadRGB32(&scr->ViewPort, tab);
++	pal_dirty = 0;
++	Sys_Perf.palette_loads++;
++}
++
++/* ---- performance counters (PERF) ---- */
++struct Device *TimerBase;
++static struct timerequest timereq;
++static ULONG eclock_hz;
++SysPerf Sys_Perf;
++
++unsigned long Sys_Micros(void)
++{
++	struct EClockVal ev;
++	if (!TimerBase) {
++		if (OpenDevice((STRPTR)TIMERNAME, UNIT_ECLOCK, (struct IORequest *)&timereq, 0) != 0) return 0;
++		TimerBase = timereq.tr_node.io_Device;
++	}
++	eclock_hz = ReadEClock(&ev);
++	/* 64-bit ticks -> microseconds (low 32 bits: wraps after 71 minutes) */
++	{
++		unsigned long long t = ((unsigned long long)ev.ev_hi << 32) | ev.ev_lo;
++		return (unsigned long)(t * 1000000ULL / eclock_hz);
++	}
++}
++
++void Sys_MarkLineDirty(int y)
++{
++	if (line_dirty && y >= 0 && y < CH) line_dirty[y] = ALL_BUFFERS;
++}
++
++void Sys_ShowFrame(const unsigned char *chunky, int pitch)
++{
++	unsigned long t0, t1;
++	struct BitMap *bm;
++	int y, next, bit;
++
++	if (!scr) return;
++	t0 = Sys_Micros();
++	next = (shown + 1) % NBUF;
++	collect_safe();
++	if (!buf_safe[next]) {
++		hb_safe_waits++;
++		if (hb_log_waits) Sys_Log("wait: buffer %d not safe yet (shown %d, safe_out %d, disp_out %d)", next, shown, safe_out, disp_out);
++	}
++	while (!buf_safe[next]) { WaitPort(safeport); collect_safe(); }
++	t1 = Sys_Micros(); Sys_Perf.wait_us += t1 - t0; Sys_Perf.wait_safe_us += t1 - t0; t0 = t1;
++
++	bm = sb[next]->sb_BitMap;
++	bit = 1 << next;
++	for (y = 0; y < SH; y++) {
++		const unsigned char *src = chunky + (y + YOFF) * pitch + XOFF;
++		if (Sys_AllLines || (line_dirty[y + YOFF] & bit)) {
++			line_dirty[y + YOFF] &= ~bit;
++			c2p_line(src, bm, y);
++			Sys_Perf.c2p_lines++;
++		}
++	}
++	if (Sys_Osd) draw_osd(bm);
++	t1 = Sys_Micros(); Sys_Perf.c2p_us += t1 - t0; t0 = t1;
++	if (Sys_PalAll) pal_dirty = pal_dirty_all = 1;   /* PALALL: diagnostic, all 256 every frame */
++	if (pal_dirty) load_palette();
++	t1 = Sys_Micros(); Sys_Perf.pal_us += t1 - t0; t0 = t1;
++	Sys_Perf.c2p_frames++;
++	Sys_Perf.line_bytes = SW;                 /* 8 planes x SW/8 bytes = SW bytes of chip RAM a line */
++
++	/* No wait for the previous flip's DispMessage: in OS 3.2 it comes two VBlanks
++	 * after ChangeScreenBuffer, which held every frame to 25 fps (13 Oct 2026).
++	 * Pacing is WaitTOF in Sys_WaitFrame; the third buffer covers the late
++	 * SafeMessages. If the change is refused, this frame is simply not shown. */
++	collect_disp();
++	if (Sys_SafeFlip) {
++		/* diagnostic: a plain flip, every message of the last change answered first */
++		int j;
++		for (j = 0; j < NBUF; j++)
++			while (safe_pend[j] || disp_pend[j]) {
++				if (safe_pend[j]) { WaitPort(safeport); collect_safe(); }
++				else { WaitPort(dispport); collect_disp(); }
++			}
++	}
++	while (safe_pend[next] || disp_pend[next]) {
++		hb_reuse_waits++;
++		if (safe_pend[next]) { WaitPort(safeport); collect_safe(); }
++		else { WaitPort(dispport); collect_disp(); }
++	}
++	if (!ChangeScreenBuffer(scr, sb[next])) hb_refused++;
++	else {
++		safe_for[next] = shown;          /* this change's SafeMessage frees the old one */
++		buf_safe[shown] = 0;
++		buf_safe[next] = 0;
++		shown = next;
++		safe_out++; disp_out++;
++		safe_pend[next] = disp_pend[next] = 1;
++	}
++	frames++;
++	t1 = Sys_Micros(); Sys_Perf.wait_us += t1 - t0; Sys_Perf.wait_disp_us += t1 - t0;
++}
++
++long Sys_WaitFrame(void)
++{
++	/* One CPC frame per PAL VBlank. On time: WaitTOF, and the next frame is due
++	 * 20 ms after that VBlank. Late (13 Oct 2026: BigMig took 40-80 ms a frame):
++	 * no wait, and the schedule is kept, so the debt shows how far behind the
++	 * emulation is; the frame skip uses it to catch up. More than 10 frames
++	 * behind: give up the debt and restart the schedule from now.
++	 * Returns how far behind schedule this frame ended, in us (0 if on time). */
++	static unsigned long due;
++	long behind = 0;
++	unsigned long t0 = Sys_Micros();
++	collect_disp();
++	if (due == 0 || (long)(due - t0) > 500) {
++		WaitTOF();
++		due = Sys_Micros() + 20000;
++	} else {
++		behind = (long)(t0 - due);
++		if (behind > 200000) due = t0 + 20000;   /* still reported: the skip carries on */
++		else due += 20000;
++		Sys_Perf.late_frames++;
++	}
++	t0 = Sys_Micros() - t0;
++	Sys_Perf.wait_us += t0; Sys_Perf.wait_throttle_us += t0; Sys_Perf.throttle_calls++;
++	return behind > 0 ? behind : 0;
++}
++
++/* ---- input ---- */
++
++int Sys_Poll(void)
++{
++	struct IntuiMessage *msg;
++	if (!win) return 1;
++	while ((msg = (struct IntuiMessage *)GetMsg(win->UserPort))) {
++		if (msg->Class == IDCMP_RAWKEY && (msg->Code & 0x7f) < 0x78) {   /* 0x78+: mouse wheel and buttons, not keys */
++			int next = (kq_tail + 1) % KQ;
++			if (next != kq_head) { keyq[kq_tail] = msg->Code; keyqual[kq_tail] = msg->Qualifier; kq_tail = next; }
++		}
++		ReplyMsg((struct Message *)msg);
++	}
++	return quit_requested;
++}
++
++void Sys_RequestQuit(void) { quit_requested = 1; }
++
++int Sys_GetKey(int *rawcode, int *down, int *qualifier)
++{
++	if (kq_head == kq_tail) return 0;
++	*rawcode = keyq[kq_head] & 0x7f;
++	*down = !(keyq[kq_head] & 0x80);
++	*qualifier = keyqual[kq_head];
++	kq_head = (kq_head + 1) % KQ;
++	return 1;
++}
++
++/* Joystick: the hardware port 2 (joy1dat, CIA-A fire, POTINP fire 2) as
++ * AmiMSX reads it, OR'd with lowlevel.library's view of ports 0-3 (14 Oct
++ * 2026: a USB pad under Poseidon only shows up through lowlevel.library's
++ * joystick-port emulation, not in the hardware registers). Port 0 is skipped
++ * while it holds the mouse. Red = fire 1, blue (or any other button) = fire 2. */
++#include <libraries/lowlevel.h>
++#include <proto/lowlevel.h>
++struct Library *LowLevelBase;
++static int lowlevel_tried;
++
++static ULONG joy_last_raw[4];
++ULONG Sys_JoyRaw(int port) { return port >= 0 && port < 4 ? joy_last_raw[port] : 0; }
++
++/* CD32 pad on port 2, read by us (15 Oct 2026). On the A1200 PiStorm,
++ * lowlevel.library saw John's KTRL CD32 pad as a game controller but only
++ * ever reported the red button: on a CPU that fast its shift-register reads
++ * outrun the pad. This is the usual routine games use (cf. Codetapper's
++ * CD32 pad notes): pin 5 low selects CD32 mode, pin 6 (fire) becomes the
++ * clock, and the 7 buttons come out one by one on pin 9 (POTINP bit 14,
++ * low = pressed). Each step waits on CIA reads, which run at real Amiga
++ * speed whatever the CPU. Order: blue, red, yellow, green, forward, reverse,
++ * play. Returns the 7 button bits (bit set = pressed). */
++static unsigned read_cd32_buttons(void)
++{
++	/* Returns 9 bits, set = low on pin 9: the 7 buttons, then the pad's ID
++	 * bits (a CD32 pad gives 8th = 0, 9th = 1 here). As AmiMSX does it
++	 * (John's decision, 17 Oct 2026): pin 6 is driven HIGH as an output
++	 * before pin 5 falls, otherwise a held red button gives a spurious clock;
++	 * the edges are timed with CIA reads, which run at real Amiga speed
++	 * whatever the CPU. Order: blue, red, yellow, green, forward, reverse,
++	 * play. */
++	volatile UBYTE *pra = &ciaa.ciapra, *ddra = &ciaa.ciaddra;
++	unsigned bits = 0;
++	int i, d;
++	UBYTE dummy;
++	Disable();
++	*pra |= 0x80;                  /* clock high first... */
++	*ddra |= 0x80;                 /* ...then port 2 fire line as an output */
++	for (d = 0; d < 4; d++) dummy = *pra;
++	custom.potgo = 0x6f00;         /* port 2: pin 5 output low (CD32 mode), pin 9 input */
++	for (d = 0; d < 25; d++) dummy = *pra;
++	for (i = 0; i < 9; i++) {
++		for (d = 0; d < 10; d++) dummy = *pra;
++		if (!(custom.potinp & 0x4000)) bits |= 1u << i;
++		*pra &= ~0x80;             /* clock pulse: next bit */
++		for (d = 0; d < 4; d++) dummy = *pra;
++		*pra |= 0x80;
++	}
++	*ddra &= ~0x80;                /* fire line back to input */
++	custom.potgo = 0xff00;         /* pin 5 high again: 2-button mode */
++	Enable();
++	(void)dummy;
++	return bits;
++}
++
++/* Joystick port 2 (lowlevel.library port 1). No auto-detection (John's
++ * decision, 17 Oct 2026, after AmiMSX: lowlevel.library's CD32 detection was
++ * wrong for his adapters and even for a plain joystick, and a plain joystick
++ * read as a CD32 pad has its fire line driven as a clock, so nothing works).
++ * - Sys_PadType 0, standard: the hardware registers as AmiMSX reads them
++ *   (joy1dat, CIA-A fire, POTINP fire 2 on pin 9 or pin 5). Pin 6 is never
++ *   driven, so a plain joystick sees no probe at all.
++ * - Sys_PadType 1, CD32 pad: directions from joy1dat, the buttons from
++ *   read_cd32_buttons(), no ID check. Red = fire 1; blue, green, yellow = fire 2.
++ * Game controllers lowlevel.library reports on ports 2-3 (USB pads under
++ * Poseidon) are OR'd in either way. */
++int Sys_PadType;                    /* 0 standard, 1 CD32 pad (menu / PAD= / prefs pad=) */
++int Sys_NoCD32;                     /* NOCD32: kept for old scripts, same as PAD=0 */
++static int pad_logged = -1;
++unsigned Sys_ReadJoystick(void)
++{
++	unsigned m = 0;
++	int port;
++	UWORD j = custom.joy1dat;
++	if (!lowlevel_tried) {
++		lowlevel_tried = 1;
++		LowLevelBase = OpenLibrary((STRPTR)"lowlevel.library", 39);
++		Sys_Log("joystick: lowlevel.library %s", LowLevelBase ? "open (USB pads on ports 2-3)" : "not available");
++	}
++	if (Sys_NoCD32) Sys_PadType = 0;
++	if (pad_logged != Sys_PadType) {
++		pad_logged = Sys_PadType;
++		Sys_Log("joystick: port 2 read as %s", Sys_PadType ? "a CD32 pad" : "a standard 2-button joystick");
++	}
++	if (j & 0x0002) m |= SYS_JOY_RIGHT;
++	if (j & 0x0200) m |= SYS_JOY_LEFT;
++	if (((j >> 1) ^ j) & 0x0001) m |= SYS_JOY_DOWN;
++	if (((j >> 9) ^ (j >> 8)) & 0x0001) m |= SYS_JOY_UP;
++	if (Sys_PadType) {
++		unsigned b = read_cd32_buttons();
++		joy_last_raw[1] = b;
++		if (b & 0x02) m |= SYS_JOY_FIRE1;                    /* red */
++		if (b & (0x01 | 0x04 | 0x08)) m |= SYS_JOY_FIRE2;   /* blue, yellow, green */
++	} else {
++		if (!(ciaa.ciapra & 0x80)) m |= SYS_JOY_FIRE1;
++		custom.potgo = 0xff00;
++		/* fire 2 on pin 9 (Amiga standard) or pin 5 (as AmiMSX reads it; some 2-button pads) */
++		if (!(custom.potinp & 0x4000) || !(custom.potinp & 0x1000)) m |= SYS_JOY_FIRE2;
++	}
++	if (LowLevelBase) {
++		for (port = 2; port < 4; port++) {
++			ULONG v = ReadJoyPort(port);
++			ULONG type = v & JP_TYPE_MASK;
++			if (v != joy_last_raw[port]) joy_last_raw[port] = v;
++			if (type != JP_TYPE_GAMECTLR && type != JP_TYPE_JOYSTK) continue;
++			if (v & JPF_JOY_UP) m |= SYS_JOY_UP;
++			if (v & JPF_JOY_DOWN) m |= SYS_JOY_DOWN;
++			if (v & JPF_JOY_LEFT) m |= SYS_JOY_LEFT;
++			if (v & JPF_JOY_RIGHT) m |= SYS_JOY_RIGHT;
++			if (v & JPF_BUTTON_RED) m |= SYS_JOY_FIRE1;
++			if (v & (JPF_BUTTON_BLUE | JPF_BUTTON_GREEN | JPF_BUTTON_YELLOW)) m |= SYS_JOY_FIRE2;
++		}
++	}
++	return m;
++}
++
++/* ---- sound ---- */
++/* Paula, channels 0 (left) and 1 (right), 8-bit signed (14 Oct 2026 rewrite).
++ * The emulation makes one block a CPC frame (444 samples). A frame of the PAL
++ * display is 313 x 227 = 71051 colour clocks; at period 160 a block lasts
++ * 71040, so one block per VBlank keeps Paula fed at the display's pace. Blocks
++ * go into a small queue; a VBlank interrupt server hands the oldest one to
++ * Paula (it is latched when the playing block ends). No block ready (the
++ * emulation is behind): Paula repeats the last one. Queue full (it caught up in
++ * a burst): the oldest waiting block is dropped. Both are counted (Sys_Perf). */
++#include <devices/audio.h>
++#include <hardware/dmabits.h>
++#include <hardware/intbits.h>
++#include <exec/interrupts.h>
++#include "audio_conv.h"
++#define ABUFS 4                       /* playing + handed over + up to 2 queued */
++static struct MsgPort *audport;
++static struct IOAudio *audio;
++static int aud_open, aud_n;
++static UBYTE *aud_buf[2][ABUFS];      /* [channel][slot] in chip RAM */
++static UBYTE aud_map[] = { 3 };       /* channels 0 and 1 */
++static volatile int aud_rd, aud_wr, aud_count, aud_run;
++static volatile unsigned long aud_underruns, aud_drops;
++static struct Interrupt aud_vbint;
++static int aud_vbint_added;
++
++static LONG aud_vblank(register APTR data __asm("a1"))
++{
++	if (aud_run) {
++		if (aud_count > 0) {
++			custom.aud[0].ac_ptr = (UWORD *)aud_buf[0][aud_rd];
++			custom.aud[1].ac_ptr = (UWORD *)aud_buf[1][aud_rd];
++			aud_rd = (aud_rd + 1) % ABUFS;
++			aud_count--;
++		} else
++			aud_underruns++;
++	}
++	return 0;
++}
++
++int Sys_AudioOpen(int period, int samples)
++{
++	int c, b;
++	if (aud_open) return 1;
++	if (samples & 1) samples--;
++	aud_n = samples;
++	audport = CreateMsgPort();
++	if (!audport) return 0;
++	audio = (struct IOAudio *)CreateIORequest(audport, sizeof(struct IOAudio));
++	if (!audio) { DeleteMsgPort(audport); audport = NULL; return 0; }
++	audio->ioa_Request.io_Message.mn_Node.ln_Pri = 127;   /* don't let others steal them */
++	audio->ioa_Request.io_Command = ADCMD_ALLOCATE;
++	audio->ioa_Request.io_Flags = ADIOF_NOWAIT;
++	audio->ioa_AllocKey = 0;
++	audio->ioa_Data = aud_map;
++	audio->ioa_Length = sizeof(aud_map);
++	if (OpenDevice("audio.device", 0, (struct IORequest *)audio, 0) != 0) {
++		Sys_Log("audio: audio.device channels 0+1 not free");
++		DeleteIORequest((struct IORequest *)audio); audio = NULL;
++		DeleteMsgPort(audport); audport = NULL;
++		return 0;
++	}
++	aud_open = 1;
++	for (c = 0; c < 2; c++) for (b = 0; b < ABUFS; b++) {
++		aud_buf[c][b] = AllocMem(aud_n, MEMF_CHIP | MEMF_CLEAR);
++		if (!aud_buf[c][b]) { Sys_Log("audio: no chip RAM for buffers"); Sys_AudioClose(); return 0; }
++	}
++	custom.aud[0].ac_per = period; custom.aud[1].ac_per = period;
++	custom.aud[0].ac_vol = 64;     custom.aud[1].ac_vol = 64;
++	custom.aud[0].ac_len = aud_n >> 1; custom.aud[1].ac_len = aud_n >> 1;
++	aud_rd = aud_wr = aud_count = 0; aud_run = 0;
++	aud_vbint.is_Node.ln_Type = NT_INTERRUPT;
++	aud_vbint.is_Node.ln_Pri = 0;
++	aud_vbint.is_Node.ln_Name = (char *)"Arnold audio";
++	aud_vbint.is_Data = NULL;
++	aud_vbint.is_Code = (VOID (*)())aud_vblank;
++	AddIntServer(INTB_VERTB, &aud_vbint);
++	aud_vbint_added = 1;
++	Sys_Log("audio: open, period %d, %d samples a block", period, samples);
++	return 1;
++}
++
++void Sys_AudioClose(void)
++{
++	int c, b;
++	if (!aud_open) return;
++	aud_run = 0;
++	if (aud_vbint_added) { RemIntServer(INTB_VERTB, &aud_vbint); aud_vbint_added = 0; }
++	custom.dmacon = DMAF_AUD0 | DMAF_AUD1;   /* clear */
++	custom.aud[0].ac_vol = 0; custom.aud[1].ac_vol = 0;
++	for (c = 0; c < 2; c++) for (b = 0; b < ABUFS; b++)
++		if (aud_buf[c][b]) { FreeMem(aud_buf[c][b], aud_n); aud_buf[c][b] = NULL; }
++	if (audio) { CloseDevice((struct IORequest *)audio); DeleteIORequest((struct IORequest *)audio); audio = NULL; }
++	if (audport) { DeleteMsgPort(audport); audport = NULL; }
++	aud_open = 0;
++}
++
++void Sys_AudioQueue(const unsigned char *s16, int samples)
++{
++	int slot;
++	if (!aud_open) return;
++	if (samples > aud_n) samples = aud_n;
++	Disable();
++	if (aud_count >= ABUFS - 2) {             /* full: drop the oldest waiting block */
++		aud_rd = (aud_rd + 1) % ABUFS;
++		aud_count--;
++		aud_drops++;
++	}
++	slot = aud_wr;
++	Enable();
++	/* Slots in use: the block playing, the one handed over at the last VBlank
++	 * (latched when the playing one ends) and the queue; with the queue kept
++	 * below ABUFS - 2 the slot at aud_wr is none of them. */
++	Audio_SplitTo8((const unsigned short *)s16, (signed char *)aud_buf[0][slot], (signed char *)aud_buf[1][slot], samples);
++	if (samples < aud_n) {                    /* short block: hold the last level */
++		memset(aud_buf[0][slot] + samples, samples ? aud_buf[0][slot][samples - 1] : 0, aud_n - samples);
++		memset(aud_buf[1][slot] + samples, samples ? aud_buf[1][slot][samples - 1] : 0, aud_n - samples);
++	}
++	Disable();
++	aud_wr = (aud_wr + 1) % ABUFS;
++	aud_count++;
++	if (!aud_run) {
++		/* start: this block plays at once, the server feeds the rest */
++		custom.aud[0].ac_ptr = (UWORD *)aud_buf[0][slot];
++		custom.aud[1].ac_ptr = (UWORD *)aud_buf[1][slot];
++		aud_rd = aud_wr; aud_count = 0;
++		custom.dmacon = DMAF_SETCLR | DMAF_MASTER | DMAF_AUD0 | DMAF_AUD1;
++		aud_run = 1;
++	}
++	Enable();
++	Sys_Perf.aud_underruns = aud_underruns;
++	Sys_Perf.aud_drops = aud_drops;
++}
++
++void Sys_AudioPause(void)
++{
++	if (!aud_open) return;
++	Disable();
++	aud_run = 0;
++	aud_rd = aud_wr = aud_count = 0;
++	Enable();
++	custom.dmacon = DMAF_AUD0 | DMAF_AUD1;
++}
++
++unsigned long Sys_Millis(void) { return frames * 20; }
++
++void Sys_Message(const char *text)
++{
++	Sys_Log("message: %s", text);
++	struct EasyStruct es = { sizeof(struct EasyStruct), 0, "Arnold", "%s", "OK" };
++	if (scr) Sys_CloseDisplay();
++	EasyRequest(NULL, &es, NULL, (ULONG)text);
++}
++
++/* ---- BENCH: what is this machine fast or slow at? (13 Oct 2026) ---- */
++static volatile unsigned long bench_sink;
++
++static void bench_line(FILE *f, const char *name, unsigned long us, unsigned long units, const char *unit)
++{
++	/* rate as units per second, per microsecond x1000 to stay in 32 bits */
++	unsigned long per_ms = us ? (unsigned long)((unsigned long long)units * 1000ULL / us) : 0;
++	fprintf(f, "bench %-22s %8lu us  %8lu %s/ms\n", name, us, per_ms, unit);
++	if (f != stdout) fflush(f);
++}
++
++/* Each memory region exec knows about, with a copy speed measured inside it:
++ * does this machine have a faster kind of fast RAM than the one Arnold gets? */
++static void bench_regions(FILE *f)
++{
++	struct MemHeader *mh;
++	struct { char name[24]; ULONG lo, hi, attr, freeb; BYTE pri; } r[12];
++	int n = 0, i;
++	Forbid();
++	for (mh = (struct MemHeader *)SysBase->MemList.lh_Head; mh->mh_Node.ln_Succ && n < 12;
++	     mh = (struct MemHeader *)mh->mh_Node.ln_Succ, n++) {
++		strncpy(r[n].name, mh->mh_Node.ln_Name ? mh->mh_Node.ln_Name : "?", 23); r[n].name[23] = 0;
++		r[n].lo = (ULONG)mh->mh_Lower; r[n].hi = (ULONG)mh->mh_Upper;
++		r[n].attr = mh->mh_Attributes; r[n].freeb = mh->mh_Free; r[n].pri = mh->mh_Node.ln_Pri;
++	}
++	Permit();
++	for (i = 0; i < n; i++) {
++		unsigned char *a = NULL, *b = NULL;
++		unsigned long us = 0, t, p;
++		/* two 64 KB blocks inside this region: AllocMem with the region's own
++		 * attributes may land elsewhere, so check the address */
++		if (r[i].freeb > 256 * 1024) {
++			ULONG want = r[i].attr & (MEMF_CHIP | MEMF_FAST | MEMF_PUBLIC);
++			a = AllocMem(65536, want); b = AllocMem(65536, want);
++			if (a && b && (ULONG)a >= r[i].lo && (ULONG)a < r[i].hi && (ULONG)b >= r[i].lo && (ULONG)b < r[i].hi) {
++				t = Sys_Micros();
++				for (p = 0; p < 16; p++) memcpy(a, b, 65536);
++				us = Sys_Micros() - t;
++			}
++			if (a) FreeMem(a, 65536);
++			if (b) FreeMem(b, 65536);
++		}
++		fprintf(f, "region %-20s %08lx-%08lx pri %4d %s%s free %6lu KB  memcpy %s",
++			r[i].name, r[i].lo, r[i].hi, r[i].pri,
++			(r[i].attr & MEMF_CHIP) ? "CHIP " : "", (r[i].attr & MEMF_FAST) ? "FAST " : "",
++			r[i].freeb / 1024, us ? "" : "n/a (not first in its class)\n");
++		if (us) fprintf(f, "%lu KB/ms\n", (unsigned long)(16UL * 64UL * 1000UL / us));
++	}
++	{ /* where Arnold's own memory comes from */
++		void *m = malloc(65536);
++		fprintf(f, "region malloc() block at %08lx\n", (unsigned long)m);
++		free(m);
++	}
++}
++
++void Sys_Bench(FILE *f)
++{
++	bench_regions(f);
++	enum { FB = 256 * 1024, CB = 64 * 1024 };
++	unsigned char *a = AllocMem(FB, MEMF_ANY), *b = AllocMem(FB, MEMF_ANY);
++	unsigned char *c = AllocMem(CB, MEMF_CHIP);
++	unsigned long t, i, x = 1, p;
++	if (!a || !b || !c) { fprintf(f, "bench: out of memory\n"); goto out; }
++	memset(a, 1, FB); memset(b, 1, FB); memset(c, 0, CB);
++
++	t = Sys_Micros();                                   /* integer ALU */
++	for (i = 0; i < 4000000; i++) x = (x * 3) + ((x >> 5) ^ i);
++	bench_sink = x; bench_line(f, "alu loop", Sys_Micros() - t, 4000000, "iter");
++
++	t = Sys_Micros();                                   /* render-like lookup + byte store */
++	for (i = 0; i < 2000000; i++) a[i & (FB - 1)] = (unsigned char)c2p_lo[b[(i * 7) & (FB - 1)]];
++	bench_line(f, "lookup+byte store", Sys_Micros() - t, 2000000, "iter");
++
++	t = Sys_Micros();                                   /* fast -> fast copy */
++	for (p = 0; p < 8; p++) memcpy(a, b, FB);
++	bench_line(f, "memcpy fast", Sys_Micros() - t, 8 * FB / 1024, "KB");
++
++	t = Sys_Micros();                                   /* long compare, equal data */
++	for (p = 0; p < 8; p++) {
++		const unsigned long *la = (const unsigned long *)a, *lb = (const unsigned long *)b;
++		for (i = 0; i < FB / 4; i++) if (la[i] != lb[i]) break;
++		bench_sink += i;
++	}
++	bench_line(f, "long compare fast", Sys_Micros() - t, 8 * FB / 1024, "KB");
++
++	t = Sys_Micros();                                   /* libnix memcmp */
++	for (p = 0; p < 4; p++) bench_sink += memcmp(a, b, FB);
++	bench_line(f, "memcmp (libnix)", Sys_Micros() - t, 4 * FB / 1024, "KB");
++
++	t = Sys_Micros();                                   /* byte stores */
++	for (p = 0; p < 4; p++) for (i = 0; i < FB; i++) a[i] = (unsigned char)i;
++	bench_line(f, "byte store fast", Sys_Micros() - t, 4 * FB / 1024, "KB");
++
++	t = Sys_Micros();                                   /* chip RAM long writes */
++	for (p = 0; p < 8; p++) { unsigned long *lc = (unsigned long *)c; for (i = 0; i < CB / 4; i++) lc[i] = i; }
++	bench_line(f, "chip long write", Sys_Micros() - t, 8 * CB / 1024, "KB");
++
++	t = Sys_Micros();                                   /* chip RAM long reads */
++	for (p = 0; p < 8; p++) { const unsigned long *lc = (const unsigned long *)c; for (i = 0; i < CB / 4; i++) x += lc[i]; }
++	bench_sink = x; bench_line(f, "chip long read", Sys_Micros() - t, 8 * CB / 1024, "KB");
++
++	t = Sys_Micros();                                   /* c2p of one 352-pixel line */
++	{
++		struct BitMap *bm = AllocBitMap(352, 2, 8, BMF_CLEAR, NULL);
++		int saved = SW;
++		if (bm) {
++			SW = 352;
++			t = Sys_Micros();
++			for (p = 0; p < 200; p++) c2p_line(a, bm, (int)(p & 1));
++			bench_line(f, "c2p line 352px (chip)", Sys_Micros() - t, 200, "line");
++			SW = saved;
++			FreeBitMap(bm);
++		}
++	}
++out:
++	if (a) FreeMem(a, FB);
++	if (b) FreeMem(b, FB);
++	if (c) FreeMem(c, CB);
++}
++
++void Sys_Heartbeat(long frame, long behind_us)
++{
++	Sys_Log("hb frame %ld late %lu skipped %lu behind_us %ld safe_waits %lu reuse_waits %lu refused %lu safe_out %d disp_out %d shown %d aud_q %d under %lu drops %lu",
++		frame, Sys_Perf.late_frames, Sys_Perf.skipped_frames, behind_us, hb_safe_waits, hb_reuse_waits, hb_refused,
++		safe_out, disp_out, shown, aud_count, aud_underruns, aud_drops);
++	hb_log_waits = 1;   /* from now on, log each wait too (rare) */
++}
+diff --git a/src/amiga/amiga_sys.h b/src/amiga/amiga_sys.h
+new file mode 100644
+index 0000000..3bc4c59
+--- /dev/null
++++ b/src/amiga/amiga_sys.h
+@@ -0,0 +1,95 @@
++/* Arnold on AmigaOS: the OS-facing half of the host. No Arnold headers here
++ * (cpcglob.h has its own BOOL, which clashes with exec/types.h), so
++ * host_amiga.c talks to the Amiga through this small interface only. */
++#ifndef AMIGA_SYS_H
++#define AMIGA_SYS_H
++
++/* Display: an 8-plane PAL screen, lores (cw = 384) or hires (cw = 768),
++ * double-buffered. The chunky buffer the core renders into is cw x ch; the
++ * screen may be smaller (overscan limits) and shows the centred part of it. */
++int  Sys_OpenDisplay(int cw, int ch, int hires);
++void Sys_CloseDisplay(void);
++void Sys_SetPaletteEntry(int index, unsigned char r, unsigned char g, unsigned char b);
++void Sys_ShowFrame(const unsigned char *chunky, int pitch);  /* c2p changed lines, flip */
++void Sys_MarkLineDirty(int y);  /* chunky line y changed: convert it into every buffer */
++long Sys_WaitFrame(void);                                    /* VBlank pacing; returns us behind schedule */
++
++/* Input. Sys_Poll drains Intuition events; returns 1 if the user asked to quit. */
++int  Sys_Poll(void);
++void Sys_RequestQuit(void);
++int  Sys_GetKey(int *rawcode, int *down, int *qualifier);  /* 1 while key events are queued */
++#define SYS_JOY_UP    0x01
++#define SYS_JOY_DOWN  0x02
++#define SYS_JOY_LEFT  0x04
++#define SYS_JOY_RIGHT 0x08
++#define SYS_JOY_FIRE1 0x10
++#define SYS_JOY_FIRE2 0x20
++unsigned Sys_ReadJoystick(void);   /* port 2 (the joystick port) */
++unsigned long Sys_JoyRaw(int port); /* last lowlevel.library ReadJoyPort value (KEYLOG) */
++
++/* Sound: Paula, channels 0 (left) and 1 (right), 8-bit, one block per frame.
++ * Sys_AudioOpen allocates the channels through audio.device; period is the
++ * Paula period, samples the block length (even). Sys_AudioQueue takes a frame
++ * of the core's 16-bit native-order stereo samples; a VBlank interrupt hands
++ * the queued blocks to Paula one per frame. */
++int  Sys_AudioOpen(int period, int samples);
++void Sys_AudioClose(void);
++void Sys_AudioQueue(const unsigned char *s16stereo, int samples);
++
++void Sys_AudioPause(void);           /* DMA off; the next Sys_AudioQueue restarts it */
++
++/* The menu screen (amiga_menu.c). Sys_Menu edits m and returns an action. */
++#define SYS_PATH 256
++struct SysMenu {
++	char cart[SYS_PATH], diska[SYS_PATH], diskb[SYS_PATH];
++	int sound, hires;
++	int skip, refresh;       /* frame skip (max in a row, 0 off) and fixed refresh (1 = every frame) */
++	int joykeys;             /* keyboard as joystick: 0 off, 1 cursors, 2 QAOP */
++	int pad;                 /* port 2 pad: 0 standard 2-button joystick, 1 CD32 pad */
++	int can_continue;        /* a machine is running (Help brought us here) */
++	char prefs[SYS_PATH];    /* shown in the status line */
++	int game_prefs;          /* the cartridge has its own <file>.prefs (shown) */
++	char status[80];         /* one-off status line for the next menu (cleared) */
++};
++enum { SYS_MENU_QUIT = 0, SYS_MENU_POWER, SYS_MENU_CONTINUE, SYS_MENU_RESET, SYS_MENU_SAVE,
++       SYS_MENU_SAVEGAME, SYS_MENU_FORGETGAME, SYS_MENU_SHOT };
++int  Sys_Menu(struct SysMenu *m);
++void Sys_MenuError(const char *text);
++void Sys_ShowPicture(void *screen, const char *name);   /* amiga_iff.c: modal IFF viewer */
++
++/* Workbench start (amiga_wb.c): fills st from the icon's ToolTypes and a
++ * project icon; returns 1 when started from Workbench. */
++struct SysStart { char prefs[SYS_PATH], media[SYS_PATH]; int menu, hires, nosound, skip, refresh, joykeys, pad; };   /* skip -1, refresh 0, joykeys -1: not given */
++int  Sys_WBStart(int argc, char **argv, struct SysStart *st);
++
++unsigned long Sys_Millis(void);
++
++/* Performance counters (timer.device E-clock): time in c2p (conversion plus the
++ * chip RAM writes), time waiting for flips/VBlank, lines converted. */
++typedef struct { unsigned long c2p_us, wait_us, c2p_lines, c2p_frames, line_bytes,
++                 wait_safe_us, wait_disp_us, wait_throttle_us, throttle_calls, late_frames,
++                 pal_us, palette_loads, skipped_frames,
++                 aud_underruns, aud_drops; } SysPerf;
++extern SysPerf Sys_Perf;
++unsigned long Sys_Micros(void);
++#include <stdio.h>
++void Sys_Bench(FILE *f);   /* BENCH argument: CPU, memory and chip RAM timings */
++void Sys_Message(const char *text);  /* requester */
++/* Diagnostic log, PROGDIR:Arnold.log (T: if that fails): one line per stage of
++ * the start-up and every error, flushed at once, so a failure on real
++ * hardware leaves a trace. Sys_LogOpen truncates it; Sys_Log appends. */
++void Sys_LogOpen(void);
++void Sys_Heartbeat(long frame, long behind_us);   /* one log line about once a second */
++extern int Sys_PadType;             /* 0 standard 2-button joystick, 1 CD32 pad (no auto-detection) */
++extern int Sys_NoCD32;               /* NOCD32: port 2 as a plain 2-button joystick */
++extern int Sys_PalAll;              /* PALALL: reload the whole palette every frame */
++extern int Sys_AllLines;            /* ALLLINES: convert every line every frame (no dirty-line tracking) */
++extern int Sys_SafeFlip;            /* SAFEFLIP: wait for the previous flip's messages before the next */
++extern int Sys_Osd, Sys_OsdSkip;     /* OSD: test-mode label in the picture's corner; skip value it shows */
++#define SYS_OSD_PEN 255             /* palette entry the host keeps for the label (yellow) */
++void Sys_MakeDir(const char *path);   /* create a drawer if it is missing (SNAPDIR) */
++void Sys_LogStart(int argc);        /* the first line: machine, memory, start mode */
++void Sys_Log(const char *fmt, ...);
++void Sys_LogClose(void);
++
++#endif
+diff --git a/src/amiga/amiga_wb.c b/src/amiga/amiga_wb.c
+new file mode 100644
+index 0000000..a838581
+--- /dev/null
++++ b/src/amiga/amiga_wb.c
+@@ -0,0 +1,85 @@
++/* Arnold on AmigaOS: Workbench start. With libnix, main() gets argc == 0 and
++ * argv == the WBStartup message. We read the PREFS ToolType from the icon we
++ * were started from (Arnold's own, or a preset project icon) and take a project icon
++ * (a .cpr/.dsk/.sna double-clicked, or dropped on a preset) as the media.
++ * The current directory is set to the icon's drawer, so relative names work. */
++#include <exec/types.h>
++#include <workbench/startup.h>
++#include <workbench/workbench.h>
++#include <proto/exec.h>
++#include <proto/dos.h>
++#include <proto/icon.h>
++#include <string.h>
++#include <stdlib.h>
++#include "amiga_sys.h"
++
++struct Library *IconBase;
++
++/* The ToolTypes of an icon (PREFS, MENU, HIRES, NOSOUND, SKIP, REFRESH) into st.
++ * Returns 1 if the icon was found. */
++static int read_tooltypes(STRPTR name, struct SysStart *st)
++{
++	struct DiskObject *dobj = GetDiskObject(name);
++	char *tt;
++	if (!dobj) return 0;
++	tt = (char *)FindToolType((STRPTR *)dobj->do_ToolTypes, (STRPTR)"PREFS");
++	if (tt) strncpy(st->prefs, tt, SYS_PATH - 1);
++	if (FindToolType((STRPTR *)dobj->do_ToolTypes, (STRPTR)"MENU")) st->menu = 1;
++	if (FindToolType((STRPTR *)dobj->do_ToolTypes, (STRPTR)"HIRES")) st->hires = 1;
++	if (FindToolType((STRPTR *)dobj->do_ToolTypes, (STRPTR)"NOSOUND")) st->nosound = 1;
++	tt = (char *)FindToolType((STRPTR *)dobj->do_ToolTypes, (STRPTR)"SKIP");
++	if (tt) st->skip = atoi(tt);
++	tt = (char *)FindToolType((STRPTR *)dobj->do_ToolTypes, (STRPTR)"REFRESH");
++	if (tt) st->refresh = atoi(tt);
++	tt = (char *)FindToolType((STRPTR *)dobj->do_ToolTypes, (STRPTR)"JOYKEYS");
++	if (tt) st->joykeys = atoi(tt);
++	tt = (char *)FindToolType((STRPTR *)dobj->do_ToolTypes, (STRPTR)"PAD");
++	if (tt) st->pad = !strcmp(tt, "CD32") || atoi(tt) == 1;
++	FreeDiskObject(dobj);
++	return 1;
++}
++
++int Sys_WBStart(int argc, char **argv, struct SysStart *st)
++{
++	struct WBStartup *wbs;
++	struct WBArg *wa;
++	memset(st, 0, sizeof *st);
++	st->skip = -1;
++	st->joykeys = -1; st->pad = -1;
++	if (argc != 0) return 0;
++	wbs = (struct WBStartup *)argv;
++	if (!wbs || wbs->sm_NumArgs < 1) return 0;
++	if (!IconBase) IconBase = OpenLibrary((STRPTR)"icon.library", 37);
++
++	wa = wbs->sm_ArgList;
++	if (wa[0].wa_Lock) CurrentDir(wa[0].wa_Lock);
++	if (IconBase && wa[0].wa_Name) read_tooltypes(wa[0].wa_Name, st);
++	/* A project icon. A preset (like AmiMSX's: default tool Arnold, PREFS=<its
++	 * own data file>) gives its ToolTypes; the PREFS file is taken from the
++	 * preset's drawer. Anything else (a .cpr/.dsk/.sna) is the media file. */
++	if (wbs->sm_NumArgs > 1 && wa[1].wa_Name) {
++		BPTR old = CurrentDir(wa[1].wa_Lock);
++		struct SysStart pre;
++		memset(&pre, 0, sizeof pre);
++		pre.skip = -1;
++		pre.joykeys = -1; pre.pad = -1;
++		if (IconBase && read_tooltypes(wa[1].wa_Name, &pre) && pre.prefs[0]) {
++			char dir[SYS_PATH];
++			if (strchr(pre.prefs, ':') == NULL && NameFromLock(wa[1].wa_Lock, (STRPTR)dir, SYS_PATH)) {
++				AddPart((STRPTR)dir, (STRPTR)pre.prefs, SYS_PATH);
++				strncpy(pre.prefs, dir, SYS_PATH - 1);
++			}
++			strcpy(st->prefs, pre.prefs);
++			if (pre.menu) st->menu = 1;
++			if (pre.hires) st->hires = 1;
++			if (pre.nosound) st->nosound = 1;
++			if (pre.skip >= 0) st->skip = pre.skip;
++			if (pre.refresh > 0) st->refresh = pre.refresh;
++			if (pre.joykeys >= 0) st->joykeys = pre.joykeys;
++			if (pre.pad >= 0) st->pad = pre.pad;
++		} else if (NameFromLock(wa[1].wa_Lock, (STRPTR)st->media, SYS_PATH))
++			AddPart((STRPTR)st->media, wa[1].wa_Name, SYS_PATH);
++		CurrentDir(old);
++	}
++	return 1;
++}
+diff --git a/src/amiga/audio_conv.h b/src/amiga/audio_conv.h
+new file mode 100644
+index 0000000..2a7118a
+--- /dev/null
++++ b/src/amiga/audio_conv.h
+@@ -0,0 +1,15 @@
++/* Arnold core audio (16-bit stereo, VolumeLookup16Bit values 0..31744, native
++ * byte order) to two signed 8-bit Paula channels. Shared by the Amiga host and
++ * the headless PC build, so the PC's WAV dump checks the same conversion. */
++#ifndef AUDIO_CONV_H
++#define AUDIO_CONV_H
++static void Audio_SplitTo8(const unsigned short *s16, signed char *l, signed char *r, int samples)
++{
++	int i;
++	for (i = 0; i < samples; i++) {
++		/* high byte 0..124, centred to -124..124 */
++		l[i] = (signed char)((int)(s16[2 * i] >> 7) - 124);
++		r[i] = (signed char)((int)(s16[2 * i + 1] >> 7) - 124);
++	}
++}
++#endif
+diff --git a/src/amiga/host_amiga.c b/src/amiga/host_amiga.c
+new file mode 100644
+index 0000000..8596521
+--- /dev/null
++++ b/src/amiga/host_amiga.c
+@@ -0,0 +1,634 @@
++/* Arnold host for AmigaOS: implements src/cpc/host.h on top of amiga_sys.c.
++ * The core renders into an 8-bit chunky buffer (384 x 272, one byte per
++ * pixel, PaletteRemap indices); amiga_sys converts it to AGA bitplanes.
++ * Keyboard: Amiga rawkeys -> CPC key matrix, or the joystick (JOYKEYS, see joykey()). Joystick port 2 -> CPC joystick 0.
++ * Sound: Paula, 8-bit stereo, 22.2 kHz, one block a frame (NOSOUND turns it off). */
++#include "../cpc/host.h"
++#include "../cpc/arnold.h"
++#include "../cpc/cpc.h"
++#include "../cpc/render.h"
++#include "../cpc/asic.h"
++#include "../cpc/snapshot.h"
++#include "../cpc/diskimage/diskimg.h"
++#include "amiga_sys.h"
++#include "screenshot.h"
++#include "keyscript.h"
++#include <stdio.h>
++#include <stdlib.h>
++#include <string.h>
++
++unsigned char *chunky;          /* W x H, one byte a pixel: 384 x 272 lores, 768 x 272 hires */
++int W, H;
++extern void Palette_Set(void);
++
++static GRAPHICS_BUFFER_INFO bi;
++static GRAPHICS_BUFFER_COLOUR_FORMAT cf;
++/* 444 samples a CPC frame (the core makes rate / 50.08), played at Paula
++ * period 160: 444 x 160 = 71040 colour clocks, one PAL frame (71051). */
++#define AUD_PERIOD 160
++#define AUD_SAMPLES 444
++static SOUND_PLAYBACK_FORMAT sf = {2, 16, 22240};
++static struct SysMenu menu;
++static int display_open, audio_open;
++unsigned char hostpal[256][3];
++static FILE *keylog;                  /* KEYLOG argument: raw key codes to PROGDIR:keys.log */
++/* Test runs: KEYS=<script> drives the CPC keyboard by frame, SNAPDIR=<dir> takes
++ * the SNAP dumps (<frame>.png) and a "done" file at QUIT. */
++static int script_on;
++static int turbo;                     /* TURBO argument: no 50 Hz wait, screen every 25th frame */
++static unsigned long turbo_count;
++static long script_frame;
++static char snapdir[SYS_PATH] = "PROGDIR:snaps";
++static int script_quit;
++/* Frame skip (14 Oct 2026): when the emulation ends a frame behind the 50 Hz
++ * schedule, the next frame is emulated but not drawn, so a slow machine keeps
++ * the game and its sound at full speed and shows fewer frames. skip_max is the
++ * most frames skipped in a row (SKIP=n, ToolType SKIP=n, prefs skip=n; 0 = off).
++ * REFRESH=n (ToolType, prefs refresh=n) draws at most one frame in n, steadily,
++ * like AmiMSX's Refresh setting; the adaptive skip works on top of it.
++ * A frame a test script will SNAP is always drawn. The core asks about the
++ * frame after next (it turns drawing on early, see arnold.c). */
++static int skip_max = 3, skip_run, refresh = 1;
++static unsigned long refresh_count;
++static long behind_us;
++extern int (*CPC_SkipNextFrameHook)(void);
++
++/* Performance figures for a scripted run, from frame PERF_SKIP (after the
++ * cartridge has started) to QUIT. Times come from the Amiga's E-clock, so in
++ * WinUAE they are emulated-machine time. "work" = emulation core + c2p (with
++ * its chip RAM writes): what has to fit into the 20 ms of a PAL frame. */
++#define PERF_SKIP 50
++static unsigned long perf_t0, perf_t1, perf_snap_us;
++
++static void perf_report(FILE *f)
++{
++	long n = script_frame - 1 - PERF_SKIP;            /* frames measured */
++	unsigned long total, c2p, wait, core, work, cf;
++	if (n <= 0 || !perf_t0) return;
++	total = perf_t1 - perf_t0;
++	c2p = Sys_Perf.c2p_us; wait = Sys_Perf.wait_us;
++	core = total - c2p - wait - Sys_Perf.pal_us - perf_snap_us;
++	work = (core + c2p + Sys_Perf.pal_us) / n;         /* us of work per CPC frame */
++	cf = Sys_Perf.c2p_frames ? Sys_Perf.c2p_frames : 1;
++	fprintf(f, "perf frames=%ld wall_ms=%lu fps_x10=%lu\n", n, total / 1000, (unsigned long)n * 10000UL / (total / 1000 ? total / 1000 : 1));   /* 32-bit safe */
++	fprintf(f, "perf core_us_per_frame=%lu c2p_us_per_shown_frame=%lu wait_us_per_frame=%lu\n",
++		core / n, c2p / cf, wait / n);
++	fprintf(f, "perf c2p_lines_per_shown_frame=%lu chip_bytes_per_shown_frame=%lu shown_frames=%lu\n",
++		Sys_Perf.c2p_lines / cf, Sys_Perf.c2p_lines * Sys_Perf.line_bytes / cf, Sys_Perf.c2p_frames);
++	fprintf(f, "perf work_us_per_frame=%lu budget_percent=%lu\n", work, work * 100 / 20000);
++	fprintf(f, "perf wait_safe_us_per_frame=%lu wait_disp_us_per_frame=%lu wait_throttle_us_per_frame=%lu throttle_calls=%lu\n",
++		Sys_Perf.wait_safe_us / n, Sys_Perf.wait_disp_us / n, Sys_Perf.wait_throttle_us / n, Sys_Perf.throttle_calls);
++	fprintf(f, "perf late_frames=%lu palette_us_per_frame=%lu palette_loads=%lu\n", Sys_Perf.late_frames, Sys_Perf.pal_us / n, Sys_Perf.palette_loads);
++	fprintf(f, "perf skipped_frames=%lu skip_max=%d refresh=%d shown_fps_x10=%lu\n", Sys_Perf.skipped_frames, skip_max, refresh, Sys_Perf.c2p_frames * 10000UL / (total / 1000 ? total / 1000 : 1));
++	fprintf(f, "perf sound=%d audio_underruns=%lu audio_drops=%lu\n", audio_open, Sys_Perf.aud_underruns, Sys_Perf.aud_drops);
++}
++
++static void script_setkey(int key, int down) { if (down) CPC_SetKey(key); else CPC_ClearKey(key); }
++
++static void script_snap(void)
++{
++	char name[SYS_PATH + 32];
++	extern unsigned char *chunky; extern int W, H; extern unsigned char hostpal[256][3];
++	sprintf(name, "%s/%05ld.png", snapdir, script_frame);
++	Screenshot_SavePNG(name, chunky, W, H, W, hostpal);
++}
++static unsigned char audio_tmp[4096];
++static unsigned long audio_tmp_len;
++
++/* Amiga rawkey -> CPC key. UK Amiga layout; the CPC keys @ [ : ; ] sit where
++ * the Amiga has [ ] ; ' #. -1 = no CPC key. Help is a host key. */
++static const signed char rawmap[128] = {
++/*00*/ CPC_KEY_HAT, CPC_KEY_1, CPC_KEY_2, CPC_KEY_3, CPC_KEY_4, CPC_KEY_5, CPC_KEY_6, CPC_KEY_7,
++/*08*/ CPC_KEY_8, CPC_KEY_9, CPC_KEY_ZERO, CPC_KEY_MINUS, CPC_KEY_HAT, CPC_KEY_BACKSLASH, -1, CPC_KEY_F0,
++/*10*/ CPC_KEY_Q, CPC_KEY_W, CPC_KEY_E, CPC_KEY_R, CPC_KEY_T, CPC_KEY_Y, CPC_KEY_U, CPC_KEY_I,
++/*18*/ CPC_KEY_O, CPC_KEY_P, CPC_KEY_AT, CPC_KEY_OPEN_SQUARE_BRACKET, -1, CPC_KEY_F1, CPC_KEY_F2, CPC_KEY_F3,
++/*20*/ CPC_KEY_A, CPC_KEY_S, CPC_KEY_D, CPC_KEY_F, CPC_KEY_G, CPC_KEY_H, CPC_KEY_J, CPC_KEY_K,
++/*28*/ CPC_KEY_L, CPC_KEY_COLON, CPC_KEY_SEMICOLON, CPC_KEY_CLOSE_SQUARE_BRACKET, -1, CPC_KEY_F4, CPC_KEY_F5, CPC_KEY_F6,
++/*30*/ -1, CPC_KEY_Z, CPC_KEY_X, CPC_KEY_C, CPC_KEY_V, CPC_KEY_B, CPC_KEY_N, CPC_KEY_M,
++/*38*/ CPC_KEY_COMMA, CPC_KEY_DOT, CPC_KEY_FORWARD_SLASH, -1, CPC_KEY_FDOT, CPC_KEY_F7, CPC_KEY_F8, CPC_KEY_F9,
++/*40*/ CPC_KEY_SPACE, CPC_KEY_DEL, CPC_KEY_TAB, CPC_KEY_SMALL_ENTER, CPC_KEY_RETURN, CPC_KEY_ESC, CPC_KEY_CLR, -1,
++/*48*/ -1, -1, -1, -1, CPC_KEY_CURSOR_UP, CPC_KEY_CURSOR_DOWN, CPC_KEY_CURSOR_RIGHT, CPC_KEY_CURSOR_LEFT,
++/*50*/ CPC_KEY_F1, CPC_KEY_F2, CPC_KEY_F3, CPC_KEY_F4, CPC_KEY_F5, CPC_KEY_F6, CPC_KEY_F7, CPC_KEY_F8,
++/*58*/ CPC_KEY_F9, CPC_KEY_F0, -1, -1, -1, -1, -1, -1,
++/*60*/ CPC_KEY_SHIFT, CPC_KEY_SHIFT, CPC_KEY_CAPS_LOCK, CPC_KEY_CONTROL, CPC_KEY_COPY, -1, -1, -1,   /* Right Alt: joystick fire 2, see joykey() */
++/*68*/ -1, -1, -1, -1, -1, -1, -1, -1,
++/*70*/ -1, -1, -1, -1, -1, -1, -1, -1,
++/*78*/ -1, -1, -1, -1, -1, -1, -1, -1 };
++#define RAW_HELP 0x5f
++
++void Host_HandlePrinterOutput(void) {}
++
++BOOL Host_SetDisplay(int Type, int Width, int Height, int Depth)
++{
++	if (!display_open) {
++		W = Width; H = Height;
++		chunky = malloc(W * H);
++		if (!chunky) return FALSE;
++		memset(chunky, 0, W * H);
++		if (!Sys_OpenDisplay(W, H, W > 400)) return FALSE;
++		display_open = 1;
++	}
++	return TRUE;
++}
++
++GRAPHICS_BUFFER_COLOUR_FORMAT *Host_GetGraphicsBufferColourFormat(void)
++{
++	cf.BPP = 8;
++	cf.Red.BPP = 3; cf.Red.Mask = 0xe0; cf.Red.Shift = 5;
++	cf.Green.BPP = 3; cf.Green.Mask = 0x1c; cf.Green.Shift = 2;
++	cf.Blue.BPP = 2; cf.Blue.Mask = 0x03; cf.Blue.Shift = 0;
++	return &cf;
++}
++
++GRAPHICS_BUFFER_INFO *Host_GetGraphicsBufferInfo(void)
++{
++	bi.pSurface = chunky; bi.Width = W; bi.Height = H; bi.Pitch = W;
++	return &bi;
++}
++
++BOOL Host_LockGraphicsBuffer(void) { return TRUE; }
++void Host_UnlockGraphicsBuffer(void) {}
++
++void Host_SwapGraphicsBuffers(void)
++{
++	/* Palette_Set() is commented out in render5.c's Render_DumpDisplay, so
++	 * push the pens the core allocated this frame ourselves. */
++	Palette_Set();
++	/* TURBO (test runs): the core still renders every frame into chunky (SNAP
++	 * dumps it), but only every 25th frame goes to the screen. */
++	Sys_OsdSkip = skip_max;
++	if (!turbo || (turbo_count++ % 25) == 0) Sys_ShowFrame(chunky, W);
++}
++
++void Host_SetPaletteEntry(int i, unsigned char r, unsigned char g, unsigned char b)
++{
++	if (i >= 0 && i < 256) { hostpal[i][0] = r; hostpal[i][1] = g; hostpal[i][2] = b; }
++	Sys_SetPaletteEntry(i, r, g, b);
++}
++
++/* Screenshot: PROGDIR:Arnold-NNN.iff and .png, first free number. */
++static void screenshot(void)
++{
++	char iff[64], png[64];
++	int n;
++	FILE *t;
++	if (!chunky) return;
++	for (n = 1; n < 1000; n++) {
++		sprintf(iff, "PROGDIR:Arnold-%03d.iff", n);
++		t = fopen(iff, "rb"); if (!t) break; fclose(t);
++	}
++	sprintf(png, "PROGDIR:Arnold-%03d.png", n);
++	if (Screenshot_SaveILBM(iff, chunky, W, H, W, hostpal, W > 400) && Screenshot_SavePNG(png, chunky, W, H, W, hostpal))
++		sprintf(menu.status, "Saved Arnold-%03d.iff and .png", n);
++	else
++		sprintf(menu.status, "Screenshot failed (Arnold-%03d)", n);
++}
++
++/* ---- sound: Paula via amiga_sys, one block a frame ---- */
++void Host_WriteDataToSoundBuffer(unsigned char *p, unsigned long l) {}
++BOOL Host_AudioPlaybackPossible(void) { return audio_open; }
++SOUND_PLAYBACK_FORMAT *Host_GetSoundPlaybackFormat(void) { return &sf; }
++BOOL Host_LockAudioBuffer(unsigned char **p1, unsigned long *l1, unsigned char **p2, unsigned long *l2, int size)
++{
++	if (!audio_open || size > (int)sizeof(audio_tmp)) return FALSE;
++	*p1 = audio_tmp; *l1 = size; *p2 = NULL; *l2 = 0;
++	audio_tmp_len = size;
++	return TRUE;
++}
++void Host_UnLockAudioBuffer(void) { Sys_AudioQueue(audio_tmp, audio_tmp_len / 4); }
++
++/* Once a frame: the core mixes the frame's sound (Host_LockAudioBuffer /
++ * Host_UnLockAudioBuffer queue it for Paula), then the 50 Hz wait. The Windows
++ * host does the same; without the CPC_UpdateAudio call there is no sound. */
++void Host_Throttle(void)
++{
++	if (audio_open) CPC_UpdateAudio();
++	behind_us = turbo ? 0 : Sys_WaitFrame();   /* TURBO: run flat out */
++}
++
++static int skip_hook(void)
++{
++	int fixed = refresh > 1 && (refresh_count++ % refresh) != 0;
++	if (script_on && KeyScript_SnapAt(script_frame + 1)) { skip_run = 0; return 0; }
++	if (fixed) { Sys_Perf.skipped_frames++; return 1; }
++	if (skip_max <= 0 || behind_us <= 0 || skip_run >= skip_max) { skip_run = 0; return 0; }
++	skip_run++;
++	Sys_Perf.skipped_frames++;
++	return 1;
++}
++void Host_DoDriveLEDIndicator(int Drive, BOOL State) {}
++void Host_SetDirectory(char *d) {}
++unsigned long Host_GetCurrentTimeInMilliseconds(void) { return Sys_Millis(); }
++
++static unsigned joy_prev;
++
++/* Keyboard as joystick (16 Oct 2026). joykeys: 0 = off (the keyboard is the CPC
++ * keyboard; Space also gives fire 2 and Right Alt is fire 2), 1 = cursor keys
++ * move, Z / Ctrl fire 1, X / Space fire 2, 2 = QAOP move, Space fire 1, M fire 2.
++ * In modes 1 and 2 those keys drive only the joystick. The keyboard's joystick
++ * bits (kb_joy) are ORed with the real joystick every frame, so the pad and the
++ * keys can be used together and releasing one never cancels the other; any
++ * number of keys may be held at once. */
++static int joykeys, global_joykeys;
++static unsigned kb_joy;
++static const struct { unsigned char mode, code; unsigned bit; } joykey_map[] = {
++	{1, 0x4c, SYS_JOY_UP}, {1, 0x4d, SYS_JOY_DOWN}, {1, 0x4f, SYS_JOY_LEFT}, {1, 0x4e, SYS_JOY_RIGHT},
++	{1, 0x31, SYS_JOY_FIRE1}, {1, 0x63, SYS_JOY_FIRE1}, {1, 0x32, SYS_JOY_FIRE2}, {1, 0x40, SYS_JOY_FIRE2},
++	{2, 0x10, SYS_JOY_UP}, {2, 0x20, SYS_JOY_DOWN}, {2, 0x18, SYS_JOY_LEFT}, {2, 0x19, SYS_JOY_RIGHT},
++	{2, 0x40, SYS_JOY_FIRE1}, {2, 0x37, SYS_JOY_FIRE2},
++	{0, 0x40, SYS_JOY_FIRE2}, {1, 0x65, SYS_JOY_FIRE2}, {2, 0x65, SYS_JOY_FIRE2}, {0, 0x65, SYS_JOY_FIRE2},
++};
++/* returns 1 if the key belongs to the joystick only (no CPC key) */
++static int joykey(int code, int down)
++{
++	int i, only = 0, hit = 0;
++	for (i = 0; i < (int)(sizeof joykey_map / sizeof joykey_map[0]); i++)
++		if (joykey_map[i].code == code && joykey_map[i].mode == joykeys) {
++			if (down) kb_joy |= joykey_map[i].bit; else kb_joy &= ~joykey_map[i].bit;
++			hit = 1;
++		}
++	if (hit && (joykeys != 0 || code == 0x65)) only = 1;   /* off: Space stays the CPC Space too */
++	return only;
++}
++
++BOOL Host_ProcessSystemEvents(void)
++{
++	int code, down, qual;
++	unsigned joy, diff;
++	static const struct { unsigned bit; int key; } jk[] = {
++		{SYS_JOY_UP, CPC_KEY_JOY_UP}, {SYS_JOY_DOWN, CPC_KEY_JOY_DOWN},
++		{SYS_JOY_LEFT, CPC_KEY_JOY_LEFT}, {SYS_JOY_RIGHT, CPC_KEY_JOY_RIGHT},
++		{SYS_JOY_FIRE1, CPC_KEY_JOY_FIRE1}, {SYS_JOY_FIRE2, CPC_KEY_JOY_FIRE2} };
++	int i;
++
++	if (script_on) {
++		int fl = KeyScript_Frame(script_frame, script_setkey);
++		if (script_frame == PERF_SKIP) { perf_t0 = Sys_Micros(); memset(&Sys_Perf, 0, sizeof Sys_Perf); perf_snap_us = 0; }
++		if (fl & KS_SNAP) { unsigned long t = Sys_Micros(); script_snap(); perf_snap_us += Sys_Micros() - t; }
++		if (fl & KS_QUIT) { script_quit = 1; perf_t1 = Sys_Micros(); Sys_RequestQuit(); }
++		script_frame++;
++	}
++	{ static long hb; if (++hb % 50 == 0) Sys_Heartbeat(hb, behind_us); }
++	if (Sys_Poll()) return TRUE;
++	while (Sys_GetKey(&code, &down, &qual)) {
++		if (keylog) { fprintf(keylog, "%02x %s q=%04x\n", code, down ? "down" : "up", qual); fflush(keylog); }
++		if (code == RAW_HELP) { if (down) Sys_RequestQuit(); continue; }
++		if (code < 128 && joykey(code, down)) continue;
++		if (code == 0x0d) {
++			/* the Amiga's \ key: plain = the CPC's \, with Shift = the CPC's |
++			 * (Shift+@), which RSX commands such as |CPM and Orion Prime's loader
++			 * need (17 Oct 2026). Both cleared on release. */
++			if (down) CPC_SetKey((qual & 3) ? CPC_KEY_AT : CPC_KEY_BACKSLASH);
++			else { CPC_ClearKey(CPC_KEY_AT); CPC_ClearKey(CPC_KEY_BACKSLASH); }
++			continue;
++		}
++		if (code < 128 && rawmap[code] >= 0) {
++			if (down) CPC_SetKey(rawmap[code]); else CPC_ClearKey(rawmap[code]);
++		}
++	}
++	joy = Sys_ReadJoystick() | kb_joy;
++	diff = joy ^ joy_prev;
++	if (keylog && diff) { fprintf(keylog, "joy %02x raw %08lx\n", joy, Sys_JoyRaw(1)); fflush(keylog); }
++	for (i = 0; i < 6; i++)
++		if (diff & jk[i].bit) { if (joy & jk[i].bit) CPC_SetKey(jk[i].key); else CPC_ClearKey(jk[i].key); }
++	joy_prev = joy;
++	return Sys_Poll();
++}
++
++/* ---- files ---- */
++HOST_FILE_HANDLE Host_OpenFile(const char *n, int Access) { return (HOST_FILE_HANDLE)fopen(n, Access == HOST_FILE_ACCESS_READ ? "rb" : "wb"); }
++void Host_CloseFile(HOST_FILE_HANDLE h) { if (h) fclose((FILE *)h); }
++int Host_GetFileSize(HOST_FILE_HANDLE h) { FILE *f = (FILE *)h; long p = ftell(f), s; fseek(f, 0, SEEK_END); s = ftell(f); fseek(f, p, SEEK_SET); return (int)s; }
++void Host_WriteData(HOST_FILE_HANDLE h, unsigned char *d, unsigned long l) { fwrite(d, 1, l, (FILE *)h); }
++void Host_ReadData(HOST_FILE_HANDLE h, unsigned char *d, unsigned long l) { fread(d, 1, l, (FILE *)h); }
++
++BOOL Host_LoadFile(const char *n, unsigned char **pp, unsigned long *pl)
++{
++	FILE *f = fopen(n, "rb"); long s; unsigned char *p;
++	*pp = NULL; *pl = 0;
++	if (!f) return FALSE;
++	fseek(f, 0, SEEK_END); s = ftell(f); fseek(f, 0, SEEK_SET);
++	p = malloc(s);
++	if (!p || fread(p, 1, s, f) != (size_t)s) { fclose(f); free(p); return FALSE; }
++	fclose(f); *pp = p; *pl = s; return TRUE;
++}
++BOOL Host_SaveFile(const char *n, unsigned char *p, unsigned long l)
++{
++	FILE *f = fopen(n, "wb"); if (!f) return FALSE;
++	fwrite(p, 1, l, f); fclose(f); return TRUE;
++}
++BOOL LoadFile(const char *n, unsigned char **pp, unsigned long *pl) { return Host_LoadFile(n, pp, pl); }
++
++/* Argument keywords ignore case, as AmigaDOS does (13 Oct 2026: "Arnold bench"
++ * typed in lower case started the emulator instead). Return 0 on a match. */
++static int kwncmp(const char *a, const char *kw, int n)
++{
++	while (n-- > 0) {
++		char x = *a++, y = *kw++;
++		if (x >= 'a' && x <= 'z') x -= 32;
++		if (x != y) return 1;
++		if (!x) return 0;
++	}
++	return 0;
++}
++static int kwcmp(const char *a, const char *kw) { return kwncmp(a, kw, (int)strlen(kw) + 1); }
++
++static int has_ext(const char *n, const char *ext)
++{
++	int ln = strlen(n), le = strlen(ext);
++	if (ln < le) return 0;
++	n += ln - le;
++	while (*ext) { char a = *n++, b = *ext++; if (a >= 'A' && a <= 'Z') a += 32; if (a != b) return 0; }
++	return 1;
++}
++
++/* Arnold [file ...] [NOSOUND] [HIRES] [MENU] [P=prefs] [SKIP=n] [REFRESH=n] [JOYKEYS=0|1|2]: .cpr cartridge (default
++ * PROGDIR:roms/system.cpr), .dsk disk in drive A (a second one in B), .sna
++ * snapshot. Starts straight into the emulation unless MENU is given or
++ * nothing could be loaded. Help brings up the menu; Continue resumes. */
++static unsigned char *cart_data;      /* kept: the core may refer to it */
++
++/* Prefs: a text file of key=value lines. PREFS=<file> ToolType or P=<file>
++ * argument names it; default PROGDIR:Arnold.prefs. Save Prefs writes it. */
++static void prefs_load(void)
++{
++	FILE *f = fopen(menu.prefs, "r");
++	char line[SYS_PATH + 16], *v;
++	if (!f) return;
++	while (fgets(line, sizeof line, f)) {
++		line[strcspn(line, "\r\n")] = 0;
++		v = strchr(line, '='); if (!v) continue; *v++ = 0;
++		if (!strcmp(line, "sound")) menu.sound = atoi(v);
++		else if (!strcmp(line, "hires")) menu.hires = atoi(v);
++		else if (!strcmp(line, "skip")) skip_max = atoi(v);
++		else if (!strcmp(line, "refresh")) refresh = atoi(v);
++		else if (!strcmp(line, "joykeys")) joykeys = atoi(v);
++		else if (!strcmp(line, "pad")) Sys_PadType = atoi(v) == 1;
++		else if (!strcmp(line, "cart") && v[0]) strncpy(menu.cart, v, SYS_PATH - 1);
++		else if (!strcmp(line, "diska")) strncpy(menu.diska, v, SYS_PATH - 1);
++		else if (!strcmp(line, "diskb")) strncpy(menu.diskb, v, SYS_PATH - 1);
++	}
++	fclose(f);
++}
++
++static void prefs_save(void)
++{
++	FILE *f = fopen(menu.prefs, "w");
++	char msg[SYS_PATH + 32];
++	if (!f) { sprintf(msg, "Can't write prefs\n%s", menu.prefs); Sys_MenuError(msg); return; }
++	fprintf(f, "; Arnold prefs\nsound=%d\nhires=%d\nskip=%d\nrefresh=%d\njoykeys=%d\npad=%d\ncart=%s\ndiska=%s\ndiskb=%s\n",
++		menu.sound, menu.hires, skip_max, refresh, global_joykeys, Sys_PadType, menu.cart, menu.diska, menu.diskb);
++	fclose(f);
++}
++
++/* Per-game settings: <cartridge>.prefs beside the file (sound, hires), applied
++ * when that cartridge is powered on; the global prefs come back otherwise. */
++static int global_sound, global_hires;
++static void game_prefs_name(char *out) { sprintf(out, "%s.prefs", menu.cart); }
++
++static void game_prefs_apply(void)
++{
++	char name[SYS_PATH + 8], line[64], *v;
++	FILE *f;
++	menu.sound = global_sound; menu.hires = global_hires; menu.game_prefs = 0;
++	joykeys = global_joykeys;
++	game_prefs_name(name);
++	f = fopen(name, "r");
++	if (!f) return;
++	while (fgets(line, sizeof line, f)) {
++		line[strcspn(line, "\r\n")] = 0;
++		v = strchr(line, '='); if (!v) continue; *v++ = 0;
++		if (!strcmp(line, "sound")) menu.sound = atoi(v);
++		else if (!strcmp(line, "hires")) menu.hires = atoi(v);
++		else if (!strcmp(line, "joykeys")) joykeys = atoi(v);
++	}
++	fclose(f);
++	menu.game_prefs = 1;
++}
++
++static void game_prefs_save(void)
++{
++	char name[SYS_PATH + 8], msg[SYS_PATH + 40];
++	FILE *f;
++	game_prefs_name(name);
++	f = fopen(name, "w");
++	if (!f) { sprintf(msg, "Can't write game settings\n%s", name); Sys_MenuError(msg); return; }
++	fprintf(f, "; Arnold game settings\nsound=%d\nhires=%d\njoykeys=%d\n", menu.sound, menu.hires, joykeys);
++	fclose(f);
++	menu.game_prefs = 1;
++}
++
++static void game_prefs_forget(void)
++{
++	char name[SYS_PATH + 8];
++	game_prefs_name(name);
++	remove(name);
++	menu.game_prefs = 0;
++	menu.sound = global_sound; menu.hires = global_hires; joykeys = global_joykeys;
++}
++
++static int load_media(const char *what, const char *name, unsigned char **pp, unsigned long *pl)
++{
++	char msg[SYS_PATH + 40];
++	if (!name[0]) return 0;
++	if (Host_LoadFile(name, pp, pl)) return 1;
++	sprintf(msg, "Can't load %s\n%s", what, name);
++	Sys_MenuError(msg);
++	return 0;
++}
++
++/* Disks in the drives, by file name. A change made in the menu is applied on
++ * Continue and Reset as well as on Power ON, so a multi-disk game can have its
++ * next disk put in without a power cycle, and Eject really empties the drive
++ * (before 16 Oct 2026 an ejected disk stayed in, and the loaded file was
++ * never freed). The core keeps its own copy of the image. */
++static char disk_in[2][SYS_PATH];
++static void apply_disk(int drive, const char *name)
++{
++	unsigned char *data; unsigned long len;
++	char msg[SYS_PATH + 40];
++	if (!strcmp(disk_in[drive], name)) return;
++	if (!name[0]) {
++		DiskImage_RemoveDisk(drive);
++		disk_in[drive][0] = 0;
++		Sys_Log("drive %c: ejected", 'A' + drive);
++		return;
++	}
++	if (!load_media("disk", name, &data, &len)) return;
++	if (DiskImage_InsertDisk(drive, data, len) != ARNOLD_STATUS_OK) {
++		sprintf(msg, "Not a CPC disk image\n%s", name);
++		Sys_MenuError(msg);
++	} else {
++		strncpy(disk_in[drive], name, SYS_PATH - 1);
++		Sys_Log("drive %c: '%s', %lu bytes", 'A' + drive, name, len);
++	}
++	free(data);
++}
++static void apply_disks(void) { apply_disk(0, menu.diska); apply_disk(1, menu.diskb); }
++
++/* Power ON: cartridge in, Plus hardware, reset, disks in. */
++static int power_on(void)
++{
++	unsigned char *data; unsigned long len;
++	/* no cartridge chosen (John ejected it to boot a disk, 17 Oct 2026): the
++	 * Plus needs one, so the system cartridge (BASIC + AMSDOS) goes in */
++	if (!menu.cart[0]) strcpy(menu.cart, "PROGDIR:roms/system.cpr");
++	if (!load_media("cartridge", menu.cart, &data, &len)) return 0;
++	Sys_Log("cartridge '%s': %lu bytes", menu.cart, len);
++	game_prefs_apply();
++	if (cart_data) free(cart_data);
++	cart_data = data;
++	CPC_SetHardware(CPC_HW_CPCPLUS);
++	Cartridge_Insert(data, len);
++	Amstrad_DiscInterface_Install();
++	Amstrad_RamExpansion_Install();
++	/* a power cycle, not just a reset (18 Oct 2026): memory cleared and the
++	 * paletted renderer's colours freed, so a game starts as it does from cold
++	 * whatever ran before it */
++	{ extern void CPC_PowerCycleMemory(void), Palette_Reset(void); CPC_PowerCycleMemory(); Palette_Reset(); }
++	CPC_Reset();
++	Sys_Log("power on: reset done");
++	/* power cycle: both drives reloaded from their files */
++	DiskImage_RemoveDisk(0); DiskImage_RemoveDisk(1);
++	disk_in[0][0] = disk_in[1][0] = 0;
++	apply_disks();
++	return 1;
++}
++
++extern void (*Render_LineChangedHook)(int SurfaceLine);
++
++static int open_emulation(void)
++{
++	Render_LineChangedHook = Sys_MarkLineDirty;   /* convert only lines the core changed */
++	/* HIRES: 768-pixel lines (CPC mode 2 at full width) on a hires screen; the
++	 * default halves them to 384 for a lores screen (modes 0 and 1 exact). */
++	if (display_open) { Sys_CloseDisplay(); display_open = 0; }
++	Render_SetRenderingAccuracyForWindowedMode(menu.hires ? RENDERING_ACCURACY_HIGH : RENDERING_ACCURACY_LOW);
++	if (!Render_SetDisplayWindowed()) { Sys_MenuError("Can't open the AGA screen"); return 0; }
++	if (menu.sound && !audio_open && Sys_AudioOpen(AUD_PERIOD, AUD_SAMPLES)) { audio_open = 1; CPC_SetAudioActive(TRUE); }
++	if (!menu.sound && audio_open) { Sys_AudioClose(); audio_open = 0; CPC_SetAudioActive(FALSE); }
++	CPC_ClearKeyboard();
++	Sys_Log("emulation: screen open, sound %s", audio_open ? "on" : "off");
++	return 1;
++}
++
++int main(int argc, char **argv)
++{
++	unsigned char *data; unsigned long len;
++	const char *sna = NULL;
++	int i, want_menu = 0, ndisk = 0, action, nosound = 0, hires = 0, media_given = 0;
++	struct SysStart st;
++
++	strcpy(menu.cart, "PROGDIR:roms/system.cpr");
++	strcpy(menu.prefs, "PROGDIR:Arnold.prefs");
++	menu.sound = 1;
++	Sys_LogOpen();
++	Sys_LogStart(argc);
++	for (i = 1; i < argc; i++) Sys_Log("arg %d: %s", i, argv[i]);
++	if (Sys_WBStart(argc, argv, &st)) {
++		Sys_Log("wb start: prefs '%s' media '%s' menu %d skip %d", st.prefs, st.media, st.menu, st.skip);
++		if (st.prefs[0]) strncpy(menu.prefs, st.prefs, SYS_PATH - 1);
++		want_menu = st.menu; nosound = st.nosound; hires = st.hires;
++		prefs_load();
++		if (st.skip >= 0) skip_max = st.skip;
++		if (st.refresh > 0) refresh = st.refresh;
++		if (st.joykeys >= 0) joykeys = st.joykeys;
++		if (st.pad >= 0) Sys_PadType = st.pad;
++		if (has_ext(st.media, ".cpr")) { strncpy(menu.cart, st.media, SYS_PATH - 1); media_given = 1; }
++		else if (has_ext(st.media, ".dsk")) { strncpy(menu.diska, st.media, SYS_PATH - 1); menu.diskb[0] = 0; media_given = 1; }
++		else if (has_ext(st.media, ".sna")) { sna = st.media; media_given = 1; }
++		if (!media_given) want_menu = 1;          /* a bare preset icon: start in the menu */
++	} else {
++		for (i = 1; i < argc; i++)
++			if (!kwncmp(argv[i], "P=", 2)) strncpy(menu.prefs, argv[i] + 2, SYS_PATH - 1);
++		prefs_load();
++		for (i = 1; i < argc; i++) {
++			if (!kwcmp(argv[i], "NOSOUND")) nosound = 1;
++			else if (!kwcmp(argv[i], "KEYLOG")) { extern int Sys_MenuKeyLog; keylog = fopen("PROGDIR:keys.log", "w"); Sys_MenuKeyLog = 1; }
++			else if (!kwcmp(argv[i], "TURBO")) turbo = 1;
++			else if (!kwcmp(argv[i], "PALALL")) Sys_PalAll = 1;
++			else if (!kwcmp(argv[i], "ALLLINES")) Sys_AllLines = 1;
++			else if (!kwcmp(argv[i], "SAFEFLIP")) Sys_SafeFlip = 1;
++			else if (!kwcmp(argv[i], "OSD")) Sys_Osd = 1;
++			else if (!kwcmp(argv[i], "NOCD32")) Sys_NoCD32 = 1;
++			else if (!kwncmp(argv[i], "SKIP=", 5)) skip_max = atoi(argv[i] + 5);
++			else if (!kwncmp(argv[i], "REFRESH=", 8)) refresh = atoi(argv[i] + 8);
++			else if (!kwncmp(argv[i], "JOYKEYS=", 8)) joykeys = atoi(argv[i] + 8);
++			else if (!kwcmp(argv[i], "CD32") || !kwcmp(argv[i], "PAD=CD32") || !kwcmp(argv[i], "PAD=1")) Sys_PadType = 1;
++			else if (!kwcmp(argv[i], "PAD=0") || !kwcmp(argv[i], "PAD=STANDARD")) Sys_PadType = 0;
++			else if (!kwcmp(argv[i], "BENCH")) {
++				/* machine timings to the Shell and PROGDIR:bench.txt, then exit */
++				FILE *bf = fopen("PROGDIR:bench.txt", "w");
++				Sys_Bench(stdout);
++				if (bf) { Sys_Bench(bf); fclose(bf); }
++				return 0;
++			}
++			else if (!kwncmp(argv[i], "KEYS=", 5)) { if (KeyScript_Load(argv[i] + 5) >= 0) script_on = 1; }
++			else if (!kwncmp(argv[i], "SNAPDIR=", 8)) strncpy(snapdir, argv[i] + 8, SYS_PATH - 1);
++			else if (!kwcmp(argv[i], "HIRES")) hires = 1;
++			else if (!kwcmp(argv[i], "MENU")) want_menu = 1;
++			else if (!kwncmp(argv[i], "P=", 2)) ;
++			else if (has_ext(argv[i], ".cpr")) { strncpy(menu.cart, argv[i], SYS_PATH - 1); media_given = 1; }
++			else if (has_ext(argv[i], ".dsk")) { if (!ndisk) menu.diskb[0] = 0; strncpy(ndisk++ ? menu.diskb : menu.diska, argv[i], SYS_PATH - 1); media_given = 1; }
++			else if (has_ext(argv[i], ".sna")) { sna = argv[i]; media_given = 1; }
++		}
++	}
++	Sys_Log("prefs '%s': sound %d hires %d skip %d refresh %d cart '%s'", menu.prefs, menu.sound, menu.hires, skip_max, refresh, menu.cart);
++	if (script_on) Sys_MakeDir(snapdir);
++	if (nosound) menu.sound = 0;
++	if (hires) menu.hires = 1;
++	global_sound = menu.sound; global_hires = menu.hires; global_joykeys = joykeys;
++	if (!CPCEmulation_CheckEndianness()) { Sys_MenuError("Endianness check failed"); return 10; }
++	CPC_Initialise();
++	/* the test-mode label's colour: an entry the core leaves alone */
++	{ extern void Render_MarkPaletteEntryForHostUse(int); Render_MarkPaletteEntryForHostUse(SYS_OSD_PEN); }
++	if (Sys_AllLines || Sys_SafeFlip || Sys_PalAll) Sys_Osd = 1;   /* diagnostics always show their label */
++	CPCEmulation_InitialiseDefaultSetup();
++	Sys_Log("core initialised");
++	CPC_SetFrameSkip(0);
++	CPC_SkipNextFrameHook = skip_hook;
++
++	action = want_menu ? SYS_MENU_QUIT : SYS_MENU_POWER;
++	if (!want_menu && !power_on()) want_menu = 1;
++	if (!want_menu && sna && load_media("snapshot", sna, &data, &len)) Snapshot_Insert(data, len);
++
++	for (;;) {
++		if (want_menu) {
++			Sys_Log("menu");
++			menu.skip = skip_max; menu.refresh = refresh; menu.joykeys = joykeys; menu.pad = Sys_PadType;
++			action = Sys_Menu(&menu);
++			skip_max = menu.skip; refresh = menu.refresh > 0 ? menu.refresh : 1; joykeys = menu.joykeys; Sys_PadType = menu.pad;
++			Sys_Log("menu action %d", action);
++			if (action == SYS_MENU_QUIT) break;
++			if (!menu.game_prefs) { global_sound = menu.sound; global_hires = menu.hires; global_joykeys = joykeys; }
++			if (action == SYS_MENU_SAVE) { int gs = menu.sound, gh = menu.hires; if (menu.game_prefs) { menu.sound = global_sound; menu.hires = global_hires; } else global_joykeys = joykeys; prefs_save(); menu.sound = gs; menu.hires = gh; continue; }
++			if (action == SYS_MENU_SAVEGAME) { game_prefs_save(); continue; }
++			if (action == SYS_MENU_FORGETGAME) { game_prefs_forget(); continue; }
++			if (action == SYS_MENU_SHOT) { screenshot(); continue; }
++			if (action == SYS_MENU_POWER && !power_on()) continue;
++			if (action == SYS_MENU_RESET) { if (!menu.can_continue && !power_on()) continue; CPC_Reset(); }
++			if (action == SYS_MENU_CONTINUE || action == SYS_MENU_RESET) apply_disks();   /* disk swap */
++		}
++		if (!open_emulation()) { want_menu = 1; continue; }
++		menu.can_continue = 1;
++		Sys_Log("running");
++		CPCEmulation_Run();                 /* returns when Help is pressed (or a script QUIT) */
++		Sys_Log("stopped after %lu frames", Sys_Millis() / 20);
++		Sys_AudioPause();
++		Sys_CloseDisplay(); display_open = 0;
++		if (script_quit) {
++			char name[SYS_PATH + 8]; FILE *d;
++			sprintf(name, "%s/done", snapdir);
++			d = fopen(name, "w");
++			if (d) { fprintf(d, "frames=%ld\n", script_frame); perf_report(d); fclose(d); }
++			perf_report(stdout);
++			break;
++		}
++		want_menu = 1;
++	}
++	if (audio_open) Sys_AudioClose();
++	if (display_open) Sys_CloseDisplay();
++	Sys_Log("exit");
++	Sys_LogClose();
++	return 0;
++}
+diff --git a/src/amiga/keyscript.c b/src/amiga/keyscript.c
+new file mode 100644
+index 0000000..e4b1338
+--- /dev/null
++++ b/src/amiga/keyscript.c
+@@ -0,0 +1,137 @@
++/* Key scripts for test runs (same text format as AmiMSX's tools/keyscript.py):
++ *     <time> <KEY>[+KEY...] [hold] [every <period> [until <time>]]
++ *     <time> SNAP                dump the frame (PNG) into the snap directory
++ *     <time> QUIT                leave the emulation (the run is over)
++ * Times and lengths are CPC frames (50 Hz) or seconds with an 's' suffix,
++ * counted from power on; hold defaults to 5 frames. '#' starts a comment.
++ * Keys: CPC names (SPACE LEFT RIGHT UP DOWN RETURN ENTER ESC TAB DEL CLR SHIFT
++ * CTRL COPY CAPS F0-F9 FDOT, 0-9, A-Z, - ^ @ [ ] ; : , . / \) and the joystick
++ * (JOYUP JOYDOWN JOYLEFT JOYRIGHT FIRE1 FIRE2). Plain C, no OS calls. */
++#include <stdio.h>
++#include <stdlib.h>
++#include <string.h>
++#include <ctype.h>
++#include "../cpc/cpc.h"
++#include "keyscript.h"
++
++#define MAXEV 8192
++typedef struct { long frame; short key; char down; char kind; } Ev;   /* kind: 0 key, 1 snap, 2 quit */
++static Ev ev[MAXEV];
++static int nev, next;
++
++static const struct { const char *name; int key; } names[] = {
++	{"SPACE", CPC_KEY_SPACE}, {"LEFT", CPC_KEY_CURSOR_LEFT}, {"RIGHT", CPC_KEY_CURSOR_RIGHT},
++	{"UP", CPC_KEY_CURSOR_UP}, {"DOWN", CPC_KEY_CURSOR_DOWN}, {"RETURN", CPC_KEY_RETURN},
++	{"ENTER", CPC_KEY_SMALL_ENTER}, {"ESC", CPC_KEY_ESC}, {"TAB", CPC_KEY_TAB}, {"DEL", CPC_KEY_DEL},
++	{"CLR", CPC_KEY_CLR}, {"SHIFT", CPC_KEY_SHIFT}, {"CTRL", CPC_KEY_CONTROL}, {"COPY", CPC_KEY_COPY},
++	{"CAPS", CPC_KEY_CAPS_LOCK}, {"F0", CPC_KEY_F0}, {"F1", CPC_KEY_F1}, {"F2", CPC_KEY_F2},
++	{"F3", CPC_KEY_F3}, {"F4", CPC_KEY_F4}, {"F5", CPC_KEY_F5}, {"F6", CPC_KEY_F6}, {"F7", CPC_KEY_F7},
++	{"F8", CPC_KEY_F8}, {"F9", CPC_KEY_F9}, {"FDOT", CPC_KEY_FDOT},
++	{"JOYUP", CPC_KEY_JOY_UP}, {"JOYDOWN", CPC_KEY_JOY_DOWN}, {"JOYLEFT", CPC_KEY_JOY_LEFT},
++	{"JOYRIGHT", CPC_KEY_JOY_RIGHT}, {"FIRE1", CPC_KEY_JOY_FIRE1}, {"FIRE2", CPC_KEY_JOY_FIRE2},
++	{"-", CPC_KEY_MINUS}, {"^", CPC_KEY_HAT}, {"@", CPC_KEY_AT}, {"[", CPC_KEY_OPEN_SQUARE_BRACKET},
++	{"]", CPC_KEY_CLOSE_SQUARE_BRACKET}, {";", CPC_KEY_SEMICOLON}, {":", CPC_KEY_COLON},
++	{",", CPC_KEY_COMMA}, {".", CPC_KEY_DOT}, {"/", CPC_KEY_FORWARD_SLASH}, {"\\", CPC_KEY_BACKSLASH},
++	{NULL, 0} };
++static const int digits[10] = { CPC_KEY_ZERO, CPC_KEY_1, CPC_KEY_2, CPC_KEY_3, CPC_KEY_4,
++	CPC_KEY_5, CPC_KEY_6, CPC_KEY_7, CPC_KEY_8, CPC_KEY_9 };
++static const int letters[26] = { CPC_KEY_A, CPC_KEY_B, CPC_KEY_C, CPC_KEY_D, CPC_KEY_E, CPC_KEY_F,
++	CPC_KEY_G, CPC_KEY_H, CPC_KEY_I, CPC_KEY_J, CPC_KEY_K, CPC_KEY_L, CPC_KEY_M, CPC_KEY_N, CPC_KEY_O,
++	CPC_KEY_P, CPC_KEY_Q, CPC_KEY_R, CPC_KEY_S, CPC_KEY_T, CPC_KEY_U, CPC_KEY_V, CPC_KEY_W, CPC_KEY_X,
++	CPC_KEY_Y, CPC_KEY_Z };
++
++static int keyid(const char *s)
++{
++	int i;
++	if (strlen(s) == 1) {
++		if (isdigit((unsigned char)s[0])) return digits[s[0] - '0'];
++		if (isalpha((unsigned char)s[0])) return letters[toupper((unsigned char)s[0]) - 'A'];
++	}
++	for (i = 0; names[i].name; i++) if (!strcmp(names[i].name, s)) return names[i].key;
++	return -1;
++}
++
++static long timeval(const char *s)      /* "30s", "5.2s" or "1500" -> frames; no strtod (libnix) */
++{
++	long whole = 0, frac = 0, scale = 1;
++	while (isdigit((unsigned char)*s)) whole = whole * 10 + (*s++ - '0');
++	if (*s == '.') { s++; while (isdigit((unsigned char)*s) && scale < 1000) { frac = frac * 10 + (*s++ - '0'); scale *= 10; } }
++	if (*s == 's') return whole * 50 + (frac * 50 + scale / 2) / scale;
++	return whole;
++}
++
++static void add(long frame, int key, int down, int kind)
++{
++	if (nev >= MAXEV) return;
++	ev[nev].frame = frame; ev[nev].key = key; ev[nev].down = down; ev[nev].kind = kind; nev++;
++}
++
++static int cmp(const void *a, const void *b)
++{
++	long d = ((const Ev *)a)->frame - ((const Ev *)b)->frame;
++	return d < 0 ? -1 : d > 0 ? 1 : (((const Ev *)a)->down - ((const Ev *)b)->down);  /* releases first */
++}
++
++int KeyScript_Load(const char *name)
++{
++	FILE *f = fopen(name, "r");
++	char line[256], *tok[12];
++	int ntok, i;
++	nev = next = 0;
++	if (!f) return -1;
++	while (fgets(line, sizeof line, f)) {
++		char *p = strchr(line, '#'); if (p) *p = 0;
++		ntok = 0;
++		for (p = strtok(line, " \t\r\n"); p && ntok < 12; p = strtok(NULL, " \t\r\n")) tok[ntok++] = p;
++		if (ntok < 2) continue;
++		{
++			long t = timeval(tok[0]), hold = 5, every = 0, until = -1;
++			char *keys = tok[1];
++			if (!strcmp(keys, "SNAP")) { add(t, 0, 0, 1); continue; }
++			if (!strcmp(keys, "QUIT")) { add(t, 0, 0, 2); continue; }
++			for (i = 2; i < ntok; i++) {
++				if (!strcmp(tok[i], "every") && i + 1 < ntok) { every = timeval(tok[++i]); }
++				else if (!strcmp(tok[i], "until") && i + 1 < ntok) { until = timeval(tok[++i]); }
++				else hold = timeval(tok[i]);
++			}
++			if (every <= 0) { every = 1; until = t; }
++			if (until < 0) until = t;
++			for (; t <= until; t += every) {
++				char buf[64], *k;
++				strncpy(buf, keys, sizeof buf - 1); buf[sizeof buf - 1] = 0;
++				for (k = strtok(buf, "+"); k; k = strtok(NULL, "+")) {
++					int id = keyid(k);
++					if (id < 0) continue;
++					add(t, id, 1, 0);
++					add(t + hold, id, 0, 0);
++				}
++			}
++		}
++	}
++	fclose(f);
++	qsort(ev, nev, sizeof(Ev), cmp);
++	return nev;
++}
++
++/* Apply everything due at this frame. Returns a KS_ flag set. */
++int KeyScript_Frame(long frame, void (*setkey)(int key, int down))
++{
++	int flags = 0;
++	while (next < nev && ev[next].frame <= frame) {
++		if (ev[next].kind == 0) setkey(ev[next].key, ev[next].down);
++		else if (ev[next].kind == 1) flags |= KS_SNAP;
++		else flags |= KS_QUIT;
++		next++;
++	}
++	return flags;
++}
++
++int KeyScript_Active(void) { return nev > 0 && next < nev; }
++
++int KeyScript_SnapAt(long frame)
++{
++	int i;
++	for (i = next; i < nev && ev[i].frame <= frame; i++)
++		if (ev[i].frame == frame && ev[i].kind == 1) return 1;
++	return 0;
++}
+diff --git a/src/amiga/keyscript.h b/src/amiga/keyscript.h
+new file mode 100644
+index 0000000..ec3bc92
+--- /dev/null
++++ b/src/amiga/keyscript.h
+@@ -0,0 +1,9 @@
++#ifndef KEYSCRIPT_H
++#define KEYSCRIPT_H
++#define KS_SNAP 1
++#define KS_QUIT 2
++int KeyScript_Load(const char *name);                        /* events loaded, -1 if no file */
++int KeyScript_Frame(long frame, void (*setkey)(int key, int down));
++int KeyScript_Active(void);
++int KeyScript_SnapAt(long frame);                            /* a SNAP is due at this frame */
++#endif
+diff --git a/src/amiga/padtest.c b/src/amiga/padtest.c
+new file mode 100644
+index 0000000..fe7ebe0
+--- /dev/null
++++ b/src/amiga/padtest.c
+@@ -0,0 +1,125 @@
++/* PadTest: shows what a joystick or pad in port 2 sends, three ways at once,
++ * and guesses the pad's mode. Shell tool; Ctrl-C quits.
++ *   hw   - the plain hardware read (directions, fire 1 on CIA-A, fire 2 on POTINP)
++ *   ll   - lowlevel.library ReadJoyPort(1): its idea of the device and buttons
++ *   cd32 - the CD32 shift-register read (7 buttons + 2 ID bits)
++ * A line is printed whenever anything changes. 15 Oct 2026, for John's KTRL CD32 pad
++ * (modes: CD32, single fire, dual fire, run'n'jump). */
++#include <exec/types.h>
++#include <hardware/custom.h>
++#include <hardware/cia.h>
++#include <libraries/lowlevel.h>
++#include <dos/dos.h>
++#include <proto/exec.h>
++#include <proto/dos.h>
++#include <proto/lowlevel.h>
++#include <stdio.h>
++
++extern struct Custom custom;
++extern struct CIA ciaa;
++struct Library *LowLevelBase;
++
++/* CD32 read on either port. Port 2: clock = fire (CIA-A PRA bit 7), mode = pin 5
++ * (POTGO OUTRX/DATRX), data = pin 9 (POTINP DATRY bit 14). Port 1: clock = PRA bit 6,
++ * mode = OUTLX/DATLX, data = DATLY bit 10. */
++static unsigned cd32_read(int p2)
++{
++	volatile UBYTE *pra = &ciaa.ciapra, *ddra = &ciaa.ciaddra;
++	UBYTE clk = p2 ? 0x80 : 0x40;
++	UWORD mode = p2 ? 0x6f00 : 0xf200, data = p2 ? 0x4000 : 0x0400;
++	unsigned bits = 0;
++	int i, d;
++	UBYTE dummy;
++	Disable();
++	*ddra |= clk;
++	*pra &= ~clk;
++	custom.potgo = mode;
++	for (d = 0; d < 25; d++) dummy = *pra;
++	for (i = 0; i < 9; i++) {
++		for (d = 0; d < 10; d++) dummy = *pra;
++		if (!(custom.potinp & data)) bits |= 1u << i;
++		*pra |= clk;
++		for (d = 0; d < 2; d++) dummy = *pra;
++		*pra &= ~clk;
++	}
++	*ddra &= ~clk;
++	custom.potgo = 0xff00;
++	Enable();
++	(void)dummy;
++	return bits;
++}
++
++static void dirs(char *s, int up, int down, int left, int right)
++{
++	s[0] = up ? 'U' : '.'; s[1] = down ? 'D' : '.'; s[2] = left ? 'L' : '.'; s[3] = right ? 'R' : '.'; s[4] = 0;
++}
++
++static int port2 = 1;   /* PORT=1: the mouse port (joy0dat, CIA fire bit 6, POTINP bit 10) */
++
++int main(int argc, char **argv)
++{
++	unsigned long last_hw = ~0UL, last_ll = ~0UL, last_cd = ~0UL;
++	unsigned seen = 0, seen_last = 0;   /* hw F1, hw F2, cd32 B R Y G < > P */
++	int n;
++	if (argc > 1 && (argv[1][0] == 'P' || argv[1][0] == 'p') && argv[1][5] == '1') port2 = 0;
++	LowLevelBase = OpenLibrary((STRPTR)"lowlevel.library", 39);
++	printf("PadTest - port %d (%s). Press buttons; Ctrl-C quits. PORT=1 tests the mouse port.\n",
++		port2 ? 2 : 1, port2 ? "the joystick port" : "the mouse port - unplug the mouse first");
++	printf("lowlevel.library: %s\n\n", LowLevelBase ? "open" : "not found (ll column off)");
++	printf("hw: dirs F1 F2(pin9) F(pin5) | ll: type dirs buttons | cd32: B R Y G < > P id | guess\n");
++	for (n = 0; !(SetSignal(0, 0) & SIGBREAKF_CTRL_C); n++) {
++		UWORD j = port2 ? custom.joy1dat : custom.joy0dat;
++		int f1, f2, f3;
++		unsigned long hw, ll = 0, cd;
++		char hd[5], ld[5];
++		const char *type = "-", *guess;
++		custom.potgo = 0xff00;
++		f1 = !(ciaa.ciapra & (port2 ? 0x80 : 0x40));
++		f2 = !(custom.potinp & (port2 ? 0x4000 : 0x0400));
++		f3 = !(custom.potinp & (port2 ? 0x1000 : 0x0100));   /* pin 5: AmiMSX reads fire 2 here */
++		dirs(hd, ((j >> 9) ^ (j >> 8)) & 1, ((j >> 1) ^ j) & 1, (j >> 9) & 1, (j >> 1) & 1);
++		hw = ((unsigned long)j << 3) | (f3 << 2) | (f1 << 1) | f2;
++		if (LowLevelBase) {
++			ll = ReadJoyPort(port2 ? 1 : 0);
++			switch (ll & JP_TYPE_MASK) {
++			case JP_TYPE_GAMECTLR: type = "CD32"; break;
++			case JP_TYPE_JOYSTK: type = "joy "; break;
++			case JP_TYPE_MOUSE: type = "mous"; break;
++			default: type = "none"; break;
++			}
++		}
++		dirs(ld, (ll & JPF_JOY_UP) != 0, (ll & JPF_JOY_DOWN) != 0, (ll & JPF_JOY_LEFT) != 0, (ll & JPF_JOY_RIGHT) != 0);
++		cd = cd32_read(port2);
++		/* a CD32 pad answers with ID bits 8th = 0 (low on pin 9 -> bit set? no: set = low) */
++		if ((cd & 0x180) == 0x100) guess = "CD32 mode (answers the CD32 read)";
++		else if (f2) guess = "2-button mode: fire 2 seen on pin 9";
++		else if (f3) guess = "2nd button on pin 5 (AmiMSX style)";
++		else guess = "joystick/1-button (or CD32 pad not answering)";
++		if (f1) seen |= 1; if (f2) seen |= 2; if (f3) seen |= 0x200;
++		if ((cd & 0x180) == 0x100) seen |= (cd & 0x7f) << 2;   /* only when the pad answers as CD32 */
++		if (seen != seen_last) {
++			static const char *nm[10] = { "fire1", "fire2(pin9)", "Blue", "Red", "Yellow", "Green", "<<", ">>", "Play", "fire(pin5)" };
++			int b;
++			printf("  >> seen so far:");
++			for (b = 0; b < 10; b++) if (seen & (1u << b)) printf(" %s", nm[b]);
++			printf("\n");
++			seen_last = seen;
++		}
++		if (hw != last_hw || ll != last_ll || cd != last_cd) {
++			printf("hw: %s %c %c %c | ll: %s %s %c%c%c%c%c%c%c | cd32: %c %c %c %c %c %c %c %u%u | %s\n",
++				hd, f1 ? '1' : '.', f2 ? '2' : '.', f3 ? '5' : '.',
++				type, ld,
++				(ll & JPF_BUTTON_BLUE) ? 'B' : '.', (ll & JPF_BUTTON_RED) ? 'R' : '.', (ll & JPF_BUTTON_YELLOW) ? 'Y' : '.',
++				(ll & JPF_BUTTON_GREEN) ? 'G' : '.', (ll & JPF_BUTTON_REVERSE) ? '<' : '.', (ll & JPF_BUTTON_FORWARD) ? '>' : '.',
++				(ll & JPF_BUTTON_PLAY) ? 'P' : '.',
++				(cd & 1) ? 'B' : '.', (cd & 2) ? 'R' : '.', (cd & 4) ? 'Y' : '.', (cd & 8) ? 'G' : '.',
++				(cd & 16) ? '<' : '.', (cd & 32) ? '>' : '.', (cd & 64) ? 'P' : '.',
++				(unsigned)((cd >> 7) & 1), (unsigned)((cd >> 8) & 1), guess);
++			last_hw = hw; last_ll = ll; last_cd = cd;
++		}
++		Delay(2);
++	}
++	printf("\nBye.\n");
++	if (LowLevelBase) CloseLibrary(LowLevelBase);
++	return 0;
++}
+diff --git a/src/amiga/screenshot.c b/src/amiga/screenshot.c
+new file mode 100644
+index 0000000..061b41f
+--- /dev/null
++++ b/src/amiga/screenshot.c
+@@ -0,0 +1,115 @@
++/* Arnold on AmigaOS: save the last frame as IFF ILBM and PNG. Plain C, no
++ * OS calls: the frame is the host's 8-bit chunky buffer plus its palette.
++ * PNG: 8-bit indexed, zlib stream of stored (uncompressed) deflate blocks. */
++#include <stdio.h>
++#include <string.h>
++#include "screenshot.h"
++
++static int write_be32(FILE *f, unsigned long v)
++{
++	unsigned char b[4] = { v >> 24, v >> 16, v >> 8, v };
++	return fwrite(b, 1, 4, f) == 4;
++}
++
++/* ---- ILBM: 8 planes, uncompressed, PAL hires or lores CAMG ---- */
++int Screenshot_SaveILBM(const char *name, const unsigned char *chunky, int w, int h, int pitch,
++                        const unsigned char pal[256][3], int hires)
++{
++	FILE *f = fopen(name, "wb");
++	int rowbytes = ((w + 15) / 16) * 2, y, p, x;
++	unsigned long body = (unsigned long)rowbytes * 8 * h;
++	unsigned char row[128], bmhd[20];
++	if (!f || rowbytes > (int)sizeof row) { if (f) fclose(f); return 0; }
++	memset(bmhd, 0, sizeof bmhd);
++	bmhd[0] = w >> 8; bmhd[1] = w; bmhd[2] = h >> 8; bmhd[3] = h;
++	bmhd[8] = 8; bmhd[13] = 1; bmhd[14] = 1;   /* depth 8, no mask, no compression; aspect 1:1 */
++	bmhd[16] = w >> 8; bmhd[17] = w; bmhd[18] = h >> 8; bmhd[19] = h;
++	fwrite("FORM", 1, 4, f); write_be32(f, 4 + 8 + 20 + 8 + 768 + 8 + 4 + 8 + body);
++	fwrite("ILBMBMHD", 1, 8, f); write_be32(f, 20); fwrite(bmhd, 1, 20, f);
++	fwrite("CMAP", 1, 4, f); write_be32(f, 768); fwrite(pal, 1, 768, f);
++	fwrite("CAMG", 1, 4, f); write_be32(f, 4); write_be32(f, 0x21000UL | (hires ? 0x8000UL : 0));
++	fwrite("BODY", 1, 4, f); write_be32(f, body);
++	for (y = 0; y < h; y++) {
++		const unsigned char *src = chunky + (long)y * pitch;
++		for (p = 0; p < 8; p++) {
++			memset(row, 0, rowbytes);
++			for (x = 0; x < w; x++) if (src[x] & (1 << p)) row[x >> 3] |= 0x80 >> (x & 7);
++			fwrite(row, 1, rowbytes, f);
++		}
++	}
++	fclose(f);
++	return 1;
++}
++
++/* ---- PNG ---- */
++static unsigned long crc_table[256];
++static void crc_init(void)
++{
++	unsigned long c; int n, k;
++	if (crc_table[1]) return;
++	for (n = 0; n < 256; n++) {
++		c = n;
++		for (k = 0; k < 8; k++) c = (c & 1) ? 0xedb88320UL ^ (c >> 1) : c >> 1;
++		crc_table[n] = c;
++	}
++}
++static unsigned long crc_update(unsigned long c, const unsigned char *p, unsigned long n)
++{
++	while (n--) c = crc_table[(c ^ *p++) & 0xff] ^ (c >> 8);
++	return c;
++}
++
++static int chunk(FILE *f, const char *type, const unsigned char *data, unsigned long len)
++{
++	unsigned long c;
++	write_be32(f, len);
++	fwrite(type, 1, 4, f);
++	if (len) fwrite(data, 1, len, f);
++	c = crc_update(0xffffffffUL, (const unsigned char *)type, 4);
++	if (len) c = crc_update(c, data, len);
++	return write_be32(f, c ^ 0xffffffffUL);
++}
++
++int Screenshot_SavePNG(const char *name, const unsigned char *chunky, int w, int h, int pitch,
++                       const unsigned char pal[256][3])
++{
++	FILE *f = fopen(name, "wb");
++	unsigned char ihdr[13], hdr[5], *line;
++	unsigned long a = 1, b = 0, idatlen, crc, raw = (unsigned long)(w + 1) * h, done = 0;
++	int y, x;
++	static unsigned char buf[1 + 768];
++	if (!f) return 0;
++	crc_init();
++	fwrite("\211PNG\r\n\032\n", 1, 8, f);
++	ihdr[0] = w >> 24; ihdr[1] = w >> 16; ihdr[2] = w >> 8; ihdr[3] = w;
++	ihdr[4] = h >> 24; ihdr[5] = h >> 16; ihdr[6] = h >> 8; ihdr[7] = h;
++	ihdr[8] = 8; ihdr[9] = 3; ihdr[10] = 0; ihdr[11] = 0; ihdr[12] = 0;   /* 8-bit indexed */
++	chunk(f, "IHDR", ihdr, 13);
++	chunk(f, "PLTE", &pal[0][0], 768);
++	/* IDAT: zlib header, stored blocks (one per row, w+1 <= 65535), adler32. */
++	idatlen = 2 + (unsigned long)h * (5 + w + 1) + 4;
++	write_be32(f, idatlen); fwrite("IDAT", 1, 4, f);
++	crc = crc_update(0xffffffffUL, (const unsigned char *)"IDAT", 4);
++	buf[0] = 0x78; buf[1] = 0x01; fwrite(buf, 1, 2, f); crc = crc_update(crc, buf, 2);
++	line = buf + 1;
++	for (y = 0; y < h; y++) {
++		const unsigned char *src = chunky + (long)y * pitch;
++		unsigned len = w + 1;
++		hdr[0] = (y == h - 1) ? 1 : 0;           /* BFINAL on the last block */
++		hdr[1] = len; hdr[2] = len >> 8; hdr[3] = ~len; hdr[4] = (~len) >> 8;
++		fwrite(hdr, 1, 5, f); crc = crc_update(crc, hdr, 5);
++		buf[0] = 0;                               /* filter: none */
++		for (x = 0; x < w; x++) line[x] = src[x];
++		fwrite(buf, 1, len, f); crc = crc_update(crc, buf, len);
++		for (x = 0; x < (int)len; x++) { a = (a + buf[x]) % 65521; b = (b + a) % 65521; }
++		done += len;
++	}
++	{
++		unsigned char ad[4] = { b >> 8, b, a >> 8, a };
++		fwrite(ad, 1, 4, f); crc = crc_update(crc, ad, 4);
++	}
++	write_be32(f, crc ^ 0xffffffffUL);
++	chunk(f, "IEND", NULL, 0);
++	fclose(f);
++	return done == raw;
++}
+diff --git a/src/amiga/screenshot.h b/src/amiga/screenshot.h
+new file mode 100644
+index 0000000..11a9230
+--- /dev/null
++++ b/src/amiga/screenshot.h
+@@ -0,0 +1,7 @@
++#ifndef SCREENSHOT_H
++#define SCREENSHOT_H
++int Screenshot_SaveILBM(const char *name, const unsigned char *chunky, int w, int h, int pitch,
++                        const unsigned char pal[256][3], int hires);
++int Screenshot_SavePNG(const char *name, const unsigned char *chunky, int w, int h, int pitch,
++                       const unsigned char pal[256][3]);
++#endif
+-- 
+2.50.0.windows.2
+

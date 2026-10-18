@@ -1,0 +1,122 @@
+From d71cd0d84d414246f772282254dd1e4a848a9f7c Mon Sep 17 00:00:00 2001
+From: John Stringer <jcec_1@yahoo.co.uk>
+Date: Sun, 18 Oct 2026 22:20:11 +0100
+Subject: [PATCH 07/20] Frame skip: decide one frame ahead so drawn frames
+ start cleanly
+
+The core's frame skip turns drawing back on at the frame boundary, which falls
+mid-line: the draw position along that line and the Plus soft-scroll shift
+register are stale, and the rest of the line lands in the wrong place (one
+wrong row per drawn frame; FrameSkip has the same flaw). CPC_SkipNextFrameHook
+lets a host decide at each frame end whether the frame after next is drawn;
+a skipped frame followed by a drawn one turns drawing on RENDER_LEAD cycles
+before its end, and only frames meant to be drawn are passed to the host.
+NULL hook: unchanged behaviour.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ src/cpc/arnold.c | 46 +++++++++++++++++++++++++++++++++++++++++-----
+ 1 file changed, 41 insertions(+), 5 deletions(-)
+
+diff --git a/src/cpc/arnold.c b/src/cpc/arnold.c
+index 497ebf1..e05fd41 100644
+--- a/src/cpc/arnold.c
++++ b/src/cpc/arnold.c
+@@ -47,6 +47,23 @@ static unsigned int Arnold_PercentRelativeSpeed = 0;
+ 
+ /* true if not to render anything to screen buffer, FALSE to render */
+ static BOOL DontRender=FALSE;
++/* Amiga port: automatic frame skip (14 Oct 2026). The host may set this hook;
++ * at each frame end it says whether the frame after the next one should go
++ * undrawn (a machine that is behind skips drawing to catch up). NULL: every
++ * frame is drawn, as before.
++ * Why one frame ahead: the core's own skip turns drawing back on at the frame
++ * boundary, which falls mid-line; the draw position along that line and the
++ * Plus soft-scroll shift register (GraphicsLong) are then stale, and the rest
++ * of the line lands in the wrong place (one wrong row per drawn frame, found
++ * by tools/headless_skipcheck.sh; Arnold's FrameSkip has the same flaw). So a
++ * skipped frame followed by a drawn one turns drawing on RENDER_LEAD cycles
++ * before its end (several whole lines, which the drawn frame then overwrites),
++ * and only frames meant to be drawn are passed to the host. */
++int (*CPC_SkipNextFrameHook)(void) = NULL;
++#define RENDER_LEAD 1024              /* > 3 lines of the longest CRTC line (256) */
++static BOOL RenderNextFrame = TRUE;   /* decided one frame ahead */
++static BOOL FrameMeantToRender = TRUE;
++static int RenderOnEarlyAt = 0;       /* > 0: turn drawing on this many cycles before the frame end */
+ /* current frame index, compared against frame skip value */
+ static int CurrentFrameIndex = 0;
+ /* frame skip value */
+@@ -351,10 +368,10 @@ void	CPCEmulation_Run(void)
+ 			/* batch to each event cycle in turn; an event that raises no
+ 			   interrupt leaves the Z80 halting, so carry on to the next one */
+ 			int done = 0;
+-			while (NopCountToDate > 1)
++			while (NopCountToDate > RenderOnEarlyAt + 1)
+ 			{
+ 				int k = CRTC_CyclesToEvent();
+-				if (k > NopCountToDate - 1) k = NopCountToDate - 1;
++				if (k > NopCountToDate - RenderOnEarlyAt - 1) k = NopCountToDate - RenderOnEarlyAt - 1;
+ 				Z80_HaltSteps(k);
+ 				CPC_UpdateNopCount(k);
+ 				NopCountToDate -= k;
+@@ -377,10 +394,24 @@ void	CPCEmulation_Run(void)
+ 		LocalNopCountToDate = NopCountToDate - NopCount;
+ 
+ 		/* nop counter is used to define when we render the whole display */
+-		if (LocalNopCountToDate<=0)		
++		if (LocalNopCountToDate<=RenderOnEarlyAt)
+ 		{
+ 			int NopsToFrameEnd;
+ 
++			if (LocalNopCountToDate > 0)
++			{
++				/* Amiga port: a skipped frame before a drawn one: drawing on now */
++				CRTC_DoCycles(NopCount);
++				RenderOnEarlyAt = 0;
++				if (Render_IsRendererActive())
++				{
++					DontRender = FALSE;
++					CRTC_SetRenderState(DontRender);
++				}
++				NopCountToDate = LocalNopCountToDate;
++				continue;
++			}
++
+ 			NopsToFrameEnd = NopCount + LocalNopCountToDate;
+ 
+ 			/* update CRTC for NopCount cycles */
+@@ -398,7 +429,7 @@ void	CPCEmulation_Run(void)
+ 				CurrentFrameIndex = 0;
+ 				
+ 				/* is rendering possible? */
+-				if (Render_IsRendererActive())
++				if (Render_IsRendererActive() && FrameMeantToRender)
+ 				{
+ 					/* dump whole display to screen */
+ 					Render_DumpDisplay();
+@@ -419,7 +450,8 @@ void	CPCEmulation_Run(void)
+ 			CRTC_SetRenderState(DontRender);
+ 
+ 			/* should we render graphics? */
+-			if (CurrentFrameIndex == FrameSkip)
++			FrameMeantToRender = FALSE;
++			if (CurrentFrameIndex == FrameSkip && RenderNextFrame)
+ 			{
+ 				/* is rendering possible? */
+ 				if (Render_IsRendererActive())
+@@ -427,8 +459,12 @@ void	CPCEmulation_Run(void)
+ 					/* allow it to render */
+ 					DontRender = FALSE;
+ 					CRTC_SetRenderState(DontRender);
++					FrameMeantToRender = TRUE;
+ 				}
+ 			}
++			/* Amiga port: decide the frame after this one now */
++			RenderNextFrame = !(CPC_SkipNextFrameHook && CPC_SkipNextFrameHook());
++			RenderOnEarlyAt = (FrameSkip == 0 && DontRender && RenderNextFrame) ? RENDER_LEAD : 0;
+ 		}
+ 		 else
+ 		 {
+-- 
+2.50.0.windows.2
+

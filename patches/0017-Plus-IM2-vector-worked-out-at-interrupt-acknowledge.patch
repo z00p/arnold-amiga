@@ -1,0 +1,85 @@
+From 5c9ce3e77912932b8e83fe8897baa42f886fe9d2 Mon Sep 17 00:00:00 2001
+From: John Stringer <jcec_1@yahoo.co.uk>
+Date: Sun, 18 Oct 2026 22:20:15 +0100
+Subject: [PATCH 17/20] Plus: IM2 vector worked out at interrupt acknowledge
+
+On the Plus the ASIC puts the vector of the interrupt being acknowledged on the
+bus (raster/PRI or the Gate Array's 52-line interrupt, else DMA 2/1/0). Arnold
+set the vector only when a DMA or PRI interrupt was requested, so a 52-line
+interrupt (PRI 0) reused the last DMA vector and ran the DMA handler. The vector
+is now computed at acknowledge time, before the source is cleared, as CPCEC does.
+Also, a write to the DMA control register (&6C0F) no longer cancels a pending
+raster interrupt. Sonic GX's title and demo levels chain one DMA interrupt per
+character row to re-aim the split screen; the extra handler runs moved its table
+on and scrambled them. Now matches CPCEC frame for frame; no other homebrew cart
+changes. NO_IVEC_FIX restores the old code.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ src/cpc/asic.c |  8 ++++++++
+ src/cpc/cpc.c  | 24 ++++++++++++++++++++++++
+ 2 files changed, 32 insertions(+)
+
+diff --git a/src/cpc/asic.c b/src/cpc/asic.c
+index 9305f3d..be4f2b0 100644
+--- a/src/cpc/asic.c
++++ b/src/cpc/asic.c
+@@ -1635,7 +1635,15 @@ void    ASIC_WriteRam(int Addr,int Data)
+                 }
+ 
+                 /* keep info about channels enabled and the channels interrupting */
++#ifndef NO_IVEC_FIX
++                /* Amiga port (18 Oct 2026): a DCSR write does not cancel a
++                 * pending raster (Gate Array 52-line or PRI) interrupt, as in
++                 * CPCEC; dropping bit 7 here made the next acknowledge look
++                 * like a DMA one (see Z80_AcknowledgeInterrupt in cpc.c). */
++                ASIC_Data.InternalDCSR = (unsigned char)((ASIC_Data.InternalDCSR & 0x0f0) | (Data & 0x07));
++#else
+                 ASIC_Data.InternalDCSR = (unsigned char)((ASIC_Data.InternalDCSR & 0x070) | (Data & 0x07));
++#endif
+ 
+                 ASIC_UpdateRAMWithInternalDCSR();
+ 
+diff --git a/src/cpc/cpc.c b/src/cpc/cpc.c
+index 02cc203..b4f678a 100644
+--- a/src/cpc/cpc.c
++++ b/src/cpc/cpc.c
+@@ -3104,11 +3104,35 @@ unsigned long CPC_GetNopCount(void)
+ void    Z80_AcknowledgeInterrupt(void)
+ {
+         /* interrupt acknowledge func */
++#ifndef NO_IVEC_FIX
++        /* Amiga port (18 Oct 2026): on the CPC+ the ASIC puts the IM2 vector
++         * of the interrupt being acknowledged on the bus (6 = raster/PRI or
++         * the Gate Array's 52-line interrupt, 0/2/4 = DMA 2/1/0), worked out
++         * at acknowledge time. Arnold set the vector only when a DMA or PRI
++         * interrupt was requested, so a Gate Array 52-line interrupt (PRI=0)
++         * reused the last DMA vector and ran the DMA handler: Sonic GX's
++         * title screen split chain (one DMA INT per char row) got extra steps
++         * and its split lines arrived rows early. As CPCEC does, the vector
++         * is computed here, before the acknowledge clears the source, and
++         * set after it (clearing a raster interrupt re-raises any pending
++         * DMA one, which set the DMA vector). NO_IVEC_FIX: the old code. */
++        int PlusVector = -1;
++        if (CPC_GetHardware()==CPC_HW_CPCPLUS)
++        {
++                PlusVector = ASIC_CalculateInterruptVector();
++        }
++#endif
+ 
+         /* CRTC acknowledge int */
+         GateArray_AcknowledgeInterrupt();
+         /* ASIC acknowledge int */
+         ASIC_AcknowledgeInterrupt();
++#ifndef NO_IVEC_FIX
++        if (PlusVector >= 0)
++        {
++                Z80_SetInterruptVector(PlusVector);
++        }
++#endif
+ 
+         Z80_ClearInterruptRequest();
+ 
+-- 
+2.50.0.windows.2
+

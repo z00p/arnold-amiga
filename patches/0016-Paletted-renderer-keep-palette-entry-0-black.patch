@@ -1,0 +1,59 @@
+From 7e808555d25079a2993cda25c94db3239e44e141 Mon Sep 17 00:00:00 2001
+From: John Stringer <jcec_1@yahoo.co.uk>
+Date: Sun, 18 Oct 2026 22:20:15 +0100
+Subject: [PATCH 16/20] Paletted renderer: keep palette entry 0 black
+
+The paletted renderer draws blanking with entry 0 (Render_PaletteIndexBlack)
+and assumed it black, but entry 0 went to whichever colour was stored first.
+After the palette was freed (a host's power cycle, or freeing when nearly
+full) a game's first colour, red in Ghosts'n Goblins, took entry 0 and filled
+every blank area; on an Amiga entry 0 also fills the screen surround. Entry 0
+is now reserved as black. Palette numbering changes only: RGB output identical.
+NO_BLACK0_FIX restores the old behaviour.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ src/cpc/render5.c | 17 +++++++++++++++++
+ 1 file changed, 17 insertions(+)
+
+diff --git a/src/cpc/render5.c b/src/cpc/render5.c
+index 5e4ada4..69d25db 100644
+--- a/src/cpc/render5.c
++++ b/src/cpc/render5.c
+@@ -402,9 +402,25 @@ static void Render_Paletted_ClearRemapping(void)
+ 	}
+ }
+ 
++/* Amiga port (18 Oct 2026): palette entry 0 is kept black for good. The
++ * paletted renderer draws blanking with Render_PaletteIndexBlack (0), and on
++ * an Amiga entry 0 is also colour register 0, which fills everything outside
++ * the picture. It used to go to whichever colour was stored first, so after
++ * the palette was freed (Power ON, or freeing when full) a game's first colour
++ * filled the screen surround (red bars around Ghosts'n Goblins on the A1200).
++ * NO_BLACK0_FIX: entry 0 is an ordinary entry, as before. */
++static void Render_ReserveBlack(void)
++{
++#ifndef NO_BLACK0_FIX
++	CPCPalette[0].Red = 0; CPCPalette[0].Green = 0; CPCPalette[0].Blue = 0;
++	CPCPalette[0].Flags = PALETTE_ENTRY_USED | PALETTE_ENTRY_DO_NOT_REMOVE;
++#endif
++}
++
+ void    Palette_Initialise(void)
+ {
+ 	Render_Paletted_ClearRemapping();
++	Render_ReserveBlack();
+ }
+ 
+ /* mark a palette entry as useable by host system, the palette
+@@ -433,6 +449,7 @@ void    Palette_Reset(void)
+                 CPCPalette[i].Flags = 0;
+         }
+     }
++	Render_ReserveBlack();
+ 
+ 	for (i=0; i<32; i++)
+ 	{
+-- 
+2.50.0.windows.2
+

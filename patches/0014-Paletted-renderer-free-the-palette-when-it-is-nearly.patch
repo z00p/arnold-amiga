@@ -1,0 +1,55 @@
+From d0e28e31293f7b3c1fe75afbc718ca060302c133 Mon Sep 17 00:00:00 2001
+From: John Stringer <jcec_1@yahoo.co.uk>
+Date: Sun, 18 Oct 2026 22:20:14 +0100
+Subject: [PATCH 14/20] Paletted renderer: free the palette when it is nearly
+ full
+
+The paletted renderer gives each new colour one of 256 host palette entries
+and never frees them (the Palette_Reset in Render_DumpDisplay is commented
+out). Plus games use many of the 4096 colours (Sonic GX: 200 entries in 30 s),
+so after a game or two the palette is full, new colours are dropped and drawn
+in a stale entry's colour. At 224 entries the palette is now freed at the end
+of a frame and the next frame takes entries for the colours it uses. Only the
+palette numbering changes: the RGB output is identical on every cartridge this
+affects. NO_PALGC_FIX restores the old behaviour.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ src/cpc/render5.c | 18 ++++++++++++++++++
+ 1 file changed, 18 insertions(+)
+
+diff --git a/src/cpc/render5.c b/src/cpc/render5.c
+index 5742481..5e4ada4 100644
+--- a/src/cpc/render5.c
++++ b/src/cpc/render5.c
+@@ -1590,9 +1590,27 @@ int Render_PaletteUsedCount(void)
+ }
+ #endif
+ 
++/* Amiga port (18 Oct 2026): the paletted renderer gives each new CPC/Plus
++ * colour one of 256 host palette entries and never frees them (the
++ * Palette_Reset below is commented out upstream). Plus games set many of the
++ * 4096 colours (Sonic GX uses 200 entries in 30 s), so after a game or two the
++ * palette is full, new colours are dropped and drawn in a stale entry's colour:
++ * corruption that grew with each game started by Power ON. When it is nearly
++ * full, the palette is freed at the end of a frame (after that frame is out),
++ * and the next frame takes entries for the colours it actually uses.
++ * NO_PALGC_FIX: never freed, as before. */
++#define PALGC_LIMIT 224
+ void    Render_DumpDisplay(void)
+ {
+         pRender_DumpScreen();
++#ifndef NO_PALGC_FIX
++	if (Renderer_Active && BytesPerPixel == 1)   /* the paletted (8-bit) renderer */
++	{
++		int i, n = 0;
++		for (i = 0; i < 256; i++) if (CPCPalette[i].Flags & PALETTE_ENTRY_USED) n++;
++		if (n >= PALGC_LIMIT) Palette_Reset();
++	}
++#endif
+ #ifdef PAL_COUNT
+ 	{ static int f; if (++f % 100 == 0) fprintf(stderr, "frame %d palette entries used %d\n", f, Render_PaletteUsedCount()); }
+ #endif
+-- 
+2.50.0.windows.2
+

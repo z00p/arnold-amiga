@@ -1,0 +1,31 @@
+From 05b6e26544b8a7e27b225c0b5221b1ee94b9c136 Mon Sep 17 00:00:00 2001
+From: John Stringer <jcec_1@yahoo.co.uk>
+Date: Sun, 18 Oct 2026 22:20:09 +0100
+Subject: [PATCH 01/20] Build the core on big-endian hosts (m68k)
+
+cpcdefs.h defined CPC_LSB_FIRST unconditionally, so a big-endian build had
+byte-swapped words throughout. Leave it to the build system (-DCPC_LSB_FIRST
+on little-endian hosts, which src/Makefile already passes) so the core builds
+and runs on 68k AmigaOS.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ src/cpc/cpcdefs.h | 2 +-
+ 1 file changed, 1 insertion(+), 1 deletion(-)
+
+diff --git a/src/cpc/cpcdefs.h b/src/cpc/cpcdefs.h
+index a927252..e86c12a 100644
+--- a/src/cpc/cpcdefs.h
++++ b/src/cpc/cpcdefs.h
+@@ -23,7 +23,7 @@
+ /* defines to control parts of CPC emulation etc */
+ 
+ /* define for "least-significant-byte" first/little endian machines */ 
+-#define CPC_LSB_FIRST
++/* #define CPC_LSB_FIRST -- set by build system */
+ 
+ /*#define DEBUG_MODE*/
+ 
+-- 
+2.50.0.windows.2
+

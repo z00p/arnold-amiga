@@ -1,0 +1,5 @@
+# System cartridge: f2 = Burnin' Rubber; fire 1 starts, then steer.
+3s   F2
+9s   FIRE1 10
+12s  JOYRIGHT 50
+15s  JOYLEFT 50

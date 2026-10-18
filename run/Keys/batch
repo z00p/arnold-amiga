@@ -1,0 +1,4 @@
+; written by tools/regress.py
+Arnold:Arnold KEYS=Arnold:Keys/system_basic.keys SNAPDIR=Arnold:snaps/system_basic NOSOUND TURBO
+Arnold:Arnold KEYS=Arnold:Keys/burnin_rubber.keys SNAPDIR=Arnold:snaps/burnin_rubber NOSOUND TURBO
+Arnold:Arnold Arnold:carts/PuzzleBobble.cpr KEYS=Arnold:Keys/puzzle_bobble.keys SNAPDIR=Arnold:snaps/puzzle_bobble NOSOUND TURBO

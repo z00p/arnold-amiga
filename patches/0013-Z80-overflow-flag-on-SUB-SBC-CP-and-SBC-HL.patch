@@ -1,0 +1,66 @@
+From a1061ae3e45e630248ae16478aa0c577c8bd2772 Mon Sep 17 00:00:00 2001
+From: John Stringer <jcec_1@yahoo.co.uk>
+Date: Sun, 18 Oct 2026 22:20:14 +0100
+Subject: [PATCH 13/20] Z80: overflow flag on SUB, SBC, CP and SBC HL
+
+For A - r the overflow flag must be (A^r)&(A^result)&0x80; the core used
+(r^A)&(r^result), the exact opposite whenever the operands' signs differ, so V
+was wrong in every case that matters (SBC HL the same). Old games rarely look
+at V after a subtraction, but compiled code does for every signed compare
+(SDCC: sub/sbc; jp po; xor 80h; jp m). Puzzle Bobble (2021 cartridge) froze at
+the start of round 1: its aiming-line routine never ended. Now matches CPCEC
+frame for frame; seven other homebrew carts change slightly in timing, all
+checked against CPCEC. NO_Z80V_FIX restores the old flag.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ src/cpc/z80/z80macros.h | 19 +++++++++++++++++--
+ 1 file changed, 17 insertions(+), 2 deletions(-)
+
+diff --git a/src/cpc/z80/z80macros.h b/src/cpc/z80/z80macros.h
+index ec2db1e..6f16aff 100644
+--- a/src/cpc/z80/z80macros.h
++++ b/src/cpc/z80/z80macros.h
+@@ -24,6 +24,21 @@
+ 		R.PC.W.l += count
+ 
+ 
++/* Amiga port (18 Oct 2026): overflow on a subtraction (SUB, SBC A, CP, SBC HL)
++ * is set when the operands' signs differ AND the result's sign differs from
++ * the minuend's: (A^Reg)&(A^Result). The original tested Reg^Result, which is
++ * the exact opposite whenever the signs differ, so V was wrong in every case
++ * that matters. Old games rarely look at V after a subtraction, but compiled
++ * code does for every signed compare (SDCC: sub/sbc; jp po; xor 80h; jp m):
++ * Puzzle Bobble's aiming line looped for ever. NO_Z80V_FIX: the old flag. */
++#ifdef NO_Z80V_FIX
++#define Z80V_A8 Reg
++#define Z80V_HL Reg
++#else
++#define Z80V_A8 R.AF.B.h
++#define Z80V_HL R.HL.W
++#endif
++
+ /* overflow caused, when both are + or -, and result is different. */
+ #define SET_OVERFLOW_FLAG_A_ADD(Reg, Result) \
+         Z80_FLAGS_REG &= (0x0ff^Z80_PARITY_FLAG);           \
+@@ -31,7 +46,7 @@
+ 
+ #define SET_OVERFLOW_FLAG_A_SUB(Reg, Result) \
+         Z80_FLAGS_REG &= (0x0ff^Z80_PARITY_FLAG);                   \
+-        Z80_FLAGS_REG |= (((Reg^R.AF.B.h)&(Reg^Result)&0x080)>>(7-Z80_PARITY_FLAG_BIT))
++        Z80_FLAGS_REG |= (((Reg^R.AF.B.h)&(Z80V_A8^Result)&0x080)>>(7-Z80_PARITY_FLAG_BIT))
+ 
+ #define SET_HALFCARRY(Reg, Result)              \
+         Z80_FLAGS_REG &= (0x0ff^Z80_HALFCARRY_FLAG);        \
+@@ -60,7 +75,7 @@
+ 
+ #define SET_OVERFLOW_FLAG_HL_SUB(Reg, Result) \
+         Z80_FLAGS_REG &= (0x0ff^Z80_PARITY_FLAG);           \
+-        Z80_FLAGS_REG |= (((Reg^R.HL.W)&(Reg^Result)&0x8000)>>13)
++        Z80_FLAGS_REG |= (((Reg^R.HL.W)&(Z80V_HL^Result)&0x8000)>>13)
+                 
+ 
+ #if 0
+-- 
+2.50.0.windows.2
+
