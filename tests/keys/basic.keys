@@ -1,0 +1,12 @@
+# System cartridge: f1 = BASIC, then type PRINT 123 and run it.
+3s   F1
+5s   P
+5.2s R
+5.4s I
+5.6s N
+5.8s T
+6s   SPACE
+6.2s 1
+6.4s 2
+6.6s 3
+6.8s RETURN

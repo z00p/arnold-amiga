@@ -1,0 +1,173 @@
+From 97b03d2ee69f1a396b13d34e9cea180619751b82 Mon Sep 17 00:00:00 2001
+From: John Stringer <jcec_1@yahoo.co.uk>
+Date: Sun, 18 Oct 2026 20:27:06 +0100
+Subject: [PATCH 05/17] Speed-up F: HALT fast-forward
+
+While the Z80 is halted, its cycles are batched up to the next CRTC event that
+can raise an interrupt instead of being stepped one NOP at a time.
+Pixel-exact on the test set; NO_F restores per-step.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ src/cpc/arnold.c  | 28 ++++++++++++++++++++++++++++
+ src/cpc/crtc.c    | 24 ++++++++++++++++++++++++
+ src/cpc/z80/z80.c | 21 ++++++++++++++++++++-
+ 3 files changed, 72 insertions(+), 1 deletion(-)
+
+diff --git a/src/cpc/arnold.c b/src/cpc/arnold.c
+index b4feee6..497ebf1 100644
+--- a/src/cpc/arnold.c
++++ b/src/cpc/arnold.c
+@@ -326,6 +326,11 @@ void	CPCEmulation_EnableDebugger(BOOL State)
+ }
+ 
+ extern BOOL DoNotScanKeyboard;
++extern int Z80_HaltHit;
++extern int Z80_HaltIdle(void);
++extern int Z80_InterruptRaised(void);
++extern void Z80_HaltSteps(int Count);
++extern int CRTC_CyclesToEvent(void);
+ //extern BOOL ConsoleBreak;
+ 
+ void	CPCEmulation_Run(void)
+@@ -337,6 +342,29 @@ void	CPCEmulation_Run(void)
+ 		int NopCount;
+ 		int LocalNopCountToDate;
+ 
++#if defined(CPC_NODEBUGGER) && !defined(NO_F)
++		/* Amiga port: a halted Z80 only burns cycles until the next CRTC event
++		   (the only place interrupts are raised), so do them as one batch.
++		   Stops one cycle short of the frame end so that path is unchanged. */
++		if (Z80_HaltHit && (Z80_HaltHit = 0, Z80_HaltIdle()))
++		{
++			/* batch to each event cycle in turn; an event that raises no
++			   interrupt leaves the Z80 halting, so carry on to the next one */
++			int done = 0;
++			while (NopCountToDate > 1)
++			{
++				int k = CRTC_CyclesToEvent();
++				if (k > NopCountToDate - 1) k = NopCountToDate - 1;
++				Z80_HaltSteps(k);
++				CPC_UpdateNopCount(k);
++				NopCountToDate -= k;
++				CRTC_DoCycles(k);
++				done = 1;
++				if (Z80_InterruptRaised()) break;
++			}
++			if (done) continue;
++		}
++#endif
+ 		/* execute the instruction */
+ #ifdef CPC_NODEBUGGER
+ 		NopCount = Z80_ExecuteInstruction(); 
+diff --git a/src/cpc/crtc.c b/src/cpc/crtc.c
+index e82a7ae..9426475 100644
+--- a/src/cpc/crtc.c
++++ b/src/cpc/crtc.c
+@@ -3936,8 +3936,16 @@ static struct
+ 	unsigned long cm0, cm1;
+ } CRTC_Run;
+ 
++#ifdef STATS_E
++unsigned long StatsE_Prepare, StatsE_Invalidate, StatsE_Runs, StatsE_RunCycles, StatsE_Events, StatsE_Calls;
++#define STATS(x) (x)
++#else
++#define STATS(x)
++#endif
++
+ void CRTC_InvalidateRun(void)
+ {
++	STATS(StatsE_Invalidate += CRTC_Run.valid);
+ 	CRTC_Run.valid = 0;
+ }
+ 
+@@ -3954,6 +3962,7 @@ static void CRTC_PrepareRun(void)
+ 	unsigned int hc = CRTC_InternalState.HCount;
+ 
+ 	CRTC_Run.valid = 1;
++	STATS(StatsE_Prepare++);
+ 
+ 	/* distance to the next event cycle */
+ 	if (CRTC_InternalState.CRTC_Flags & CRTC_HTOT_FLAG)
+@@ -4175,12 +4184,25 @@ static void CRTC_RunCells(int Count)
+ 	if (CRTC_Run.hs) CRTC_InternalState.HorizontalSyncCount = (unsigned char)(CRTC_InternalState.HorizontalSyncCount + total);
+ }
+ 
++/* Cycles from now up to and including the next event cycle (>= 1). Used to
++ * fast-forward a halted Z80: interrupts are only raised in event cycles. */
++int CRTC_CyclesToEvent(void)
++{
++#ifdef NO_E
++	return 1;
++#else
++	if (!CRTC_Run.valid) CRTC_PrepareRun();
++	return CRTC_Run.left + 1;
++#endif
++}
++
+ void CRTC_DoCycles(int Cycles)
+ {
+ #ifdef NO_E
+ 	while (Cycles-- > 0)
+ 		CRTC_DoOneCycle();
+ #else
++	STATS(StatsE_Calls++);
+ 	while (Cycles > 0)
+ 	{
+ 		if (!CRTC_Run.valid) CRTC_PrepareRun();
+@@ -4188,11 +4210,13 @@ void CRTC_DoCycles(int Cycles)
+ 		{
+ 			int m = CRTC_Run.left < Cycles ? CRTC_Run.left : Cycles;
+ 			CRTC_RunCells(m);
++			STATS((StatsE_Runs++, StatsE_RunCycles += m));
+ 			CRTC_Run.left -= m;
+ 			Cycles -= m;
+ 			if (Cycles == 0) break;
+ 		}
+ 		CRTC_DoOneCycle();      /* the event cycle */
++		STATS(StatsE_Events++);
+ 		CRTC_Run.valid = 0;
+ 		Cycles--;
+ 	}
+diff --git a/src/cpc/z80/z80.c b/src/cpc/z80/z80.c
+index 867e303..21edca1 100644
+--- a/src/cpc/z80/z80.c
++++ b/src/cpc/z80/z80.c
+@@ -9798,6 +9798,25 @@ break;
+ return Cycles;
+ }
+ /***************************************************************************/
++/* Amiga port: a halted Z80 with no interrupt to take re-executes HALT (one
++ * cycle, R+1) until an interrupt is raised. Z80_HaltIdle says whether that
++ * is the state; Z80_HaltSteps applies Count such steps at once. */
++int Z80_HaltHit;          /* set by the HALT opcode, cleared by the main loop */
++int Z80_HaltIdle(void)
++{
++	return (R.Flags & (Z80_EXECUTING_HALT_FLAG | Z80_EXECUTE_INTERRUPT_HANDLER_FLAG)) == Z80_EXECUTING_HALT_FLAG &&
++		Z80_RD_OPCODE_BYTE(0) == 0x076;
++}
++int Z80_InterruptRaised(void)
++{
++	return (R.Flags & Z80_EXECUTE_INTERRUPT_HANDLER_FLAG) != 0;
++}
++void Z80_HaltSteps(int Count)
++{
++	R.R = (Z80_BYTE)(R.R + Count);
++	R.Flags |= Z80_CHECK_INTERRUPT_FLAG;
++}
++
+ int Z80_ExecuteInstruction(void)
+ {
+ unsigned long Opcode;
+@@ -10987,7 +11006,7 @@ Cycles = 2;
+ break;
+ case 0x076:
+ {
+-HALT();
++HALT(); Z80_HaltHit = 1;
+         R.R+=1;
+  R.Flags |= Z80_CHECK_INTERRUPT_FLAG;
+ Cycles = 1;
+-- 
+2.50.0.windows.2
+

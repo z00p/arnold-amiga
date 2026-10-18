@@ -1,0 +1,130 @@
+From 630241b098b633b8093469eec5541ffa9ac1dd49 Mon Sep 17 00:00:00 2001
+From: John Stringer <jcec_1@yahoo.co.uk>
+Date: Sun, 18 Oct 2026 20:27:08 +0100
+Subject: [PATCH 09/17] Plus: raise the programmable raster interrupt at HSYNC
+ start
+
+The PRI was compared at HSYNC end, ~R3 characters late. Sonic GX chains PRI
+interrupts (each handler sets PRI to the next line) and missed its next line,
+so its split screens and palette changes stopped. Raise it when HSYNC starts
+on the matching line (as CPCEC does), and raise it at once when PRI is written
+with the current line while HSYNC is active. NO_PRI_FIX restores the old
+timing.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ src/cpc/asic.c | 43 +++++++++++++++++++++++++++++++++++++++++++
+ src/cpc/crtc.c | 15 +++++++++++++++
+ 2 files changed, 58 insertions(+)
+
+diff --git a/src/cpc/asic.c b/src/cpc/asic.c
+index 0ee5ca6..b90e67a 100644
+--- a/src/cpc/asic.c
++++ b/src/cpc/asic.c
+@@ -1052,6 +1052,36 @@ BOOL    ASIC_RasterSplitLineMatch(int CRTC_LineCounter, int CRTC_RasterCounter)
+ 
+                         
+ 
++/* Amiga port (15 Oct 2026): the programmable raster interrupt (PRI) is raised
++ * when HSYNC starts on the matching line, not when it ends as the CPC's own
++ * 52-line interrupt is (as CPCEC does). Raising it ~R3 characters late made
++ * Sonic GX's chain of PRI interrupts (each handler sets PRI to the next line)
++ * miss its next line: its split screens and palette changes stopped. Writing
++ * PRI equal to the current line while HSYNC is active raises it at once.
++ * NO_PRI_FIX restores the old timing. */
++#ifndef NO_PRI_FIX
++static int ASIC_PRI_Matches(int CRTC_LineCounter, int CRTC_RasterCounter)
++{
++	return ASIC_Data.ASIC_RasterInterruptLine != 0 &&
++		CRTC_LineCounter == ((ASIC_Data.ASIC_RasterInterruptLine >> 3) & 0x01f) &&
++		CRTC_RasterCounter == (ASIC_Data.ASIC_RasterInterruptLine & 0x07);
++}
++static void     ASIC_TriggerInterrupt(void);
++void    ASIC_HSyncStart(int CRTC_LineCounter, int CRTC_RasterCounter)
++{
++	if ((ASIC_Data.Flags & ASIC_ENABLED) == 0)
++		return;
++	if (ASIC_PRI_Matches(CRTC_LineCounter, CRTC_RasterCounter))
++	{
++#ifdef TRACE_HW
++		{ extern void Trace_Hw(const char *, int, int); Trace_Hw("PRI fires (hsync start)", ASIC_Data.ASIC_RasterInterruptLine, 0); }
++#endif
++		ASIC_SetRasterInterrupt();
++		ASIC_TriggerInterrupt();
++	}
++}
++#endif
++
+ void    ASIC_HSync(int CRTC_LineCounter, int CRTC_RasterCounter)
+ {
+         /* if ASIC is not enabled, then functions not
+@@ -1059,6 +1089,7 @@ void    ASIC_HSync(int CRTC_LineCounter, int CRTC_RasterCounter)
+         if ((ASIC_Data.Flags & ASIC_ENABLED)==0)	
+                 return;
+ 
++#ifdef NO_PRI_FIX
+         /* is raster interrupt line active? */
+         if (ASIC_Data.ASIC_RasterInterruptLine!=0)
+         {
+@@ -1069,6 +1100,7 @@ void    ASIC_HSync(int CRTC_LineCounter, int CRTC_RasterCounter)
+                         ASIC_SetRasterInterrupt();
+                 }
+         }
++#endif
+ 
+         /* do a dma cycle and maybe set a dma interrupt */
+         ASIC_DoDMA();
+@@ -1483,6 +1515,17 @@ void    ASIC_WriteRam(int Addr,int Data)
+ 				case 0:
+ 				{
+ 					ASIC_Data.ASIC_RasterInterruptLine = (unsigned char)Data;
++#ifndef NO_PRI_FIX
++					{
++						extern int CRTC_InHSync(int *Line, int *Raster);
++						int l, r;
++						if (CRTC_InHSync(&l, &r) && ASIC_PRI_Matches(l, r))
++						{
++							ASIC_SetRasterInterrupt();
++							ASIC_TriggerInterrupt();
++						}
++					}
++#endif
+ 					return;
+ 				}
+ 
+diff --git a/src/cpc/crtc.c b/src/cpc/crtc.c
+index 814ccb9..6fd10d9 100644
+--- a/src/cpc/crtc.c
++++ b/src/cpc/crtc.c
+@@ -122,6 +122,14 @@ static unsigned long ASIC_RasterMA;
+ 
+ CRTC_INTERNAL_STATE CRTC_InternalState;
+ 
++/* Amiga port: for the ASIC's PRI write (see asic.c ASIC_HSyncStart) */
++int CRTC_InHSync(int *Line, int *Raster)
++{
++	*Line = CRTC_InternalState.LineCounter;
++	*Raster = CRTC_InternalState.RasterCounter;
++	return (CRTC_InternalState.CRTC_Flags & CRTC_HS_FLAG) != 0;
++}
++
+ CRTC_INTERNAL_STATE *CRTC_GetInternalState(void)
+ {
+ 	return &CRTC_InternalState;
+@@ -3864,6 +3872,13 @@ static __inline__ void CRTC_DoOneCycle(void)
+ 
+                                     /* enable horizontal sync counter */
+                                     CRTC_SetFlag(CRTC_HS_FLAG);
++#ifndef NO_PRI_FIX
++                                    if (CPCHardware == CPC_HW_CPCPLUS)
++                                    {
++                                            extern void ASIC_HSyncStart(int, int);
++                                            ASIC_HSyncStart(CRTC_InternalState.LineCounter, CRTC_InternalState.RasterCounter);
++                                    }
++#endif
+ 
+                                     /* initialise counter */
+                                     CRTC_InternalState.HorizontalSyncCount = 0;
+-- 
+2.50.0.windows.2
+

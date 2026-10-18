@@ -1,0 +1,118 @@
+From 0d17e29d5946e2af5aad9bbd2054e1250173f663 Mon Sep 17 00:00:00 2001
+From: John Stringer <jcec_1@yahoo.co.uk>
+Date: Sun, 18 Oct 2026 20:27:09 +0100
+Subject: [PATCH 12/17] Paletted renderer: draw the border in the border pen's
+ colour
+
+Render_Paletted_PutBorder (and its inlined copies) took the border colour from
+ConvertedColourTable[16], which only the true-colour renderer fills. In the
+paletted renderer the border therefore kept whatever colour palette index 0
+first held, BASIC's blue, for the rest of the session (R-Type's black border
+showed blue). It now uses the palette index the border pen was remapped to.
+NO_BORDER_FIX restores the old behaviour.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ src/cpc/crtc.c    | 15 ++++++++++++++-
+ src/cpc/render5.c | 13 +++++++++++++
+ 2 files changed, 27 insertions(+), 1 deletion(-)
+
+diff --git a/src/cpc/crtc.c b/src/cpc/crtc.c
+index d32d2b1..3c2783b 100644
+--- a/src/cpc/crtc.c
++++ b/src/cpc/crtc.c
+@@ -84,7 +84,7 @@ extern unsigned long ASIC_ColMask[2];
+ extern int ASIC_ColMaskValid;
+ void ASIC_BuildColMask(void);
+ extern unsigned ConvertedColourTable[32];
+-extern int Render_PaletteIndexBlack, PIXEL_STEP, ModeHorizontalPixelScroll;
++extern int Render_PaletteIndexBlack, Render_PaletteIndexBorder, PIXEL_STEP, ModeHorizontalPixelScroll;
+ extern unsigned int Render_ScrollGraphicsData(unsigned int Data);
+ unsigned long ASIC_BuildDisplayReturnMaskWithPixels(int Line, int HCount, int *pPixels);
+ void Render_Paletted_PutDataWordPLUS(int HorizontalCount, unsigned GraphicsData, int Line, unsigned Mask, int *pPixels);
+@@ -3570,9 +3570,15 @@ void	Graphics_Update(void)
+ 			{
+ 				/* Render_Paletted_PutBorder: cell = first byte of ConvertedColourTable[16],
+ 				 * the 3 bytes after the cell = its bytes 1-3 */
++#ifdef NO_BORDER_FIX
+ 				unsigned v = ConvertedColourTable[16];
+ 				const unsigned char *cb = (const unsigned char *)&v;
+ 				unsigned int fill = (unsigned int)cb[0] * 0x01010101U;
++#else
++				unsigned char cb[4];   /* border fix: see Render_Paletted_PutBorder */
++				unsigned int fill = (unsigned int)(unsigned char)Render_PaletteIndexBorder * 0x01010101U;
++				cb[1] = cb[2] = cb[3] = (unsigned char)Render_PaletteIndexBorder;
++#endif
+ 				unsigned int *d = (unsigned int *)pScreenLine;
+ 				d[0] = fill; d[1] = fill;
+ 				if (PIXEL_STEP == 1) { d[2] = fill; d[3] = fill; }
+@@ -4077,11 +4083,18 @@ static void CRTC_PrepareRun(void)
+ 			break;
+ 		case CRTC_RENDER_BORDER:
+ 		{
++#ifdef NO_BORDER_FIX
+ 			unsigned v = ConvertedColourTable[16];
+ 			const unsigned char *bcol = (const unsigned char *)&v;
+ 			CRTC_Run.draw = 2;
+ 			CRTC_Run.fill = (unsigned int)bcol[0] * 0x01010101U;
+ 			CRTC_Run.o1 = bcol[1]; CRTC_Run.o2 = bcol[2]; CRTC_Run.o3 = bcol[3];
++#else
++			unsigned char b = (unsigned char)Render_PaletteIndexBorder;   /* border fix */
++			CRTC_Run.draw = 2;
++			CRTC_Run.fill = (unsigned int)b * 0x01010101U;
++			CRTC_Run.o1 = CRTC_Run.o2 = CRTC_Run.o3 = b;
++#endif
+ 			break;
+ 		}
+ 		default:
+diff --git a/src/cpc/render5.c b/src/cpc/render5.c
+index 0a0a434..5742481 100644
+--- a/src/cpc/render5.c
++++ b/src/cpc/render5.c
+@@ -241,6 +241,7 @@ Index)
+         ((unsigned char *)pScreen)[0] = PaletteRemap[ColourIndex]
+ 
+ int Render_PaletteIndexBlack = 0;   /* Amiga port: not static (crtc.c inline sync) */
++int Render_PaletteIndexBorder = 0;  /* border fix: palette index of pen 16 (see Render_Paletted_PutBorder) */
+ 
+ 
+ /* find a colour match */
+@@ -370,6 +371,7 @@ int Index)
+ 		/* set mapping */
+ 		PaletteRemap[Index] = PaletteIndex;
+ 		Render_RemapStamp++;   /* Amiga port: cached remapped pixels are stale */
++		if (Index == 16) Render_PaletteIndexBorder = PaletteIndex;
+ 	}
+ }
+ 
+@@ -390,6 +392,7 @@ static void	Render_Paletted_Setup(void)
+ static void Render_Paletted_ClearRemapping(void)
+ {
+ 	int i;
++	Render_PaletteIndexBorder = Render_PaletteIndexBlack;   /* border fix */
+ 
+ 	/* clear all re-map stuff */
+ 	for (i=0; i<32; i++)
+@@ -960,9 +963,19 @@ void    Render_Paletted_PutBorder(int HorizontalCount, int Line)
+ 	 * its first byte and the 3 bytes after the cell get bytes 1-3. Same result
+ 	 * with longs. */
+ 	{
++#ifdef NO_BORDER_FIX
+ 		unsigned v = ConvertedColourTable[16];
+ 		const unsigned char *cb = (const unsigned char *)&v;
+ 		unsigned int fill = (unsigned int)cb[0] * 0x01010101U;
++#else
++		/* Border fix (17 Oct 2026): the border pen's palette index. The
++		 * original took ConvertedColourTable[16], which only the true-colour
++		 * renderer fills, so the paletted border kept the colour that
++		 * palette index 0 happened to hold (BASIC's blue, for ever). */
++		unsigned char cb[4];
++		unsigned int fill = (unsigned int)(unsigned char)Render_PaletteIndexBorder * 0x01010101U;
++		cb[1] = cb[2] = cb[3] = (unsigned char)Render_PaletteIndexBorder;
++#endif
+ 		unsigned int *d = (unsigned int *)pScreen;
+ 		d[0] = fill; d[1] = fill;
+ 		if (PIXEL_STEP == 1) { d[2] = fill; d[3] = fill; }
+-- 
+2.50.0.windows.2
+

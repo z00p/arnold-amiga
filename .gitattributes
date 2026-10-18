@@ -1,0 +1,8 @@
+# Scripts read by WSL/Linux and key scripts read by the Amiga need LF.
+*.sh text eol=lf
+*.py text eol=lf
+*.keys text eol=lf
+run/Keys/* text eol=lf
+Makefile text eol=lf
+*.mak text eol=lf
+*.cpr binary

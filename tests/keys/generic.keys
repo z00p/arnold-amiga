@@ -1,0 +1,7 @@
+# Generic play for pixel-exact checks: fire to start, then move and fire.
+3s   FIRE1 10 every 75 until 12s
+4s   SPACE 10 every 150 until 12s
+13s  JOYRIGHT 40 every 120 until 60s
+14s  FIRE1 6 every 25 until 60s
+15s  JOYLEFT 30 every 160 until 60s
+16s  JOYUP 20 every 200 until 60s

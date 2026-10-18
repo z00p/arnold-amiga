@@ -1,0 +1,3 @@
+# Fire 1 to pass the title, then again.
+6s   FIRE1 10
+10s  FIRE1 10 every 150 until 20s

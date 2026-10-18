@@ -1,0 +1,80 @@
+From 932fbe951c0185b42122bfdd2f30849ae7d212a4 Mon Sep 17 00:00:00 2001
+From: John Stringer <jcec_1@yahoo.co.uk>
+Date: Sun, 18 Oct 2026 20:27:06 +0100
+Subject: [PATCH 06/17] Fix the 16-bit audio output conversion
+
+AudioEvent_ConvertToOutputFormat_16BitStereo/Mono read the event buffer as
+16-bit words, but it holds 4 bytes a sample (left, right, 2 unused; see
+AudioEvent_UpdateCycle). Two samples were consumed per output sample: the
+first half of each block played at half speed and the rest was silence (on a
+big-endian host also the wrong byte). Read it a byte at a time.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ src/cpc/audioevent.c | 22 ++++++++++++----------
+ 1 file changed, 12 insertions(+), 10 deletions(-)
+
+diff --git a/src/cpc/audioevent.c b/src/cpc/audioevent.c
+index 4df02fc..5dc04c8 100644
+--- a/src/cpc/audioevent.c
++++ b/src/cpc/audioevent.c
+@@ -476,21 +476,22 @@ void	AudioEvent_ConvertToOutputFormat_16BitStereo(char *pSrcBuffer, char *pDestB
+ {
+ 	int i;
+ 
+-	unsigned short *pSrcAudioPtr = (unsigned short *)pSrcBuffer;
++	/* Amiga port (14 Oct 2026): the source holds 4 bytes a sample (left, right,
++	   2 unused; AudioEvent_UpdateCycle). It was read as 16-bit words, taking two
++	   samples per output one: the first half of each block played at half speed,
++	   the rest was silence (and on big-endian the wrong byte). */
++	unsigned char *pSrcAudioPtr = (unsigned char *)pSrcBuffer;
+ 	unsigned short *pDestAudioPtr = (unsigned short *)pDestBuffer;
+ 
+ 	for (i=0; i<Count; i++)
+ 	{
+ 		unsigned char PSG_LeftVolume, PSG_RightVolume;
+-		unsigned long Digiblaster_Vol;
+ 	
+ 		/* get left volume, get right volume */
+ 		PSG_LeftVolume = pSrcAudioPtr[0];
+ 		pSrcAudioPtr++;
+ 		PSG_RightVolume = pSrcAudioPtr[0];
+-		pSrcAudioPtr++;
+-		Digiblaster_Vol = Digiblaster_Lookup16Bit[pSrcAudioPtr[0]]>>1;
+-		pSrcAudioPtr+=2;
++		pSrcAudioPtr+=3;
+ 		
+ 		/* mix 8-bit stereo */
+ 		pDestAudioPtr[0] = VolumeLookup16Bit[PSG_LeftVolume];
+@@ -504,22 +505,23 @@ void	AudioEvent_ConvertToOutputFormat_16BitMono(char *pSrcBuffer, char *pDestBuf
+ {
+ 	int i;
+ 
+-	unsigned short *pSrcAudioPtr = (unsigned short *)pSrcBuffer;
++	/* Amiga port (14 Oct 2026): the source holds 4 bytes a sample (left, right,
++	   2 unused; AudioEvent_UpdateCycle). It was read as 16-bit words, taking two
++	   samples per output one: the first half of each block played at half speed,
++	   the rest was silence (and on big-endian the wrong byte). */
++	unsigned char *pSrcAudioPtr = (unsigned char *)pSrcBuffer;
+ 	unsigned short *pDestAudioPtr = (unsigned short *)pDestBuffer;
+ 
+ 	for (i=0; i<Count; i++)
+ 	{
+ 		unsigned char PSG_LeftVolume, PSG_RightVolume;
+ 		unsigned long PSG_Volume;
+-		unsigned long Digiblaster_Vol;
+ 
+ 		/* get left volume, get right volume */
+ 		PSG_LeftVolume = pSrcAudioPtr[0];
+ 		pSrcAudioPtr++;
+ 		PSG_RightVolume = pSrcAudioPtr[0];
+-		pSrcAudioPtr++;
+-		Digiblaster_Vol = Digiblaster_Lookup16Bit[pSrcAudioPtr[0]]>>1;
+-		pSrcAudioPtr+=2;
++		pSrcAudioPtr+=3;
+ 		
+ 		/* mix it */
+ 		PSG_Volume = (PSG_LeftVolume + PSG_RightVolume)>>1;
+-- 
+2.50.0.windows.2
+

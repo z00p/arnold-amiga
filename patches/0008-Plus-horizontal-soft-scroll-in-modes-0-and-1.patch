@@ -1,0 +1,115 @@
+From c3b17fb6327ad96d00458114efc4a3de983b2b1e Mon Sep 17 00:00:00 2001
+From: John Stringer <jcec_1@yahoo.co.uk>
+Date: Sun, 18 Oct 2026 20:27:07 +0100
+Subject: [PATCH 08/17] Plus: horizontal soft scroll in modes 0 and 1
+
+The Plus soft scroll delays the pixel stream by whole pixels of the current
+mode. The paletted renderer shifted the two graphics bytes as plain bits,
+which is right only in mode 2: in modes 0 and 1 a pixel's bits are
+interleaved across the byte, so the shift mixed bits of neighbouring pixels
+(outlines right, colours scrambled: Sonic GX throughout, Ghosts'n Goblins at
+times). Render_ScrollGraphicsData does the per-pixel shift the true-colour
+renderer already uses; the pixel count is also kept in step with mode changes.
+Checked against CPCEC frame by frame. NO_HSCROLL_FIX restores the old shift.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ src/cpc/crtc.c    |  5 +++--
+ src/cpc/render5.c | 30 +++++++++++++++++++++++++++---
+ 2 files changed, 30 insertions(+), 5 deletions(-)
+
+diff --git a/src/cpc/crtc.c b/src/cpc/crtc.c
+index 9426475..814ccb9 100644
+--- a/src/cpc/crtc.c
++++ b/src/cpc/crtc.c
+@@ -81,6 +81,7 @@ extern int ASIC_ColMaskValid;
+ void ASIC_BuildColMask(void);
+ extern unsigned ConvertedColourTable[32];
+ extern int Render_PaletteIndexBlack, PIXEL_STEP, ModeHorizontalPixelScroll;
++extern unsigned int Render_ScrollGraphicsData(unsigned int Data);
+ unsigned long ASIC_BuildDisplayReturnMaskWithPixels(int Line, int HCount, int *pPixels);
+ void Render_Paletted_PutDataWordPLUS(int HorizontalCount, unsigned GraphicsData, int Line, unsigned Mask, int *pPixels);
+ 
+@@ -3511,7 +3512,7 @@ void	Graphics_Update(void)
+ 					}
+ 					else
+ 					{
+-						unsigned Data = (unsigned)CRTC_InternalState.GraphicsLong >> ModeHorizontalPixelScroll;
++						unsigned Data = ModeHorizontalPixelScroll ? Render_ScrollGraphicsData((unsigned)CRTC_InternalState.GraphicsLong) : (unsigned)CRTC_InternalState.GraphicsLong;
+ 						CRTC_FastPutByte((Data & 0x0ff00) >> 8);
+ 						CRTC_FastPutByte(Data & 0x0ff);
+ 					}
+@@ -4123,7 +4124,7 @@ static void CRTC_RunCells(int Count)
+ 						continue;
+ 					}
+ 					{
+-						unsigned Data = (unsigned)glong >> scroll;
++						unsigned Data = scroll ? Render_ScrollGraphicsData((unsigned)glong) : (unsigned)glong;
+ 						unsigned b;
+ 						const RENDER_PIXCACHE *e;
+ 						b = (Data & 0x0ff00) >> 8;
+diff --git a/src/cpc/render5.c b/src/cpc/render5.c
+index b3fad1a..d74ac12 100644
+--- a/src/cpc/render5.c
++++ b/src/cpc/render5.c
+@@ -560,6 +560,29 @@ int CurrentModeMask;
+ int CurrentModeShift;
+ int ModeHorizontalPixelScroll;
+ int CurrentTopShift;
++static int HorizontalPixelScroll = 0;
++
++/* Amiga port (15 Oct 2026): Plus horizontal soft scroll in the paletted
++ * renderer. The scroll delays the pixel stream by whole pixels of the current
++ * mode (ModeHorizontalPixelScroll = dots >> mode shift). The paletted path did
++ * a plain bit shift of the two graphics bytes, which is right only in mode 2:
++ * in modes 0 and 1 a pixel's bits are interleaved across the byte, so the
++ * shift mixed bits of neighbouring pixels (outlines right, colours scrambled:
++ * Sonic GX throughout, Ghosts'n Goblins at times). This is the per-pixel shift
++ * Arnold's true-colour renderer already uses. NO_HSCROLL_FIX: the old shift. */
++unsigned int Render_ScrollGraphicsData(unsigned int Data)
++{
++	int i;
++#ifdef NO_HSCROLL_FIX
++	return Data >> ModeHorizontalPixelScroll;
++#else
++	if (CurrentMode == 2)
++		return Data >> ModeHorizontalPixelScroll;
++	for (i = 0; i < ModeHorizontalPixelScroll; i++)
++		Data = ((Data & (unsigned int)CurrentModeMask) >> 1) | ((Data & ~(unsigned int)CurrentModeMask) >> CurrentTopShift);
++	return Data;
++#endif
++}
+ 
+ /* Amiga port: B fast path. For each mode and byte value, the screen bytes a
+  * graphics byte becomes (pens through PaletteRemap), built on first use and
+@@ -621,6 +644,9 @@ void    Render_SetPixelTranslation(int ModeIndex)
+                         CurrentTopShift = 1;
+ 						break;
+         }
++#ifndef NO_HSCROLL_FIX
++        ModeHorizontalPixelScroll = HorizontalPixelScroll >> CurrentModeShift;
++#endif
+ 
+         pPixelData = CPC_GetModePixelData(ModeIndex);
+ 		pPackedPixels = CPC_GetModePackedPixelData(ModeIndex);
+@@ -950,8 +976,6 @@ void    Render_Paletted_PutBorder(int HorizontalCount, int Line)
+ }
+ 
+ 
+-static int HorizontalPixelScroll = 0;
+-
+ void    Render_SetHorizontalPixelScroll(int PixelScroll)
+ {
+         HorizontalPixelScroll = PixelScroll;
+@@ -1301,7 +1325,7 @@ void    Render_Paletted_PutDataWordPLUS(int HorizontalCount,unsigned GraphicsDat
+ 
+ 	Render_CalcRenderAddress(HorizontalCount,Line);
+ 
+-	GraphicsData = GraphicsData>>ModeHorizontalPixelScroll;
++	GraphicsData = Render_ScrollGraphicsData(GraphicsData);
+ 
+ 	/* Amiga port: B fast path when no sprite pixel lands on any pixel this
+ 	 * PIXEL_STEP draws (only even mask bits are tested at PIXEL_STEP 2). */
+-- 
+2.50.0.windows.2
+

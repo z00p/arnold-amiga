@@ -1,0 +1,9 @@
+# Ghosts n Goblins frame dumps for the A1200 (exact CPC frames, compared with the PC)
+6s   FIRE1 10
+10s  FIRE1 10
+13s  JOYRIGHT 100 every 150 until 40s
+14s  FIRE1 5 every 60 until 40s
+1000 SNAP
+1400 SNAP
+1800 SNAP
+1850 QUIT

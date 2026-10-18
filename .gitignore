@@ -1,0 +1,15 @@
+# Arnold for Amiga. No game files: supply cartridges, disks and snapshots
+# locally in run/ (run/Keys holds the test key scripts).
+/run/*
+!/run/Keys/
+/build/
+/shots/
+/toolchain/
+/winuae/bin/
+/winuae/wb/
+*.ppm
+*.log
+__pycache__/
+arnold/src/amiga/obj-*/
+arnold/src/amiga/Arnold*
+arnold/roms/cpcplus/out.tmp

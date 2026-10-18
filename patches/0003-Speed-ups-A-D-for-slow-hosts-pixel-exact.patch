@@ -1,0 +1,664 @@
+From 66f00c5c9029e10de8d72889183e968e632a9aa7 Mon Sep 17 00:00:00 2001
+From: John Stringer <jcec_1@yahoo.co.uk>
+Date: Sun, 18 Oct 2026 20:27:05 +0100
+Subject: [PATCH 03/17] Speed-ups A-D for slow hosts (pixel-exact)
+
+A: skip cells outside the visible area.  B: cache the pixel longs a cell
+draws.  C: per-column sprite mask so columns with no sprite skip the sprite
+merge.  D: inline paletted cell path in Graphics_Update.
+Every frame of the test set is identical to the unmodified renderer (headless
+checksums). NO_A / NO_B / NO_C / NO_D restore the original code.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ src/cpc/asic.c    |  47 ++++++++++++
+ src/cpc/crtc.c    | 129 +++++++++++++++++++++++++++++++
+ src/cpc/render.h  |  11 +++
+ src/cpc/render5.c | 190 ++++++++++++++++++++++++++++++++++++----------
+ 4 files changed, 335 insertions(+), 42 deletions(-)
+
+diff --git a/src/cpc/asic.c b/src/cpc/asic.c
+index 8049e1b..0ee5ca6 100644
+--- a/src/cpc/asic.c
++++ b/src/cpc/asic.c
+@@ -57,6 +57,36 @@
+ 
+ 
+ static ASIC_DATA ASIC_Data;
++/* Amiga port: C. Bit c set = some sprite active on this line covers CRTC column
++ * c (0-63). Rebuilt lazily after anything it depends on changes (enable masks,
++ * sprite position/size); lets ASIC_BuildDisplayReturnMaskWithPixels skip the
++ * 16-sprite loop for the columns no sprite touches. */
++unsigned long ASIC_ColMask[2];
++int ASIC_ColMaskValid = 0;
++
++/* rebuild ASIC_ColMask from the sprites active on this line (none: all zero) */
++void ASIC_BuildColMask(void)
++{
++	/* The sprite loop only runs if (EnableMask & OnLine) != 0, but then draws
++	 * every sprite in OnLine (13 Oct 2026: using Enable & OnLine here missed
++	 * sprites and changed 4 pixels in Pang). */
++	unsigned long Active = (ASIC_Data.SpriteEnableMask & ASIC_Data.SpriteEnableMaskOnLine) ?
++		ASIC_Data.SpriteEnableMaskOnLine : 0;
++	int s, d;
++	ASIC_ColMask[0] = ASIC_ColMask[1] = 0;
++	for (s = 0; s < 16; s++)
++		if (Active & (1UL << s))
++		{
++			unsigned long w = ASIC_Data.SpriteInfo[s].WidthInColumns;
++			if (w > 64) w = 64;
++			for (d = 0; d < (int)w; d++)
++			{
++				int c = (int)((ASIC_Data.SpriteInfo[s].MinColumn + d) & 0x03f);
++				ASIC_ColMask[c >> 5] |= 1UL << (c & 31);
++			}
++		}
++	ASIC_ColMaskValid = 1;
++}
+ 
+ static void    ASIC_TriggerInterrupt(void);
+ void    ASIC_DMA_DisableChannels(unsigned char Data);
+@@ -445,6 +475,7 @@ void    ASIC_Reset(void)
+         }
+ 
+         ASIC_Data.SpriteEnableMask = 0;
++		ASIC_ColMaskValid = 0;
+ 
+         /* no scan-line interrupt */
+         ASIC_Data.ASIC_RasterInterruptLine = 0;
+@@ -902,6 +933,19 @@ unsigned long ASIC_BuildDisplayReturnMaskWithPixels(int Line, int HCount, /*int
+ 
+ 	unsigned long GraphicsMask = 0;
+ 
++	if ((ASIC_Data.SpriteEnableMask & ASIC_Data.SpriteEnableMaskOnLine)!=0)
++	{
++		/* Amiga port: no sprite covers this column: same result as the loop */
++#ifndef NO_C
++		if (!ASIC_ColMaskValid) ASIC_BuildColMask();
++		{
++			int c = HCount & 0x03f;
++			if ((ASIC_ColMask[c >> 5] & (1UL << (c & 31))) == 0)
++				return 0x0ffff;
++		}
++#endif
++	}
++
+ 	if ((ASIC_Data.SpriteEnableMask & ASIC_Data.SpriteEnableMaskOnLine)!=0)
+ 	{
+ 		int     i;
+@@ -1237,6 +1281,7 @@ static void ASIC_SetupSpriteRenderInfo(int SpriteIndex)
+ 
+ 				pRenderInfo->WidthInColumns = ((pRenderInfo->x & 0x0f) + 15 + (1<<(XMag-1+4)))>>4;
+ 				pRenderInfo->MinColumn = (pRenderInfo->x>>4) & 0x03f;
++				ASIC_ColMaskValid = 0;
+ 
+                 ASIC_Data.SpriteEnableMask |= (1<<SpriteIndex);
+                 
+@@ -1252,6 +1297,7 @@ static void ASIC_SetupSpriteRenderInfo(int SpriteIndex)
+         {
+ 
+                 ASIC_Data.SpriteEnableMask &= ~(1<<SpriteIndex);
++				ASIC_ColMaskValid = 0;
+ 
+                 /* active on this line */
+ //				if (ASIC_IsSpriteOnLine(pRenderInfo, CurrentLine))
+@@ -1909,6 +1955,7 @@ void	ASIC_GenerateSpriteActiveMaskForLine(int Line)
+ 
+         /* return mask */
+         ASIC_Data.SpriteEnableMaskOnLine = SpriteActiveMask;
++		ASIC_ColMaskValid = 0;
+ 
+ /*		return SpriteActiveMask; */
+ }
+diff --git a/src/cpc/crtc.c b/src/cpc/crtc.c
+index 0d84aaa..bfcf7b8 100644
+--- a/src/cpc/crtc.c
++++ b/src/cpc/crtc.c
+@@ -72,6 +72,33 @@ static void     CRTC_RenderBorder_Paletted(void);
+ static void		CRTC_RenderSync_Paletted(void);
+ 
+ static void     CRTC_SetRenderingFunction(void);
++/* Amiga port: visible window, set by the renderer (render5.c) */
++/* Amiga port D: the paletted renderer is in use (the inline paths in
++ * Graphics_Update produce exactly what its functions would). */
++static int CRTC_PalettedFast = 0;
++extern unsigned long ASIC_ColMask[2];
++extern int ASIC_ColMaskValid;
++void ASIC_BuildColMask(void);
++extern unsigned ConvertedColourTable[32];
++extern int Render_PaletteIndexBlack, PIXEL_STEP, ModeHorizontalPixelScroll;
++unsigned long ASIC_BuildDisplayReturnMaskWithPixels(int Line, int HCount, int *pPixels);
++void Render_Paletted_PutDataWordPLUS(int HorizontalCount, unsigned GraphicsData, int Line, unsigned Mask, int *pPixels);
++
++/* one graphics byte through the remapped-pixel cache, at the draw pointer */
++#define CRTC_FastPutByte(Byte)														{																					const RENDER_PIXCACHE *e_ = &pPixCache[Byte];									if (e_->Stamp != Render_RemapStamp) e_ = Render_CachedPixels(Byte);			((unsigned int *)pScreenLine)[0] = e_->u.l[0];									if (PIXEL_STEP == 1) ((unsigned int *)pScreenLine)[1] = e_->u.l[1];			pScreenLine += Render_CellBytes >> 1;										}
++
++/* Same test as Render_SkipCellIfHidden (render5.c), inline: it runs once per
++ * microsecond of CPC time. */
++extern unsigned char *pScreenLine, *pRowStart;
++extern int RenderRowVisible, Render_VisX0, Render_VisX1, Render_CellBytes;
++static __inline__ int Render_SkipCellIfHidden(void)
++{
++	int col = (int)(pScreenLine - pRowStart);
++	if (RenderRowVisible && col + Render_CellBytes >= Render_VisX0 && col < Render_VisX1)
++		return 0;
++	pScreenLine += Render_CellBytes;
++	return 1;
++}
+ static void     CRTC_InitVsync(void);
+ static void CRTC_DoLineChecks(void);
+ static void CRTC_DoLineChecksCRTC2(void);
+@@ -1456,6 +1483,7 @@ void	CRTC_SetTrueColourRender(BOOL State)
+ {
+ 	if (State==TRUE)
+ 	{
++		CRTC_PalettedFast = 0;
+ 		CRTC_InternalState.pCRTC_GetGraphicsDataCPC = CRTC_GetGraphicsDataCPC_TrueColour;
+ 		CRTC_InternalState.pCRTC_GetGraphicsDataPLUS = CRTC_GetGraphicsDataPLUS_TrueColour;
+ 		CRTC_InternalState.pCRTC_RenderBorder = CRTC_RenderBorder_TrueColour;
+@@ -1463,6 +1491,7 @@ void	CRTC_SetTrueColourRender(BOOL State)
+ 	}
+ 	else
+ 	{
++		CRTC_PalettedFast = 1;
+ 		CRTC_InternalState.pCRTC_GetGraphicsDataCPC = CRTC_GetGraphicsDataCPC_Paletted;
+ 		CRTC_InternalState.pCRTC_GetGraphicsDataPLUS = CRTC_GetGraphicsDataPLUS_Paletted;
+ 		CRTC_InternalState.pCRTC_RenderBorder = CRTC_RenderBorder_Paletted;
+@@ -3424,9 +3453,109 @@ void	Graphics_Update(void)
+ 	if (CRTC_InternalState.Monitor_State.HSyncRetraceCount!=0)
+ 		return;
+ 
++	/* Amiga port: cells outside the window Render_DumpScreen4 copies out are
++	 * never seen, so don't draw them (~40% of all cells; the running draw
++	 * pointer still moves on, see Render_SkipCellIfHidden). The one thing drawing
++	 * does besides pixels is the Plus graphics fetch shifting GraphicsLong (the
++	 * next cell's soft scroll uses its top half), so that still happens. */
++#ifndef NO_A   /* diagnostic switches NO_A..NO_D turn each speed-up off */
++	if (Render_SkipCellIfHidden())
++	{
++		if (CRTC_RenderMode == RENDER_MODE_ASIC_FEATURES &&
++			(CRTC_InternalState.CRTC_Flags & (CRTC_HDISP_FLAG | CRTC_VDISP_FLAG | CRTC_R8DT_FLAG)) == (CRTC_HDISP_FLAG | CRTC_VDISP_FLAG) &&
++			!((CRTC_InternalState.Monitor_State.MonitorFlags & MONITOR_IN_VSYNC) || (CRTC_InternalState.CRTC_Flags & CRTC_HS_FLAG) || ASICCRTC_BlackDisplay))
++		{
++			unsigned short LocalMA = (unsigned short)(ASICCRTC_MALine + CRTC_InternalState.HCount);
++			unsigned short Addr = (unsigned short)(((LocalMA & 0x03000)<<2) | ((LocalMA & 0x03ff)<<1));
++			Addr |= ASIC_RasterMA;
++			CRTC_InternalState.GraphicsLong = (CRTC_InternalState.GraphicsLong<<16) |
++				((Z80MemoryBase[(unsigned long)(Addr)])<<8) | (Z80MemoryBase[(unsigned long)(Addr+1)]);
++		}
++		return;
++	}
++#endif
++
+ 	/* do draw */
+ 	CRTC_SetRenderingFunction();
+ 
++#ifndef NO_D
++	/* Amiga port D: the common cells without any function call. Each branch
++	 * does exactly what the paletted function it replaces does. */
++	if (CRTC_PalettedFast)
++	{
++		switch (CRTC_InternalState.CRTC_RenderType)
++		{
++			case CRTC_RENDER_GRAPHICS:
++			{
++				unsigned short LocalMA, Addr;
++				if (CRTC_RenderMode == RENDER_MODE_ASIC_FEATURES)
++				{
++					/* CRTC_GetGraphicsDataPLUS_Paletted */
++					int c;
++					LocalMA = (unsigned short)(ASICCRTC_MALine + CRTC_InternalState.HCount);
++					Addr = (unsigned short)(((LocalMA & 0x03000)<<2) | ((LocalMA & 0x03ff)<<1));
++					Addr |= ASIC_RasterMA;
++					CRTC_InternalState.GraphicsLong = (CRTC_InternalState.GraphicsLong<<16) |
++						((Z80MemoryBase[(unsigned long)(Addr)])<<8) | (Z80MemoryBase[(unsigned long)(Addr+1)]);
++					if (!ASIC_ColMaskValid) ASIC_BuildColMask();
++					c = CRTC_InternalState.HCount & 0x03f;
++#ifdef NO_C
++					if (1)
++#else
++					if (ASIC_ColMask[c >> 5] & (1UL << (c & 31)))
++#endif
++					{
++						/* a sprite may be here: the full path */
++						unsigned long Mask = ASIC_BuildDisplayReturnMaskWithPixels(ASICCRTC_Line, CRTC_InternalState.HCount, CRTC_InternalState.Pixels);
++						Render_Paletted_PutDataWordPLUS(CRTC_InternalState.Monitor_State.MonitorHorizontalCount, CRTC_InternalState.GraphicsLong, CRTC_InternalState.Monitor_State.MonitorScanLineCount, Mask, CRTC_InternalState.Pixels);
++					}
++					else
++					{
++						unsigned Data = (unsigned)CRTC_InternalState.GraphicsLong >> ModeHorizontalPixelScroll;
++						CRTC_FastPutByte((Data & 0x0ff00) >> 8);
++						CRTC_FastPutByte(Data & 0x0ff);
++					}
++				}
++				else
++				{
++					/* CRTC_GetGraphicsDataCPC_Paletted */
++					LocalMA = (unsigned short)(CRTC_InternalState.MALine + CRTC_InternalState.HCount);
++					Addr = (unsigned short)(((LocalMA & 0x03000)<<2) | ((LocalMA & 0x03ff)<<1));
++					Addr |= CRTC_InternalState.RasterMA;
++					CRTC_FastPutByte(Z80MemoryBase[(unsigned long)(Addr)]);
++					CRTC_FastPutByte(Z80MemoryBase[(unsigned long)(Addr+1)]);
++				}
++			}
++			return;
++
++			case CRTC_RENDER_BORDER:
++			{
++				/* Render_Paletted_PutBorder: cell = first byte of ConvertedColourTable[16],
++				 * the 3 bytes after the cell = its bytes 1-3 */
++				unsigned v = ConvertedColourTable[16];
++				const unsigned char *cb = (const unsigned char *)&v;
++				unsigned int fill = (unsigned int)cb[0] * 0x01010101U;
++				unsigned int *d = (unsigned int *)pScreenLine;
++				d[0] = fill; d[1] = fill;
++				if (PIXEL_STEP == 1) { d[2] = fill; d[3] = fill; }
++				pScreenLine += Render_CellBytes;
++				pScreenLine[0] = cb[1]; pScreenLine[1] = cb[2]; pScreenLine[2] = cb[3];
++			}
++			return;
++
++			case CRTC_RENDER_SYNC:
++			{
++				unsigned int fill = (unsigned int)(unsigned char)Render_PaletteIndexBlack * 0x01010101U;
++				unsigned int *d = (unsigned int *)pScreenLine;
++				d[0] = fill; d[1] = fill;
++				if (PIXEL_STEP == 1) { d[2] = fill; d[3] = fill; }
++				pScreenLine += Render_CellBytes;
++			}
++			return;
++		}
++	}
++#endif
++
+ 	switch (CRTC_InternalState.CRTC_RenderType)
+ 	{
+ 		case CRTC_RENDER_GRAPHICS:
+diff --git a/src/cpc/render.h b/src/cpc/render.h
+index 338b39a..fdc79c5 100644
+--- a/src/cpc/render.h
++++ b/src/cpc/render.h
+@@ -33,6 +33,17 @@ typedef struct
+ 	unsigned int     Pixel[8];
+ } PIXEL_DATA;
+ 
++/* Amiga port: cached, palette-remapped screen bytes for one graphics byte
++ * (render5.c); crtc.c uses it for its inline fast path. */
++typedef struct
++{
++	unsigned long Stamp;
++	union { unsigned char b[8]; unsigned int l[2]; } u;   /* 32-bit words (unsigned long is 64-bit on x86-64) */
++} RENDER_PIXCACHE;
++extern RENDER_PIXCACHE *pPixCache;
++extern unsigned long Render_RemapStamp;
++const RENDER_PIXCACHE *Render_CachedPixels(unsigned Byte);
++
+ /* these values take into account the horizontal and vertical retrace times, the actual
+ visible portion is somewhat smaller */
+ #define		NOPS_PER_LINE	64			/* NOP time for a single scan line */
+diff --git a/src/cpc/render5.c b/src/cpc/render5.c
+index feb7195..2a23179 100644
+--- a/src/cpc/render5.c
++++ b/src/cpc/render5.c
+@@ -54,7 +54,11 @@ int FillScanLines = 0;
+ /* Amiga port: set by a host that wants to know which surface lines changed in
+  * Render_DumpScreen4 (NULL: copy every line, as before). */
+ void (*Render_LineChangedHook)(int SurfaceLine) = NULL;
+-static int PIXEL_STEP;
++/* Visible window (see InitialiseRender): bytes within a row, and rows. Until
++ * set, everything is drawn. */
++int Render_VisX0 = 0, Render_VisX1 = 0x7fffffff, Render_CellBytes = 8;
++static int Render_VisTop = 0, Render_VisLines = 0x7fffffff;
++int PIXEL_STEP;   /* Amiga port: not static */
+ int PIXEL_STEP_SHIFT;
+ static int Render_CPCRenderHeight, Render_CPCRenderWidth;
+ static int Render_CPCXOffset, Render_CPCYOffset;
+@@ -80,7 +84,7 @@ static unsigned char    *pScreenBase = NULL;
+ /* number of bytes in screen buffer width */
+ static unsigned    ScreenPitch = 0;
+ static unsigned ScreenHeight = 0;
+-static unsigned char *pScreenLine;
++unsigned char *pScreenLine;   /* Amiga port: not static, crtc.c checks visibility inline */
+ 
+ /* current graphics format */
+ static GRAPHICS_FORMAT  CurrentGraphicsFormat;
+@@ -97,7 +101,7 @@ static PALETTE_ENTRY_RGB888    UnConvertedColourTable[32];
+ /* **** RGB stuff **** */
+ 
+ /* each element contains colours packed into destination image format */
+-static unsigned    ConvertedColourTable[32];
++unsigned    ConvertedColourTable[32];   /* Amiga port: not static (crtc.c inline border) */
+ 
+ /* TrueColour RGB version of set colour */
+ static void Render_TrueColourRGB_SetColour(const RGBCOLOUR *pColour, 
+@@ -110,6 +114,7 @@ static void Render_TrueColourRGB_Setup(void);
+ screen, this then gives the index within the palette below for
+ the actual colour */
+ static signed int PaletteRemap[32];
++extern unsigned long Render_RemapStamp;   /* Amiga port: defined with the pixel cache below */
+ 
+ 
+ /* colours in palette */
+@@ -234,7 +239,7 @@ Index)
+ #define Render_Paletted_WriteColourToScreenBuffer(pScreen, ColourIndex) \
+         ((unsigned char *)pScreen)[0] = PaletteRemap[ColourIndex]
+ 
+-static int Render_PaletteIndexBlack = 0;
++int Render_PaletteIndexBlack = 0;   /* Amiga port: not static (crtc.c inline sync) */
+ 
+ 
+ /* find a colour match */
+@@ -363,6 +368,7 @@ int Index)
+ 	{
+ 		/* set mapping */
+ 		PaletteRemap[Index] = PaletteIndex;
++		Render_RemapStamp++;   /* Amiga port: cached remapped pixels are stale */
+ 	}
+ }
+ 
+@@ -388,6 +394,7 @@ static void Render_Paletted_ClearRemapping(void)
+ 	for (i=0; i<32; i++)
+ 	{
+ 		PaletteRemap[i] = -1;
++		Render_RemapStamp++;   /* Amiga port: cached remapped pixels are stale */
+ 	}
+ }
+ 
+@@ -426,11 +433,13 @@ void    Palette_Reset(void)
+ 	for (i=0; i<32; i++)
+ 	{
+ 		PaletteRemap[i] = -1;
++		Render_RemapStamp++;   /* Amiga port: cached remapped pixels are stale */
+ 	}
+ 
+ 	CPC_UpdateColours();
+ }
+ 
++
+ void	Palette_Set(void)
+ {
+ 	int i;
+@@ -552,6 +561,44 @@ int CurrentModeShift;
+ int ModeHorizontalPixelScroll;
+ int CurrentTopShift;
+ 
++/* Amiga port: B fast path. For each mode and byte value, the screen bytes a
++ * graphics byte becomes (pens through PaletteRemap), built on first use and
++ * rebuilt after any PaletteRemap or PIXEL_STEP change (Render_RemapStamp).
++ * Lets a cell without sprites be written as 32-bit stores. */
++unsigned long Render_RemapStamp = 1;
++static RENDER_PIXCACHE Render_PixCache[4][256];
++static PIXEL_DATA *Render_PixCacheKey[4];
++RENDER_PIXCACHE *pPixCache = Render_PixCache[0];
++
++static void Render_SelectPixCache(void)
++{
++	int slot = CurrentMode & 3;
++	if (Render_PixCacheKey[slot] != pPixelData)
++	{
++		int i;
++		Render_PixCacheKey[slot] = pPixelData;
++		for (i = 0; i < 256; i++) Render_PixCache[slot][i].Stamp = 0;
++	}
++	pPixCache = Render_PixCache[slot];
++}
++
++const RENDER_PIXCACHE *Render_CachedPixels(unsigned Byte)
++{
++	RENDER_PIXCACHE *e = &pPixCache[Byte];
++	if (e->Stamp != Render_RemapStamp)
++	{
++		const PIXEL_DATA *pd = &pPixelData[Byte];
++		int i, k = 0;
++		for (i = 0; i < 8; i += PIXEL_STEP)
++			e->u.b[k++] = (unsigned char)PaletteRemap[pd->Pixel[i]];
++		e->Stamp = Render_RemapStamp;
++	}
++	return e;
++}
++
++/* one graphics byte: 4 screen bytes (lores) or 8 (PIXEL_STEP 1) */
++#define Render_FastPutByte(pScreen, Byte)										{																			const RENDER_PIXCACHE *e_ = Render_CachedPixels(Byte);					((unsigned int *)(pScreen))[0] = e_->u.l[0];							if (PIXEL_STEP == 1) ((unsigned int *)(pScreen))[1] = e_->u.l[1]; 		pScreen += 8 / PIXEL_STEP;											}
++
+ void    Render_SetPixelTranslation(int ModeIndex)
+ {
+         CurrentMode = ModeIndex;
+@@ -577,6 +624,7 @@ void    Render_SetPixelTranslation(int ModeIndex)
+ 
+         pPixelData = CPC_GetModePixelData(ModeIndex);
+ 		pPackedPixels = CPC_GetModePackedPixelData(ModeIndex);
++		Render_SelectPixCache();   /* Amiga port */
+ 
+ }
+ 
+@@ -837,57 +885,66 @@ void    Render_Paletted_PutDataWord(int HorizontalCount,unsigned GraphicsData, i
+ 
+ 	Render_CalcRenderAddress(HorizontalCount,Line);
+ 
++#ifndef NO_B
++	/* Amiga port: B fast path (cached, remapped, 32-bit stores) */
++	(void)i; (void)pThisPixelData;
++	Render_FastPutByte(pScreen, (GraphicsData>>8) & 0x0ff);
++	Render_FastPutByte(pScreen, GraphicsData & 0x0ff);
++#else
+     pThisPixelData = &pPixelData[(unsigned)((GraphicsData>>8) & 0x0ff)];
+-
+-    for (i=0; i<8; i+=PIXEL_STEP)
+-    {
+-        int     Pixel;
+-
+-        Pixel = pThisPixelData->Pixel[i];
+-        Render_Paletted_WriteColourToScreenBuffer(pScreen, Pixel);
+-        pScreen+=BytesPerPixel;
+-    }
+-
++    for (i=0; i<8; i+=PIXEL_STEP) { Render_Paletted_WriteColourToScreenBuffer(pScreen, pThisPixelData->Pixel[i]); pScreen+=BytesPerPixel; }
+     pThisPixelData = &pPixelData[(unsigned)(GraphicsData & 0x0ff)];
+-
+-    for (i=0; i<8; i+=PIXEL_STEP)
+-    {
+-        int Pixel;
+-
+-        Pixel = pThisPixelData->Pixel[i];
+-        Render_Paletted_WriteColourToScreenBuffer(pScreen, Pixel);
+-        pScreen+=BytesPerPixel;
+-    }
++    for (i=0; i<8; i+=PIXEL_STEP) { Render_Paletted_WriteColourToScreenBuffer(pScreen, pThisPixelData->Pixel[i]); pScreen+=BytesPerPixel; }
++#endif
+ 
+ 	Render_UpdateRenderAddress;
+ }
+ 
++
+ void    Render_Paletted_PutSync(int HorizontalCount, int Line)
+ {
+-    int i;
+-
+     Render_CalcRenderAddress(HorizontalCount,Line);
+ 
+-    for (i=0; i<16; i+=PIXEL_STEP)
+-    {
+-       ((unsigned char *)pScreen)[0] = Render_PaletteIndexBlack;
+-       pScreen+=BytesPerPixel;
+-    }
++#ifdef NO_B
++	{ int i; for (i=0; i<16; i+=PIXEL_STEP) { ((unsigned char *)pScreen)[0] = Render_PaletteIndexBlack; pScreen+=BytesPerPixel; } }
++#else
++	/* Amiga port: same bytes as 16/PIXEL_STEP byte stores, as longs */
++	{
++		unsigned int fill = (unsigned int)(unsigned char)Render_PaletteIndexBlack * 0x01010101U;
++		unsigned int *d = (unsigned int *)pScreen;
++		d[0] = fill; d[1] = fill;
++		if (PIXEL_STEP == 1) { d[2] = fill; d[3] = fill; }
++		pScreen += 16 / PIXEL_STEP;
++	}
++#endif
+ 
+ 	Render_UpdateRenderAddress;
+ }
+ 
+ void    Render_Paletted_PutBorder(int HorizontalCount, int Line)
+ {
+-    int i;
+-
+ 	Render_CalcRenderAddress(HorizontalCount, Line);
+ 
+-    for (i=0; i<16; i+=PIXEL_STEP)
+-    {
+-        Render_TrueColourRGB_WriteColourToScreenBuffer(pScreen, 16);
+-        pScreen+=BytesPerPixel;
+-    }
++#ifdef NO_B
++	{ int i; for (i=0; i<16; i+=PIXEL_STEP) { Render_TrueColourRGB_WriteColourToScreenBuffer(pScreen, 16); pScreen+=BytesPerPixel; } }
++#else
++	/* Amiga port: the original writes the 4-byte ConvertedColourTable[16] at
++	 * each of the 16/PIXEL_STEP byte positions, so the cell ends up filled with
++	 * its first byte and the 3 bytes after the cell get bytes 1-3. Same result
++	 * with longs. */
++	{
++		unsigned v = ConvertedColourTable[16];
++		const unsigned char *cb = (const unsigned char *)&v;
++		unsigned int fill = (unsigned int)cb[0] * 0x01010101U;
++		unsigned int *d = (unsigned int *)pScreen;
++		d[0] = fill; d[1] = fill;
++		if (PIXEL_STEP == 1) { d[2] = fill; d[3] = fill; }
++		pScreen += 16 / PIXEL_STEP;
++		((unsigned char *)pScreen)[0] = cb[1];
++		((unsigned char *)pScreen)[1] = cb[2];
++		((unsigned char *)pScreen)[2] = cb[3];
++	}
++#endif
+ 
+ 	Render_UpdateRenderAddress;
+ }
+@@ -1246,6 +1303,21 @@ void    Render_Paletted_PutDataWordPLUS(int HorizontalCount,unsigned GraphicsDat
+ 
+ 	GraphicsData = GraphicsData>>ModeHorizontalPixelScroll;
+ 
++	/* Amiga port: B fast path when no sprite pixel lands on any pixel this
++	 * PIXEL_STEP draws (only even mask bits are tested at PIXEL_STEP 2). */
++#ifndef NO_B
++	{
++		unsigned Used = (PIXEL_STEP == 2) ? 0x5555 : 0xffff;
++		if ((Mask & Used) == Used)
++		{
++			Render_FastPutByte(pScreen, (GraphicsData & 0x0ff00) >> 8);
++			Render_FastPutByte(pScreen, GraphicsData & 0x0ff);
++			Render_UpdateRenderAddress;
++			return;
++		}
++	}
++#endif
++
+     {
+         pThisPixelData = &pPixelData[(unsigned)(GraphicsData & 0x0ff00)>>8];
+ 
+@@ -1351,6 +1423,9 @@ void	my_memcpy(void *pDest, void *pSrc, unsigned long Length)
+ }
+ 
+ 
++
++
++
+ void    Render_DumpScreen4(void)
+ {
+         unsigned char   *pScreen;
+@@ -1426,8 +1501,8 @@ void    Render_DumpScreen4(void)
+ 						if (Render_LineChangedHook && !FillScanLines && !(XLength & 3) &&
+ 							!(((unsigned long)pSurface | (unsigned long)pScreen) & 3))
+ 						{
+-							const unsigned long *s = (const unsigned long *)pScreen;
+-							unsigned long *d = (unsigned long *)pSurface;
++							const unsigned int *s = (const unsigned int *)pScreen;
++							unsigned int *d = (unsigned int *)pSurface;
+ 							int n = XLength >> 2, k;
+ 							for (k = 0; k < n; k++)
+ 								if (s[k] != d[k]) break;
+@@ -1503,7 +1578,7 @@ void    Render_SetRenderingAccuracy(int Accuracy)
+         {
+                 /* mis out every other pixel in x to maintain image aspect,
+                 screen is smaller */
+-                PIXEL_STEP = 2;
++                PIXEL_STEP = 2; Render_RemapStamp++;
+                 PIXEL_STEP_SHIFT = 1;
+                 ScanLines = 0;
+ 				FillScanLines = 0;
+@@ -1513,7 +1588,7 @@ void    Render_SetRenderingAccuracy(int Accuracy)
+         {
+                 /* show every pixel, but render black lines between each graphical
+                 line to maintain image aspect - closer to tv image with this mode */
+-                PIXEL_STEP=1;
++                PIXEL_STEP=1; Render_RemapStamp++;
+                 PIXEL_STEP_SHIFT=0;
+                 ScanLines = 1;
+ 				FillScanLines = 0;
+@@ -1523,7 +1598,7 @@ void    Render_SetRenderingAccuracy(int Accuracy)
+         {
+                 /* show every pixel, but render black lines between each graphical
+                 line to maintain image aspect - closer to tv image with this mode */
+-                PIXEL_STEP=1;
++                PIXEL_STEP=1; Render_RemapStamp++;
+                 PIXEL_STEP_SHIFT=0;
+                 ScanLines = 1;
+ 				FillScanLines = 1;
+@@ -1643,6 +1718,14 @@ BOOL InitialiseRender(int ScreenResX, int ScreenResY, int BPP)
+         }
+     }       
+ 
++	/* Amiga port: the part of each row Render_DumpScreen4 copies out, in bytes,
++	 * and the rows it copies (see Render_SkipCellIfHidden). */
++	Render_VisX0 = Render_CPCXOffset * BytesPerPixel;
++	Render_VisX1 = Render_VisX0 + Render_CPCRenderWidth * BytesPerPixel;
++	Render_VisTop = Render_CPCYOffset;
++	Render_VisLines = (ScanLines != 0) ? 0x7fffffff : Render_CPCRenderHeight;
++	Render_CellBytes = (16 >> PIXEL_STEP_SHIFT) * BytesPerPixel;
++
+ 	if (pScreenBase!=NULL)
+ 	{
+ 		memset(pScreenBase, 0, ScreenPitch*ScreenHeight);
+@@ -1791,12 +1874,34 @@ void    Render_GetPixelRGBAtXY(int X,int Y, unsigned char *r, unsigned char *g,
+ 
+ 
+ static int RenderLine=0;
++unsigned char *pRowStart;       /* Amiga port: start of the row being drawn */
++int RenderRowVisible = 1;
++
++static void Render_RowChanged(void)
++{
++	pRowStart = pScreenLine;
++	RenderRowVisible = (unsigned)(RenderLine - Render_VisTop) < (unsigned)Render_VisLines;
++}
++
++/* Amiga port: called for each cell Graphics_Update would draw. Cells are drawn
++ * at a running pointer (LESS_MULTS), so a cell that can't be seen still moves
++ * it on. The cell just left of the window is drawn too: the border routine
++ * writes 3 bytes past its cell. Returns 1 if the cell was skipped. */
++int Render_SkipCellIfHidden_Unused(void)   /* kept for reference; crtc.c has the inline copy */
++{
++	int col = (int)(pScreenLine - pRowStart);
++	if (RenderRowVisible && col + Render_CellBytes >= Render_VisX0 && col < Render_VisX1)
++		return 0;
++	pScreenLine += Render_CellBytes;
++	return 1;
++}
+ 
+ void    Render_FirstLine(void)
+ {
+         RenderLine = 0;
+ 
+         pScreenLine = pScreenBase;
++		Render_RowChanged();
+ }
+ /*
+ void    Render_SetLineStart(void)
+@@ -1814,6 +1919,7 @@ void    Render_NextLine(void)
+ 		}
+ 
+         pScreenLine = pScreenBase + (RenderLine*ScreenPitch);
++		Render_RowChanged();
+ }
+ 
+ /* ---------------------------------------------------------- */
+-- 
+2.50.0.windows.2
+

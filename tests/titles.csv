@@ -1,0 +1,6 @@
+id,file,keys,shots,smoke,notes
+system_basic,,basic,"6s,10s",Y,System cartridge: f1 into BASIC and type a line
+burnin_rubber,,burnin,"8s,14s,20s",Y,System cartridge: f2 into Burnin' Rubber then fire
+puzzle_bobble,carts/PuzzleBobble.cpr,fire,"8s,14s",Y,Plus homebrew (Taito tribute)
+head_over_heels,carts/HeadOverHeels.cpr,hoh,"20s,36s,48s",,CPR conversion; trainer prompts answered N every 3 s; game menu at 48 s
+gng_gx,carts/GNGGX.cpr,fire,"8s,14s",,GNG GX+ (2020) Plus homebrew

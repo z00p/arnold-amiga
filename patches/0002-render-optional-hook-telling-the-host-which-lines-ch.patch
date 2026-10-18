@@ -1,0 +1,58 @@
+From f4e307492e3d94892e97fddf0a4d3c5d6a9af9af Mon Sep 17 00:00:00 2001
+From: John Stringer <jcec_1@yahoo.co.uk>
+Date: Sun, 18 Oct 2026 20:27:05 +0100
+Subject: [PATCH 02/17] render: optional hook telling the host which lines
+ changed
+
+Render_LineChangedHook (NULL by default: unchanged behaviour). When a host
+sets it, Render_DumpScreen4 copies only the lines that differ from the last
+frame and calls the hook for each, so a slow host (Amiga chunky-to-planar)
+converts only those lines.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ src/cpc/render5.c | 21 +++++++++++++++++++++
+ 1 file changed, 21 insertions(+)
+
+diff --git a/src/cpc/render5.c b/src/cpc/render5.c
+index 87adc2c..feb7195 100644
+--- a/src/cpc/render5.c
++++ b/src/cpc/render5.c
+@@ -51,6 +51,9 @@ static BOOL Renderer_Active = FALSE;
+ static int     BytesPerPixel;
+ int ScanLines = 0;
+ int FillScanLines = 0;
++/* Amiga port: set by a host that wants to know which surface lines changed in
++ * Render_DumpScreen4 (NULL: copy every line, as before). */
++void (*Render_LineChangedHook)(int SurfaceLine) = NULL;
+ static int PIXEL_STEP;
+ int PIXEL_STEP_SHIFT;
+ static int Render_CPCRenderHeight, Render_CPCRenderWidth;
+@@ -1417,6 +1420,24 @@ void    Render_DumpScreen4(void)
+ 						}
+ 						*/
+ 						// FIXME: SDL crashes here!
++						/* Amiga port: copy only lines that changed and tell the host
++						 * which ones (it converts only those to bitplanes). Compared a
++						 * long at a time: libnix's memcmp is byte by byte. */
++						if (Render_LineChangedHook && !FillScanLines && !(XLength & 3) &&
++							!(((unsigned long)pSurface | (unsigned long)pScreen) & 3))
++						{
++							const unsigned long *s = (const unsigned long *)pScreen;
++							unsigned long *d = (unsigned long *)pSurface;
++							int n = XLength >> 2, k;
++							for (k = 0; k < n; k++)
++								if (s[k] != d[k]) break;
++							if (k < n)
++							{
++								for (; k < n; k++) d[k] = s[k];
++								Render_LineChangedHook(Render_ScreenYOffset + i);
++							}
++						}
++						else
+                         memcpy(pSurface, pScreen, XLength);
+ 
+ 						if (FillScanLines)
+-- 
+2.50.0.windows.2
+

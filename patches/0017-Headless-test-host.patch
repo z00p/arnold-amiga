@@ -1,0 +1,322 @@
+From 1671a49e2f1bd23c84f22f956fc91240dd63329e Mon Sep 17 00:00:00 2001
+From: John Stringer <jcec_1@yahoo.co.uk>
+Date: Sun, 18 Oct 2026 20:27:11 +0100
+Subject: [PATCH 17/17] Headless test host
+
+src/headless: runs the core without a display (renders N frames to a buffer,
+prints a checksum, writes a PPM; optional key script, frame-skip hook test and
+WAV output). Used for the pixel-exact checks of every change above.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ src/headless/host_headless.c | 298 +++++++++++++++++++++++++++++++++++
+ 1 file changed, 298 insertions(+)
+ create mode 100644 src/headless/host_headless.c
+
+diff --git a/src/headless/host_headless.c b/src/headless/host_headless.c
+new file mode 100644
+index 0000000..ad021a2
+--- /dev/null
++++ b/src/headless/host_headless.c
+@@ -0,0 +1,298 @@
++/* Headless host for Arnold: renders N frames to an 8-bit chunky buffer and
++ * dumps a PPM. Used to validate the core on big-endian m68k before writing
++ * the AmigaOS (AGA) host. Same shape an Amiga backend will have. */
++#include "../cpc/host.h"
++#include "../cpc/arnold.h"
++#include "../cpc/cpc.h"
++#include "../cpc/render.h"
++#include <stdio.h>
++#include <stdlib.h>
++#include <string.h>
++#include <time.h>
++
++#define W 384
++#define H 272
++static unsigned char chunky[W*H*2];
++extern void Palette_Set(void);
++static unsigned char pal[256][3];
++static int frames, maxframes = 300, depth = 8;
++static const char *outname = "frame.ppm";
++static GRAPHICS_BUFFER_INFO bi;
++static GRAPHICS_BUFFER_COLOUR_FORMAT cf;
++static SOUND_PLAYBACK_FORMAT sf = {2, 16, 22240};   /* as the Amiga host: 444 samples a frame */
++
++void Host_HandlePrinterOutput(void) {}
++BOOL Host_SetDisplay(int Type, int Width, int Height, int Depth) { return TRUE; }
++GRAPHICS_BUFFER_COLOUR_FORMAT *Host_GetGraphicsBufferColourFormat(void)
++{
++	if (depth == 8) {
++	cf.BPP = 8;
++	cf.Red.BPP = 3; cf.Red.Mask = 0xe0; cf.Red.Shift = 5;
++	cf.Green.BPP = 3; cf.Green.Mask = 0x1c; cf.Green.Shift = 2;
++	cf.Blue.BPP = 2; cf.Blue.Mask = 0x03; cf.Blue.Shift = 0;
++	} else {
++	cf.BPP = 16;
++	cf.Red.BPP = 5; cf.Red.Mask = 0xf800; cf.Red.Shift = 11;
++	cf.Green.BPP = 6; cf.Green.Mask = 0x07e0; cf.Green.Shift = 5;
++	cf.Blue.BPP = 5; cf.Blue.Mask = 0x001f; cf.Blue.Shift = 0;
++	}
++	return &cf;
++}
++GRAPHICS_BUFFER_INFO *Host_GetGraphicsBufferInfo(void)
++{
++	bi.pSurface = chunky; bi.Width = W; bi.Height = H; bi.Pitch = W * (depth / 8);
++	return &bi;
++}
++BOOL Host_LockGraphicsBuffer(void) { return TRUE; }
++void Host_UnlockGraphicsBuffer(void) {}
++void Host_SwapGraphicsBuffers(void) { frames++; if (depth == 8) Palette_Set(); }
++void Host_SetPaletteEntry(int i, unsigned char r, unsigned char g, unsigned char b)
++{
++	pal[i & 255][0] = r; pal[i & 255][1] = g; pal[i & 255][2] = b;
++}
++/* Sound (argv[7] = WAV file): the core's blocks, through the Amiga host's
++ * conversion (audio_conv.h), as 8-bit stereo at the Amiga playback rate. */
++#include "../amiga/audio_conv.h"
++static FILE *wav; static unsigned long wav_bytes;
++static unsigned short abuf[8192]; static unsigned long alen;
++void Host_WriteDataToSoundBuffer(unsigned char *p, unsigned long l) {}
++BOOL Host_AudioPlaybackPossible(void) { return wav != NULL; }
++SOUND_PLAYBACK_FORMAT *Host_GetSoundPlaybackFormat(void) { return &sf; }
++BOOL Host_LockAudioBuffer(unsigned char **a, unsigned long *b, unsigned char **c, unsigned long *d, int e)
++{
++	if (!wav || e > (int)sizeof abuf) return FALSE;
++	*a = (unsigned char *)abuf; *b = e; *c = NULL; *d = 0; alen = e; return TRUE;
++}
++void Host_UnLockAudioBuffer(void)
++{
++	signed char l[4096], r[4096]; unsigned char out[8192]; int i, n = (int)(alen / 4);
++	Audio_SplitTo8(abuf, l, r, n);
++	for (i = 0; i < n; i++) { out[2 * i] = (unsigned char)(l[i] + 128); out[2 * i + 1] = (unsigned char)(r[i] + 128); }
++	fwrite(out, 1, 2 * n, wav); wav_bytes += 2 * n;
++}
++static void wav_header(void)
++{
++	unsigned char h[44] = "RIFF....WAVEfmt ";
++	unsigned long v; int i;
++#define PUT32(o, x) for (v = (x), i = 0; i < 4; i++) h[(o) + i] = (unsigned char)(v >> (8 * i))
++#define PUT16(o, x) for (v = (x), i = 0; i < 2; i++) h[(o) + i] = (unsigned char)(v >> (8 * i))
++	PUT32(4, 36 + wav_bytes); PUT32(16, 16); PUT16(20, 1); PUT16(22, 2); PUT32(24, sf.Frequency);
++	PUT32(28, sf.Frequency * 2); PUT16(32, 2); PUT16(34, 8);
++	memcpy(h + 36, "data", 4); PUT32(40, wav_bytes);
++	fseek(wav, 0, SEEK_SET); fwrite(h, 1, 44, wav);
++}
++void Host_Throttle(void) { if (wav) CPC_UpdateAudio(); }
++void Host_DoDriveLEDIndicator(int Drive, BOOL State) {}
++void Host_SetDirectory(char *d) {}
++unsigned long Host_GetCurrentTimeInMilliseconds(void) { return (unsigned long)(clock() / (CLOCKS_PER_SEC / 1000)); }
++/* Optional key script (argv[5], same format as the Amiga host's KEYS=), so
++ * pixel-exact checks can cover gameplay, not just attract modes. */
++#include "../amiga/keyscript.h"
++static int script_on;
++static long script_frame;
++static void snap(long frame);
++static void script_setkey(int key, int down) { if (down) CPC_SetKey(key); else CPC_ClearKey(key); }
++/* argv[6] = -1: the Amiga host's frame-skip hook with a pseudo-random pattern
++ * (runs of 0-3 skipped frames); maxframes then counts emulated frames and the
++ * last one is always drawn, so the result can be compared with drawing all. */
++static int hook_mode;
++extern void CPC_PowerCycleMemory(void) __attribute__((weak));   /* absent in older cores */
++extern void Palette_Reset(void);
++static long emu_frames;
++static unsigned long lcg = 12345;
++extern int (*CPC_SkipNextFrameHook)(void) __attribute__((weak));   /* absent in older cores */
++static int test_skip_hook(void)
++{
++	/* decides frame emu_frames + 1 (0-based); emu_frames frames have ended */
++	if (emu_frames + 1 >= maxframes - 1) return 0;
++	lcg = lcg * 1103515245UL + 12345UL;
++	return ((lcg >> 16) & 3) != 0;          /* skip 3 in 4 on average */
++}
++#ifdef TRACE_HW
++extern int Trace_On;
++#endif
++BOOL Host_ProcessSystemEvents(void)
++{
++#ifdef TRACE_HW
++	{ static int fr; const char *a = getenv("TRACE_AT"); int at = a ? atoi(a) : -1; fr++;
++	  Trace_On = (fr == at); if (fr == 600 && getenv("RAMDUMP")) { extern unsigned char *Z80MemoryBase; FILE *mf = fopen(getenv("RAMDUMP"), "wb"); if (mf) { fwrite(Z80MemoryBase, 1, 65536, mf); fclose(mf); } }
++	  if (Trace_On) { extern void Trace_Regs(void); fprintf(stderr, "=== frame %d ===\n", fr); Trace_Regs(); } }
++#endif
++	/* PCSAMPLE=n: the Z80's PC, SP, AF, HL, IFF1 and IM at each frame end, from
++	 * frame n for 40 frames (where a game is stuck; 18 Oct 2026, Puzzle Bobble) */
++	{ static long pf; const char *ps = getenv("PCSAMPLE"); pf++;
++	  if (ps && pf >= atol(ps) && pf < atol(ps) + 40) {
++		extern int Z80_GetReg(int);
++		fprintf(stderr, "frame %ld PC %04x SP %04x AF %04x HL %04x IFF1 %d IM %d\n", pf, Z80_GetReg(0) & 0xffff,
++			Z80_GetReg(1) & 0xffff, Z80_GetReg(6) & 0xffff, Z80_GetReg(9) & 0xffff, Z80_GetReg(10), Z80_GetReg(12)); } }
++	if (script_on) {
++		int ks = KeyScript_Frame(script_frame, script_setkey);
++		if (ks & KS_SNAP) snap(script_frame);   /* SNAP: dump the last drawn frame as <out>.<frame>.ppm */
++		script_frame++;
++		if (ks & KS_QUIT) return TRUE;
++	}
++	if (hook_mode) return ++emu_frames >= maxframes;
++	return frames >= maxframes;
++}
++
++HOST_FILE_HANDLE Host_OpenFile(const char *n, int Access) { return (HOST_FILE_HANDLE)fopen(n, Access == HOST_FILE_ACCESS_READ ? "rb" : "wb"); }
++void Host_CloseFile(HOST_FILE_HANDLE h) { if (h) fclose((FILE *)h); }
++int Host_GetFileSize(HOST_FILE_HANDLE h) { FILE *f = (FILE *)h; long p = ftell(f), s; fseek(f, 0, SEEK_END); s = ftell(f); fseek(f, p, SEEK_SET); return (int)s; }
++void Host_WriteData(HOST_FILE_HANDLE h, unsigned char *d, unsigned long l) { fwrite(d, 1, l, (FILE *)h); }
++void Host_ReadData(HOST_FILE_HANDLE h, unsigned char *d, unsigned long l) { fread(d, 1, l, (FILE *)h); }
++BOOL Host_LoadFile(const char *n, unsigned char **pp, unsigned long *pl)
++{
++	FILE *f = fopen(n, "rb"); long s; unsigned char *p;
++	*pp = NULL; *pl = 0;
++	if (!f) return FALSE;
++	fseek(f, 0, SEEK_END); s = ftell(f); fseek(f, 0, SEEK_SET);
++	p = malloc(s);
++	if (!p || fread(p, 1, s, f) != (size_t)s) { fclose(f); return FALSE; }
++	fclose(f); *pp = p; *pl = s; return TRUE;
++}
++BOOL Host_SaveFile(const char *n, unsigned char *p, unsigned long l)
++{
++	FILE *f = fopen(n, "wb"); if (!f) return FALSE;
++	fwrite(p, 1, l, f); fclose(f); return TRUE;
++}
++
++static unsigned long dump_to(const char *name)
++{
++	FILE *f = fopen(name, "wb"); int i; unsigned long sum = 0;
++	if (!f) return 0;
++	fprintf(f, "P6\n%d %d\n255\n", W, H);
++	for (i = 0; i < W*H; i++) {
++		if (depth == 8) {
++			unsigned char c = chunky[i];
++			fwrite(pal[c], 1, 3, f);
++			sum = sum * 31 + c;
++		} else {
++			unsigned short v = ((unsigned short *)chunky)[i]; unsigned char rgb[3];
++			rgb[0] = (v >> 11) << 3; rgb[1] = ((v >> 5) & 63) << 2; rgb[2] = (v & 31) << 3;
++			fwrite(rgb, 1, 3, f);
++			sum = sum * 31 + v;
++		}
++	}
++	fclose(f);
++	return sum & 0xffffffffUL;
++}
++static void dump(void) { unsigned long sum = dump_to(outname); printf("frames=%d checksum=%08lx\n", frames, sum); }
++static void snap(long frame)
++{
++	char name[1024]; unsigned long sum;
++	snprintf(name, sizeof name, "%s.%ld.ppm", outname, frame);
++	sum = dump_to(name);
++	printf("snap frame=%ld checksum=%08lx\n", frame, sum);
++}
++
++/* Disks (environment, so the argv layout stays as it was): DISKA= / DISKB=
++ * image paths, inserted after the reset as the Amiga host's power_on() does.
++ * DISKOUT= / DISKOUTB=: write that drive's image back out (Arnold's internal
++ * EXTENDED form) at the end if the emulated machine wrote to it. */
++#include "../cpc/diskimage/diskimg.h"
++static void insert_disk(int drive, const char *var)
++{
++	const char *n = getenv(var); unsigned char *d; unsigned long l; int r;
++	if (!n || !*n) return;
++	if (!Host_LoadFile(n, &d, &l)) { printf("disk %c: can't load %s\n", 'A' + drive, n); return; }
++	r = DiskImage_InsertDisk(drive, d, l);
++	printf("disk %c: %s (%lu bytes) %s\n", 'A' + drive, n, l, r == ARNOLD_STATUS_OK ? "inserted" : "NOT RECOGNISED");
++	free(d);   /* the core keeps its own copy */
++}
++/* DISKDUMP=file: list every sector the core holds for drive A after the insert
++ * (track side index C H R N ST1 ST2 FNV-1a of the 128<<N bytes the FDC gets),
++ * for tools/dsk_tests.py to compare with its own reading of the image. */
++#pragma push_macro("H")
++#undef H
++static void dump_disk(int drive, const char *var)
++{
++	static char buf[32768];
++	const char *n = getenv(var); FILE *f; int t, s, i;
++	if (!n || !*n || !(f = fopen(n, "w"))) return;
++	for (t = 0; t < 85; t++)
++		for (s = 0; s < 2; s++) {
++			int spt = DiskImage_GetSectorsPerTrack(drive, t, s);
++			for (i = 0; i < spt; i++) {
++				CHRN c; unsigned long h = 2166136261UL; int k, len;
++				DiskImage_GetID(drive, t, s, i, &c);
++				len = 128 << (c.N & 7);
++				memset(buf, 0, sizeof buf);
++				DiskImage_GetSector(drive, t, s, i, buf);
++				for (k = 0; k < len; k++) h = ((h ^ (unsigned char)buf[k]) * 16777619UL) & 0xffffffffUL;
++				fprintf(f, "%d %d %d %02X %02X %02X %02X %02X %02X %08lX\n", t, s, i, c.C, c.H, c.R, c.N, c.ST1, c.ST2, h);
++			}
++		}
++	fclose(f);
++}
++#pragma pop_macro("H")
++static void save_disk(int drive, const char *var)
++{
++	const char *n = getenv(var); unsigned long l; unsigned char *d;
++	if (!n || !*n) return;
++	if (!DiskImage_IsImageDirty(drive)) { printf("disk %c: not modified\n", 'A' + drive); return; }
++	l = DiskImage_CalculateOutputSize(drive);
++	d = malloc(l);
++	if (!d) return;
++	DiskImage_GenerateOutputData(d, drive);
++	Host_SaveFile(n, d, l);
++	printf("disk %c: modified, %lu bytes written to %s\n", 'A' + drive, l, n);
++	free(d);
++}
++
++int main(int argc, char **argv)
++{
++	unsigned char *cart; unsigned long cartlen; const char *cartname = "../roms/cpcplus/system.cpr";
++	if (argc > 1) maxframes = atoi(argv[1]);
++	if (argc > 2) outname = argv[2];
++	if (argc > 3) cartname = argv[3];
++	if (argc > 4) depth = atoi(argv[4]);
++	if (argc > 5 && KeyScript_Load(argv[5]) >= 0) script_on = 1;
++	if (argc > 6 && atoi(argv[6]) < 0 && &CPC_SkipNextFrameHook) { hook_mode = 1; CPC_SkipNextFrameHook = test_skip_hook; }
++	else if (argc > 6) CPC_SetFrameSkip(atoi(argv[6]));   /* render 1 frame in N+1 (cost of skipped frames) */
++	if (!CPCEmulation_CheckEndianness()) { printf("ENDIANNESS CHECK FAILED\n"); return 1; }
++	CPC_Initialise();
++	CPCEmulation_InitialiseDefaultSetup();
++	if (!Host_LoadFile(cartname, &cart, &cartlen)) { printf("no cart\n"); return 1; }
++	CPC_SetHardware(CPC_HW_CPCPLUS);
++	Cartridge_Insert(cart, cartlen);
++	Amstrad_DiscInterface_Install();
++	Amstrad_RamExpansion_Install();
++	CPC_Reset();
++	insert_disk(0, "DISKA");
++	insert_disk(1, "DISKB");
++	dump_disk(0, "DISKDUMP");
++	Render_SetDisplayWindowed();
++	if (argc > 7 && argv[7][0] != '-') { wav = fopen(argv[7], "wb"); if (wav) { fseek(wav, 44, SEEK_SET); CPC_SetAudioActive(TRUE); } }
++	CPCEmulation_Run();
++	/* POWERON=n:cart.cpr: after n frames, a second Power ON with another cartridge, as
++	 * the Amiga host does it from the menu (emulation stopped, cart in, Plus hardware,
++	 * reset), then maxframes more frames. To compare a game started after another one
++	 * with the same game started fresh (18 Oct 2026). */
++	if (getenv("POWERON")) {
++		const char *po = getenv("POWERON"), *c2 = strchr(po, ':');
++		unsigned char *cart2; unsigned long len2;
++		if (c2 && Host_LoadFile(c2 + 1, &cart2, &len2)) {
++			CPC_SetHardware(CPC_HW_CPCPLUS);
++			Cartridge_Insert(cart2, len2);
++			Amstrad_DiscInterface_Install();
++			Amstrad_RamExpansion_Install();
++			if (!getenv("POWERON_NOCLEAR") && &CPC_PowerCycleMemory) { CPC_PowerCycleMemory(); Palette_Reset(); }
++			CPC_Reset();
++			frames = 0; script_frame = 0;
++			if (script_on) KeyScript_Load(getenv("POWERON_KEYS") ? getenv("POWERON_KEYS") : argv[5]);
++			if (getenv("POWERON_FRAMES")) maxframes = atoi(getenv("POWERON_FRAMES"));
++			CPCEmulation_Run();
++		}
++	}
++	if (wav) { wav_header(); fclose(wav); }
++#ifdef STATS_E
++	{ extern unsigned long StatsE_Prepare, StatsE_Invalidate, StatsE_Runs, StatsE_RunCycles, StatsE_Events, StatsE_Calls;
++	  fprintf(stderr, "per frame: calls %lu prepare %lu invalidated-by-hook %lu runs %lu run-cycles %lu events %lu\n", StatsE_Calls/frames, StatsE_Prepare/frames, StatsE_Invalidate/frames, StatsE_Runs/frames, StatsE_RunCycles/frames, StatsE_Events/frames); }
++#endif
++	dump();
++	save_disk(0, "DISKOUT");
++	save_disk(1, "DISKOUTB");
++	if (getenv("RAMOUT")) { extern unsigned char *Z80MemoryBase; Host_SaveFile(getenv("RAMOUT"), Z80MemoryBase, 65536); }   /* base 64K RAM at the end */
++	return 0;
++}
++BOOL LoadFile(const char *n, unsigned char **pp, unsigned long *pl) { return Host_LoadFile(n, pp, pl); }
+-- 
+2.50.0.windows.2
+
