@@ -25,7 +25,7 @@
 #include <stdarg.h>
 
 unsigned long __stack = 256 * 1024;   /* libnix: enlarge the stack at start */
-static const char ver[] __attribute__((used)) = "$VER: Arnold 0.5.2 (19.10.2026) Amiga port, GPL-2.0";
+static const char ver[] __attribute__((used)) = "$VER: Arnold 0.6 (19.10.2026) Amiga port, GPL-2.0";
 
 /* ---- diagnostic log ---- */
 static FILE *logf;
@@ -48,6 +48,7 @@ void Sys_LogClose(void)
 {
 	extern struct Library *LowLevelBase;
 	if (LowLevelBase) { CloseLibrary(LowLevelBase); LowLevelBase = NULL; }
+	{ extern void Sys_TimerClose(void); Sys_TimerClose(); }
 	if (logf) { fclose(logf); logf = NULL; }
 }
 void Sys_MakeDir(const char *path)
@@ -174,11 +175,62 @@ static void c2p_line(const unsigned char *src, struct BitMap *bm, int y)
 	}
 }
 
+/* ---- video mode and display rate (19 Oct 2026, John's A1200 in NTSC) ----
+ * Sys_VideoMode: 0 Auto (the default monitor, as Workbench), 1 PAL, 2 NTSC.
+ * A forced PAL or NTSC mode that the system can't show (its monitor driver
+ * not mounted) falls back to Auto. */
+int Sys_VideoMode;
+unsigned long Sys_DisplayFrameUs = 20000;   /* measured VBlank interval of the last screen */
+static ULONG measured_mode = 0xffffffff;
+
+ULONG Sys_ModeID(ULONG key)
+{
+	ULONG id = key;
+	if (Sys_VideoMode == 1) id = PAL_MONITOR_ID | key;
+	else if (Sys_VideoMode == 2) id = NTSC_MONITOR_ID | key;
+	if (id != key && ModeNotAvailable(id)) {
+		Sys_Log("display: mode %08lx not available, using the default monitor", (unsigned long)id);
+		id = key;   /* DEFAULT_MONITOR_ID is 0 */
+	}
+	return id;
+}
+
+/* The VBlank interval of the screen just opened, timed with the E-clock over
+ * six frames (once per mode: Continue doesn't pay for it again). Whatever
+ * the mode ID says, this is the rate the display really runs at. */
+static void measure_vblank(ULONG modeid)
+{
+	unsigned long t0, t1;
+	int i;
+	if (modeid == measured_mode) return;
+	WaitTOF();
+	t0 = Sys_Micros();
+	for (i = 0; i < 6; i++) WaitTOF();
+	t1 = Sys_Micros();
+	if (t1 > t0) Sys_DisplayFrameUs = (t1 - t0) / 6;
+	measured_mode = modeid;
+	Sys_Log("display: VBlank every %lu us (%s), mode %08lx, viewport mode %08lx, gfx DisplayFlags %04x, E-clock %lu Hz",
+		Sys_DisplayFrameUs, Sys_Display50Hz() ? "50 Hz" : "not 50 Hz", (unsigned long)modeid,
+		(unsigned long)GetVPModeID(&scr->ViewPort), (unsigned)GfxBase->DisplayFlags, (unsigned long)SysBase->ex_EClockFrequency);
+}
+
+int Sys_Display50Hz(void) { return Sys_DisplayFrameUs > 18500 && Sys_DisplayFrameUs < 22000; }
+
+/* Paula's clock: 5 x the E-clock (PAL 3546895 Hz, NTSC 3579545 Hz). It comes
+ * from the machine's crystal, not the display mode: a PAL A1200 showing NTSC
+ * still has the PAL clock. */
+unsigned long Sys_ChipClock(void)
+{
+	unsigned long e = SysBase->ex_EClockFrequency;
+	if (e < 600000 || e > 800000) e = 709379;
+	return e * 5;
+}
+
 int Sys_OpenDisplay(int cw, int ch, int hires)
 {
 	struct Rectangle rect;
-	ULONG modeid = PAL_MONITOR_ID | (hires ? HIRES_KEY : LORES_KEY);
-	int i, rw, rh;
+	ULONG modeid = Sys_ModeID(hires ? HIRES_KEY : LORES_KEY);
+	int i, rw, rh, ntsc_max;
 
 	CW = cw; CH = ch;
 	c2p_init();
@@ -188,19 +240,39 @@ int Sys_OpenDisplay(int cw, int ch, int hires)
 	if (!QueryOverscan(modeid, &rect, OSCAN_STANDARD)) {
 		rect.MinX = 0; rect.MinY = 0; rect.MaxX = (hires ? 703 : 351); rect.MaxY = 271;
 	}
+	/* NTSC (19 Oct 2026, John): standard overscan is only about 200 lines, which
+	 * crops games drawn to the screen edges. Take the mode's full vertical
+	 * overscan (OSCAN_MAX, about 240 lines; at most 240 here, centred in it)
+	 * and keep the standard horizontal extent (MAX starts left of what a
+	 * monitor shows). PAL keeps standard overscan, as before. */
+	ntsc_max = 0;
+	{
+		struct DimensionInfo dims;
+		struct Rectangle mx;
+		if (GetDisplayInfoData(NULL, (UBYTE *)&dims, sizeof dims, DTAG_DIMS, modeid) > 0
+		 && dims.Nominal.MaxY - dims.Nominal.MinY + 1 < 256
+		 && QueryOverscan(modeid, &mx, OSCAN_MAX) && mx.MaxY - mx.MinY > rect.MaxY - rect.MinY) {
+			int h = mx.MaxY - mx.MinY + 1, cut = 0;
+			if (h > 240) { cut = (h - 240) / 2; h = 240; }
+			rect.MinY = mx.MinY + cut;
+			rect.MaxY = rect.MinY + h - 1;
+			ntsc_max = 1;
+		}
+	}
 	rw = rect.MaxX - rect.MinX + 1;
 	rh = rect.MaxY - rect.MinY + 1;
 	SW = (rw < cw ? rw : cw) & ~31;
 	SH = rh < ch ? rh : ch;
-	Sys_Log("display: mode %08lx overscan %d,%d-%d,%d screen %dx%d chunky %dx%d chip free %lu", (unsigned long)modeid,
+	Sys_Log("display: mode %08lx overscan%s %d,%d-%d,%d screen %dx%d chunky %dx%d chip free %lu", (unsigned long)modeid, ntsc_max ? " (full height)" : "",
 		(int)rect.MinX, (int)rect.MinY, (int)rect.MaxX, (int)rect.MaxY, SW, SH, cw, ch, (unsigned long)AvailMem(MEMF_CHIP));
 	XOFF = (cw - SW) / 2;
 	YOFF = (ch - SH) / 2;
 
 	scr = OpenScreenTags(NULL,
 		SA_Width, SW, SA_Height, SH, SA_Depth, 8,
-		SA_DisplayID, modeid, SA_Overscan, OSCAN_STANDARD,
-		SA_Left, (rw - SW) / 2, SA_Top, (rh - SH) / 2,
+		SA_DisplayID, modeid,
+		ntsc_max ? SA_DClip : SA_Overscan, ntsc_max ? (ULONG)&rect : OSCAN_STANDARD,
+		SA_Left, (ntsc_max ? rect.MinX : 0) + (rw - SW) / 2, SA_Top, (ntsc_max ? rect.MinY : 0) + (rh - SH) / 2,
 		SA_Quiet, TRUE, SA_ShowTitle, FALSE, SA_Title, (ULONG)"Arnold",
 		SA_Interleaved, TRUE,
 		TAG_DONE);
@@ -265,6 +337,7 @@ int Sys_OpenDisplay(int cw, int ch, int hires)
 	pal32[1 + 256 * 3] = 0;
 	pal32[1 + SYS_OSD_PEN * 3] = 0xFFFFFFFF; pal32[2 + SYS_OSD_PEN * 3] = 0xDDDDDDDD; pal32[3 + SYS_OSD_PEN * 3] = 0;   /* OSD label: yellow */
 	pal_dirty = 1; pal_dirty_all = 1;   /* new screen: load every pen once */
+	measure_vblank(modeid);
 	Sys_Log("display: open");
 	return 1;
 }
@@ -431,26 +504,87 @@ void Sys_ShowFrame(const unsigned char *chunky, int pitch)
 	t1 = Sys_Micros(); Sys_Perf.wait_us += t1 - t0; Sys_Perf.wait_disp_us += t1 - t0;
 }
 
+/* Pacing (19 Oct 2026). Sys_SetPacing(timer, frame_us):
+ * - timer 0: one CPC frame per VBlank, as before (tuned on PAL; on a 60 Hz
+ *   display this is "Follow display": the game runs 20% fast);
+ * - timer 1: the CPC's 50 Hz from the E-clock, whatever the display: each
+ *   frame is due frame_us after the last one, and ChangeScreenBuffer shows it
+ *   at the next VBlank (on 60 Hz, one frame in five is shown twice).
+ * frame_us is the length of a sound block, so Paula and the emulation agree. */
+static int pace_timer;
+static unsigned long pace_us = 20000;
+static struct MsgPort *delayport;
+static struct timerequest *delayreq;
+
+void Sys_SetPacing(int timer, unsigned long frame_us)
+{
+	pace_timer = timer;
+	pace_us = frame_us;
+	Sys_Log("pacing: %s, %lu us a frame", timer ? "E-clock timer (50 Hz whatever the display)" : "display VBlank", frame_us);
+}
+
+static void timer_delay(unsigned long us)
+{
+	if (!delayreq) {
+		delayport = CreateMsgPort();
+		if (delayport) delayreq = (struct timerequest *)CreateIORequest(delayport, sizeof(struct timerequest));
+		if (delayreq && OpenDevice((STRPTR)TIMERNAME, UNIT_MICROHZ, (struct IORequest *)delayreq, 0) != 0) {
+			DeleteIORequest((struct IORequest *)delayreq); delayreq = NULL;
+		}
+		if (!delayreq) { Sys_Log("pacing: no timer.device MICROHZ, using WaitTOF"); pace_timer = 0; WaitTOF(); return; }
+	}
+	delayreq->tr_node.io_Command = TR_ADDREQUEST;
+	delayreq->tr_time.tv_secs = us / 1000000;
+	delayreq->tr_time.tv_micro = us % 1000000;
+	DoIO((struct IORequest *)delayreq);
+}
+
+static void timer_close(void)
+{
+	if (delayreq) { CloseDevice((struct IORequest *)delayreq); DeleteIORequest((struct IORequest *)delayreq); delayreq = NULL; }
+	if (delayport) { DeleteMsgPort(delayport); delayport = NULL; }
+}
+
 long Sys_WaitFrame(void)
 {
-	/* One CPC frame per PAL VBlank. On time: WaitTOF, and the next frame is due
-	 * 20 ms after that VBlank. Late (13 Oct 2026: BigMig took 40-80 ms a frame):
-	 * no wait, and the schedule is kept, so the debt shows how far behind the
-	 * emulation is; the frame skip uses it to catch up. More than 10 frames
-	 * behind: give up the debt and restart the schedule from now.
+	/* VBlank mode: one CPC frame per VBlank. On time: WaitTOF, and the next
+	 * frame is due 20 ms (pace_us) after that VBlank. Late (13 Oct 2026: BigMig
+	 * took 40-80 ms a frame): no wait, and the schedule is kept, so the debt
+	 * shows how far behind the emulation is; the frame skip uses it to catch
+	 * up. More than 10 frames behind: give up the debt and restart the
+	 * schedule from now. Timer mode: the same, but the wait is for the due
+	 * time itself and the schedule is never re-locked to a VBlank.
 	 * Returns how far behind schedule this frame ended, in us (0 if on time). */
 	static unsigned long due;
+	static int was_timer;
 	long behind = 0;
 	unsigned long t0 = Sys_Micros();
 	collect_disp();
-	if (due == 0 || (long)(due - t0) > 500) {
-		WaitTOF();
-		due = Sys_Micros() + 20000;
+	if (pace_timer) {
+		long d;
+		if (!was_timer || due == 0 || (long)(t0 - due) > 1000000 || (long)(due - t0) > (long)(2 * pace_us)) due = t0 + pace_us;   /* (re)start */
+		was_timer = 1;
+		d = (long)(due - t0);
+		if (d > 500) {
+			timer_delay((unsigned long)d);
+			due += pace_us;
+		} else {
+			behind = (long)(t0 - due);
+			if (behind > 200000) due = t0 + pace_us;
+			else due += pace_us;
+			if (behind > 0) Sys_Perf.late_frames++;
+		}
 	} else {
-		behind = (long)(t0 - due);
-		if (behind > 200000) due = t0 + 20000;   /* still reported: the skip carries on */
-		else due += 20000;
-		Sys_Perf.late_frames++;
+		was_timer = 0;
+		if (due == 0 || (long)(due - t0) > 500) {
+			WaitTOF();
+			due = Sys_Micros() + pace_us;
+		} else {
+			behind = (long)(t0 - due);
+			if (behind > 200000) due = t0 + pace_us;   /* still reported: the skip carries on */
+			else due += pace_us;
+			Sys_Perf.late_frames++;
+		}
 	}
 	t0 = Sys_Micros() - t0;
 	Sys_Perf.wait_us += t0; Sys_Perf.wait_throttle_us += t0; Sys_Perf.throttle_calls++;
@@ -622,11 +756,19 @@ static int aud_open, aud_n;
 static UBYTE *aud_buf[2][ABUFS];      /* [channel][slot] in chip RAM */
 static UBYTE aud_map[] = { 3 };       /* channels 0 and 1 */
 static volatile int aud_rd, aud_wr, aud_count, aud_run;
-static volatile unsigned long aud_underruns, aud_drops;
+static volatile unsigned long aud_underruns, aud_drops, aud_irqs;
 static struct Interrupt aud_vbint;
 static int aud_vbint_added;
+/* 19 Oct 2026: on a display that isn't 50 Hz the VBlank can't pace Paula, so
+ * the blocks are handed over by channel 0's own interrupt instead: Paula
+ * raises it when it latches a block (the start of its playback), and the
+ * pointer written then is latched when that block ends. The rate is then
+ * Paula's own: samples x period colour clocks a block. aud_mode 0 = VBlank
+ * server (PAL, as tuned), 1 = audio interrupt. */
+static int aud_mode, aud_first;
+static struct Interrupt aud_int, *aud_oldint;
 
-static LONG aud_vblank(register APTR data __asm("a1"))
+static void aud_feed(void)
 {
 	if (aud_run) {
 		if (aud_count > 0) {
@@ -634,16 +776,34 @@ static LONG aud_vblank(register APTR data __asm("a1"))
 			custom.aud[1].ac_ptr = (UWORD *)aud_buf[1][aud_rd];
 			aud_rd = (aud_rd + 1) % ABUFS;
 			aud_count--;
-		} else
+		} else if (aud_first)
+			aud_first = 0;   /* the start: nothing queued behind the first block yet */
+		else
 			aud_underruns++;
 	}
+}
+
+static LONG aud_vblank(register APTR data __asm("a1"))
+{
+	aud_feed();
 	return 0;
 }
 
-int Sys_AudioOpen(int period, int samples)
+/* exec interrupt handler (SetIntVector): must clear its request itself */
+static void aud_handler(register APTR data __asm("a1"))
+{
+	custom.intreq = INTF_AUD0;
+	aud_irqs++;
+	aud_feed();
+}
+
+unsigned long Sys_AudioIrqs(void) { return aud_irqs; }
+
+int Sys_AudioOpen(int period, int samples, int audint)
 {
 	int c, b;
 	if (aud_open) return 1;
+	aud_mode = audint;
 	if (samples & 1) samples--;
 	aud_n = samples;
 	audport = CreateMsgPort();
@@ -671,14 +831,27 @@ int Sys_AudioOpen(int period, int samples)
 	custom.aud[0].ac_vol = 64;     custom.aud[1].ac_vol = 64;
 	custom.aud[0].ac_len = aud_n >> 1; custom.aud[1].ac_len = aud_n >> 1;
 	aud_rd = aud_wr = aud_count = 0; aud_run = 0;
-	aud_vbint.is_Node.ln_Type = NT_INTERRUPT;
-	aud_vbint.is_Node.ln_Pri = 0;
-	aud_vbint.is_Node.ln_Name = (char *)"Arnold audio";
-	aud_vbint.is_Data = NULL;
-	aud_vbint.is_Code = (VOID (*)())aud_vblank;
-	AddIntServer(INTB_VERTB, &aud_vbint);
-	aud_vbint_added = 1;
-	Sys_Log("audio: open, period %d, %d samples a block", period, samples);
+	if (aud_mode) {
+		aud_int.is_Node.ln_Type = NT_INTERRUPT;
+		aud_int.is_Node.ln_Pri = 0;
+		aud_int.is_Node.ln_Name = (char *)"Arnold audio";
+		aud_int.is_Data = NULL;
+		aud_int.is_Code = (VOID (*)())aud_handler;
+		custom.intena = INTF_AUD0;
+		custom.intreq = INTF_AUD0;
+		aud_oldint = SetIntVector(INTB_AUD0, &aud_int);
+		custom.intena = INTF_SETCLR | INTF_AUD0;
+	} else {
+		aud_vbint.is_Node.ln_Type = NT_INTERRUPT;
+		aud_vbint.is_Node.ln_Pri = 0;
+		aud_vbint.is_Node.ln_Name = (char *)"Arnold audio";
+		aud_vbint.is_Data = NULL;
+		aud_vbint.is_Code = (VOID (*)())aud_vblank;
+		AddIntServer(INTB_VERTB, &aud_vbint);
+		aud_vbint_added = 1;
+	}
+	Sys_Log("audio: open, period %d, %d samples a block, fed by %s, chip clock %lu Hz", period, samples,
+		aud_mode ? "the audio interrupt" : "the VBlank", Sys_ChipClock());
 	return 1;
 }
 
@@ -689,6 +862,12 @@ void Sys_AudioClose(void)
 	aud_run = 0;
 	if (aud_vbint_added) { RemIntServer(INTB_VERTB, &aud_vbint); aud_vbint_added = 0; }
 	custom.dmacon = DMAF_AUD0 | DMAF_AUD1;   /* clear */
+	if (aud_mode) {
+		custom.intena = INTF_AUD0;
+		SetIntVector(INTB_AUD0, aud_oldint);
+		custom.intreq = INTF_AUD0;
+		aud_oldint = NULL; aud_mode = 0;
+	}
 	custom.aud[0].ac_vol = 0; custom.aud[1].ac_vol = 0;
 	for (c = 0; c < 2; c++) for (b = 0; b < ABUFS; b++)
 		if (aud_buf[c][b]) { FreeMem(aud_buf[c][b], aud_n); aud_buf[c][b] = NULL; }
@@ -726,7 +905,10 @@ void Sys_AudioQueue(const unsigned char *s16, int samples)
 		custom.aud[0].ac_ptr = (UWORD *)aud_buf[0][slot];
 		custom.aud[1].ac_ptr = (UWORD *)aud_buf[1][slot];
 		aud_rd = aud_wr; aud_count = 0;
+		aud_first = 1;
+		if (aud_mode) custom.intreq = INTF_AUD0;
 		custom.dmacon = DMAF_SETCLR | DMAF_MASTER | DMAF_AUD0 | DMAF_AUD1;
+		if (aud_mode) custom.intena = INTF_SETCLR | INTF_AUD0;   /* off while paused, see Sys_AudioPause */
 		aud_run = 1;
 	}
 	Enable();
@@ -740,11 +922,21 @@ void Sys_AudioPause(void)
 	Disable();
 	aud_run = 0;
 	aud_rd = aud_wr = aud_count = 0;
-	Enable();
+	/* 19 Oct 2026 (NTSC menu shear on John's A1200): with the audio DMA off,
+	 * an enabled AUD0 interrupt doesn't stop. Paula drops to manual mode and
+	 * asks for a new word every sample period once the handler clears the
+	 * request: about 22000 level-4 interrupts a second for as long as the
+	 * menu was up (70000 counted in one WinUAE menu visit). They hold off the
+	 * level-3 VBlank work of graphics and Intuition. So the interrupt is
+	 * switched off here, and Sys_AudioQueue switches it on again with the DMA. */
+	if (aud_mode) custom.intena = INTF_AUD0;
 	custom.dmacon = DMAF_AUD0 | DMAF_AUD1;
+	if (aud_mode) custom.intreq = INTF_AUD0;
+	Enable();
 }
 
 unsigned long Sys_Millis(void) { return frames * 20; }
+void Sys_TimerClose(void) { timer_close(); }
 
 void Sys_Message(const char *text)
 {

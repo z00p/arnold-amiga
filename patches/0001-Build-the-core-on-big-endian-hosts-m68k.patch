@@ -1,6 +1,6 @@
-From 22be67ca6662c87f48a95513e4d654d6fca13de4 Mon Sep 17 00:00:00 2001
+From 4473d0c8a379938de0324ffd40e625df5fe374ce Mon Sep 17 00:00:00 2001
 From: John Stringer <jcec_1@yahoo.co.uk>
-Date: Mon, 19 Oct 2026 07:45:53 +0100
+Date: Mon, 19 Oct 2026 20:35:53 +0100
 Subject: [PATCH 01/21] Build the core on big-endian hosts (m68k)
 
 cpcdefs.h defined CPC_LSB_FIRST unconditionally, so a big-endian build had

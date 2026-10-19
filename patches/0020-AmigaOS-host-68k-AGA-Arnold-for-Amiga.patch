@@ -1,6 +1,6 @@
-From dc52106597c50458fc2c73f91f934898dd3aecf3 Mon Sep 17 00:00:00 2001
+From e9a2ae5889148188394101bbd3b01699712320b3 Mon Sep 17 00:00:00 2001
 From: John Stringer <jcec_1@yahoo.co.uk>
-Date: Mon, 19 Oct 2026 07:46:01 +0100
+Date: Mon, 19 Oct 2026 20:36:01 +0100
 Subject: [PATCH 20/21] AmigaOS host (68k AGA): Arnold for Amiga
 
 src/amiga: the AmigaOS 3.x host (AGA screen with chunky-to-planar and triple
@@ -11,22 +11,22 @@ amiga-gcc (-noixemul): see src/amiga/Makefile.
 
 Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
 ---
- src/amiga/Makefile     |  38 ++
- src/amiga/amiga_iff.c  | 100 +++++
- src/amiga/amiga_logo.c | 153 +++++++
- src/amiga/amiga_logo.h |   6 +
- src/amiga/amiga_menu.c | 456 +++++++++++++++++++++
- src/amiga/amiga_sys.c  | 883 +++++++++++++++++++++++++++++++++++++++++
- src/amiga/amiga_sys.h  |  95 +++++
- src/amiga/amiga_wb.c   |  85 ++++
- src/amiga/audio_conv.h |  15 +
- src/amiga/host_amiga.c | 634 +++++++++++++++++++++++++++++
- src/amiga/keyscript.c  | 137 +++++++
- src/amiga/keyscript.h  |   9 +
- src/amiga/padtest.c    | 125 ++++++
- src/amiga/screenshot.c | 115 ++++++
- src/amiga/screenshot.h |   7 +
- 15 files changed, 2858 insertions(+)
+ src/amiga/Makefile     |   38 ++
+ src/amiga/amiga_iff.c  |  100 ++++
+ src/amiga/amiga_logo.c |  153 ++++++
+ src/amiga/amiga_logo.h |    6 +
+ src/amiga/amiga_menu.c |  576 +++++++++++++++++++++
+ src/amiga/amiga_sys.c  | 1075 ++++++++++++++++++++++++++++++++++++++++
+ src/amiga/amiga_sys.h  |  112 +++++
+ src/amiga/amiga_wb.c   |  131 +++++
+ src/amiga/audio_conv.h |   15 +
+ src/amiga/host_amiga.c |  746 ++++++++++++++++++++++++++++
+ src/amiga/keyscript.c  |  137 +++++
+ src/amiga/keyscript.h  |    9 +
+ src/amiga/padtest.c    |  125 +++++
+ src/amiga/screenshot.c |  115 +++++
+ src/amiga/screenshot.h |    7 +
+ 15 files changed, 3345 insertions(+)
  create mode 100644 src/amiga/Makefile
  create mode 100644 src/amiga/amiga_iff.c
  create mode 100644 src/amiga/amiga_logo.c
@@ -366,16 +366,22 @@ index 0000000..b22b3c7
 +#endif
 diff --git a/src/amiga/amiga_menu.c b/src/amiga/amiga_menu.c
 new file mode 100644
-index 0000000..054226a
+index 0000000..21a4d95
 --- /dev/null
 +++ b/src/amiga/amiga_menu.c
-@@ -0,0 +1,456 @@
+@@ -0,0 +1,576 @@
 +/* Arnold on AmigaOS: the menu screen (GadTools), styled after the OS 3.2 prefs
 + * editors. 17 Oct 2026 (John): the settings live in pull-down menus (Options,
-+ * Controls) and the window keeps what changes from game to game: the media,
-+ * the per-game buttons and the Reset / Power ON / Continue / Exit row, with a
-+ * read-only summary of the current settings. Help in the emulation brings it
-+ * up; Continue goes back. OS side only: no Arnold headers (see amiga_sys.h). */
++ * Controls, Display) and the window keeps what changes from game to game.
++ * 19 Oct 2026 (John's A1200 in NTSC): reworked to fit a 200-line screen
++ * without scrolling: header with the logo and a Settings group of editable
++ * cycle gadgets (Model, Video mode, Game speed, as in AmiMSX), the Media
++ * group, a one-line summary of the other settings, the Power ON / Reset /
++ * Continue / Exit row and the status line. The per-game buttons, Keyboard and
++ * Screenshot are in the Project menu. The screen opens in the chosen video
++ * mode at that mode's nominal height (PAL 256, NTSC 200); the layout is the
++ * same on both. Help in the emulation brings it up; Continue goes back.
++ * OS side only: no Arnold headers (see amiga_sys.h). */
 +#include <exec/types.h>
 +#include <exec/memory.h>
 +#include <intuition/intuition.h>
@@ -384,6 +390,7 @@ index 0000000..054226a
 +#include <libraries/gadtools.h>
 +#include <libraries/asl.h>
 +#include <graphics/modeid.h>
++#include <graphics/displayinfo.h>
 +#include <proto/exec.h>
 +#include <proto/intuition.h>
 +#include <proto/graphics.h>
@@ -401,12 +408,14 @@ index 0000000..054226a
 +
 +enum { G_CART, G_CARTLOAD, G_CARTEJECT, G_DISKA, G_DISKALOAD, G_DISKAEJECT,
 +       G_DISKB, G_DISKBLOAD, G_DISKBEJECT,
-+       G_RESET, G_POWER, G_CONTINUE, G_QUIT, G_SAVEGAME, G_FORGETGAME, G_KEYS, G_SHOT, G_COUNT };
++       G_POWER, G_RESET, G_CONTINUE, G_QUIT, G_MODEL, G_VIDEO, G_SPEED, G_COUNT };
 +
 +/* menu item ids (nm_UserData) */
 +enum { M_NONE, M_LOADCART, M_LOADA, M_LOADB, M_EJECTALL, M_KEYS, M_SHOT, M_SAVE, M_SAVEGAME, M_FORGETGAME, M_QUIT,
 +       M_SOUND, M_HIRES, M_SKIP0, M_SKIP1, M_SKIP2, M_SKIP3, M_SKIP5, M_REF1, M_REF2, M_REF3, M_REF4,
-+       M_JOY0, M_JOY1, M_JOY2, M_PAD0, M_PAD1 };
++       M_JOY0, M_JOY1, M_JOY2, M_PAD0, M_PAD1, M_SPEED50, M_SPEEDDISP,
++       M_VIDAUTO, M_VIDPAL, M_VIDNTSC, M_MODEL464, M_MODEL664, M_MODEL6128, M_MODELPLUS, M_MODELGX };
++#define MENU_REOPEN (-2)   /* menu_pick: the video mode changed, open the screen again */
 +
 +/* Pens of the 16-colour menu screen (16 Oct 2026, styled after the OS 3.2
 + * prefs editors at John's request): the classic grey / black / white / blue
@@ -432,11 +441,16 @@ index 0000000..054226a
 +static struct Menu *menustrip;
 +static APTR vi;
 +static struct TextAttr topaz8 = { (STRPTR)"topaz.font", 8, 0, 0 };
-+static const char *skip_labels[] = { "Off", "Up to 1", "Up to 2", "Up to 3", "Up to 5" };
++static char wintitle[96];
 +static const int skip_values[] = { 0, 1, 2, 3, 5 };
-+static const char *refresh_labels[] = { "All", "1 in 2", "1 in 3", "1 in 4" };
-+static const char *joykey_labels[] = { "Off", "Cursors+Z/X", "QAOP+Space/M" };
-+static const char *pad_labels[] = { "Normal", "CD32" };
++static const char *skip_short[] = { "off", "1", "2", "3", "5" };
++static const char *refresh_short[] = { "all", "1/2", "1/3", "1/4" };
++static const char *joykey_short[] = { "off", "cursors", "QAOP" };
++static const char *pad_short[] = { "normal", "CD32" };
++/* the cycle gadgets' choices (NULL-terminated for GadTools) */
++static STRPTR model_labels[] = { (STRPTR)"CPC 464", (STRPTR)"CPC 664", (STRPTR)"CPC 6128", (STRPTR)"CPC 6128 Plus", (STRPTR)"GX4000", NULL };
++static STRPTR video_labels[] = { (STRPTR)"Auto (as Workbench)", (STRPTR)"PAL", (STRPTR)"NTSC", NULL };
++static STRPTR speed_labels[] = { (STRPTR)"50 Hz (correct)", (STRPTR)"Follow display", NULL };
 +
 +/* The pull-down menus. Checked items are set from the settings before
 + * CreateMenus; the sub-items of a radio group exclude each other. */
@@ -457,6 +471,13 @@ index 0000000..054226a
 +	{ NM_ITEM, NM_BARLABEL, NULL, 0, 0, NULL },
 +	{ NM_ITEM, (STRPTR)"Quit", (STRPTR)"Q", 0, 0, (APTR)M_QUIT },
 +	{ NM_TITLE, (STRPTR)"Options", NULL, 0, 0, NULL },
++	{ NM_ITEM, (STRPTR)"CPC model (on Power ON)", NULL, 0, 0, NULL },
++	{ NM_SUB, (STRPTR)"CPC 464", NULL, CHECKIT, X(0), (APTR)M_MODEL464 },
++	{ NM_SUB, (STRPTR)"CPC 664", NULL, CHECKIT, X(1), (APTR)M_MODEL664 },
++	{ NM_SUB, (STRPTR)"CPC 6128", NULL, CHECKIT, X(2), (APTR)M_MODEL6128 },
++	{ NM_SUB, (STRPTR)"CPC 6128 Plus", NULL, CHECKIT, X(3), (APTR)M_MODELPLUS },
++	{ NM_SUB, (STRPTR)"GX4000", NULL, CHECKIT, X(4), (APTR)M_MODELGX },
++	{ NM_ITEM, NM_BARLABEL, NULL, 0, 0, NULL },
 +	{ NM_ITEM, (STRPTR)"Sound (Paula)", NULL, CHECKIT | MENUTOGGLE, 0, (APTR)M_SOUND },
 +	{ NM_ITEM, (STRPTR)"Hires screen", NULL, CHECKIT | MENUTOGGLE, 0, (APTR)M_HIRES },
 +	{ NM_ITEM, NM_BARLABEL, NULL, 0, 0, NULL },
@@ -479,13 +500,40 @@ index 0000000..054226a
 +	{ NM_ITEM, (STRPTR)"Pad in port 2", NULL, 0, 0, NULL },
 +	{ NM_SUB, (STRPTR)"Normal joystick / 2-button pad", NULL, CHECKIT, X(0), (APTR)M_PAD0 },
 +	{ NM_SUB, (STRPTR)"CD32 pad", NULL, CHECKIT, X(1), (APTR)M_PAD1 },
++	{ NM_TITLE, (STRPTR)"Display", NULL, 0, 0, NULL },
++	{ NM_ITEM, (STRPTR)"Video mode", NULL, 0, 0, NULL },
++	{ NM_SUB, (STRPTR)"Auto (as Workbench)", NULL, CHECKIT, X(0), (APTR)M_VIDAUTO },
++	{ NM_SUB, (STRPTR)"PAL", NULL, CHECKIT, X(1), (APTR)M_VIDPAL },
++	{ NM_SUB, (STRPTR)"NTSC", NULL, CHECKIT, X(2), (APTR)M_VIDNTSC },
++	{ NM_ITEM, (STRPTR)"Game speed", NULL, 0, 0, NULL },
++	{ NM_SUB, (STRPTR)"50 Hz (correct)", NULL, CHECKIT, X(0), (APTR)M_SPEED50 },
++	{ NM_SUB, (STRPTR)"Follow display (NTSC: 20% fast)", NULL, CHECKIT, X(1), (APTR)M_SPEEDDISP },
 +	{ NM_END, NULL, NULL, 0, 0, NULL }
 +};
 +#undef X
 +
-+/* Everything is laid out in the window interior: OX/OY are its offsets from
-+ * the window corner (the borders and title bar), set before the gadgets. */
++/* Layout. Everything is in the window interior: OX/OY are its offsets from
++ * the window corner (the borders and title bar), set before the gadgets.
++ * Vertical positions come from the font height FH (topaz 8): gadgets are
++ * GH = FH + 5 high, rows ROW = GH + 2 apart, and a group's first row starts
++ * FH + 1 below its frame line (under the title). With topaz 8 the window
++ * ends on line 188 of the screen, so it fits a 200-line NTSC screen. */
 +static int OX, OY;
++static int FH, GH, ROW;
++static int y_head, y_media, y_sum, y_buttons, y_status, inner_h;
++
++static void layout(void)
++{
++	FH = topaz8.ta_YSize;
++	GH = FH + 5;
++	ROW = GH + 2;
++	y_head = FH / 2;                         /* header: logo panel and the Settings group */
++	y_media = y_head + 3 * ROW + FH + 4;     /* Media group frame */
++	y_sum = y_media + 3 * ROW + FH + 6;      /* summary text line (top) */
++	y_buttons = y_sum + FH + 4;              /* Power ON / Reset / Continue / Exit */
++	y_status = y_buttons + GH + 1 + 4;       /* status field */
++	inner_h = y_status + FH + 4 + 2;
++}
 +
 +static void text_at(int x, int y, int pen, const char *t)
 +{
@@ -502,19 +550,21 @@ index 0000000..054226a
 +	if (title) text_at(x + 10, y + 3, P_BLACK, title);
 +}
 +
-+/* a label right-aligned to the gadget that starts at x */
-+static void label(int x, int y, const char *t)
++/* a label right-aligned to the gadget that starts at x, on the gadget's text line */
++static void label(int x, int gy, const char *t)
 +{
-+	text_at(x - 6 - TextLength(mwin->RPort, (STRPTR)t, strlen(t)), y, P_BLACK, t);
++	text_at(x - 6 - TextLength(mwin->RPort, (STRPTR)t, strlen(t)), gy + (GH - FH) / 2 + mwin->RPort->TxBaseline, P_BLACK, t);
 +}
 +
 +static void status(const char *t)
 +{
 +	struct RastPort *rp = mwin->RPort;
-+	int w;
-+	text_at(20, 225, P_BLACK, t);
-+	w = TextLength(rp, (STRPTR)t, strlen(t));
-+	if (w < 596) { SetAPen(rp, P_BG); RectFill(rp, OX + 20 + w, OY + 218, OX + 624, OY + 227); }
++	int w, base = y_status + 2 + rp->TxBaseline;
++	char line[80];
++	strncpy(line, t, 76); line[76] = 0;      /* 76 characters fit the field */
++	text_at(20, base, P_BLACK, line);
++	w = TextLength(rp, (STRPTR)line, strlen(line));
++	if (w < 600) { SetAPen(rp, P_BG); RectFill(rp, OX + 20 + w, OY + y_status + 2, OX + 620, OY + y_status + FH + 1); }
 +}
 +
 +static void logo(int x, int y)
@@ -534,19 +584,22 @@ index 0000000..054226a
 +
 +static int skip_index(int v) { int i; for (i = 4; i > 0; i--) if (v >= skip_values[i]) return i; return 0; }
 +static int refresh_index(int v) { return v > 1 ? (v > 4 ? 3 : v - 1) : 0; }
++static int model_of(struct SysMenu *m) { return m->model >= 0 && m->model < SYS_MODELS ? m->model : SYS_MODEL_PLUS; }
++static int video_of(struct SysMenu *m) { return m->video >= 0 && m->video <= 2 ? m->video : 0; }
 +
-+/* the read-only summary of what the menus hold (3 lines, padded so a shorter
-+ * value wipes a longer one) */
++/* the one-line summary of the settings that live in the pull-downs (padded
++ * so a shorter line wipes a longer one) */
 +static void draw_settings(struct SysMenu *m)
 +{
-+	char l[48];
-+	sprintf(l, "%-34.34s", ""); text_at(352, 147, P_BLACK, l); text_at(352, 164, P_BLACK, l); text_at(352, 181, P_BLACK, l);
-+	sprintf(l, "Sound: %-8s Screen: %s", m->sound ? "Paula" : "Off", m->hires ? "Hires" : "Lores");
-+	text_at(352, 147, P_BLACK, l);
-+	sprintf(l, "Skip: %-9s Refresh: %s", skip_labels[skip_index(m->skip)], refresh_labels[refresh_index(m->refresh)]);
-+	text_at(352, 164, P_BLACK, l);
-+	sprintf(l, "Joykeys: %-12s Pad: %s", joykey_labels[m->joykeys >= 0 && m->joykeys <= 2 ? m->joykeys : 0], pad_labels[m->pad ? 1 : 0]);
-+	text_at(352, 181, P_BLACK, l);
++	char l[96];
++	int n;
++	sprintf(l, "Sound %s  Screen %s  Skip %s  Refresh %s  Joykeys %s  Pad %s",
++		m->sound ? "on" : "off", m->hires ? "hires" : "lores", skip_short[skip_index(m->skip)],
++		refresh_short[refresh_index(m->refresh)], joykey_short[m->joykeys >= 0 && m->joykeys <= 2 ? m->joykeys : 0],
++		pad_short[m->pad ? 1 : 0]);
++	for (n = strlen(l); n < 76; n++) l[n] = ' ';
++	l[n] = 0;
++	text_at(20, y_sum + mwin->RPort->TxBaseline, P_BLACK, l);
 +}
 +
 +/* ASL file requester; writes the full path into buf (SYS_PATH). 1 if chosen. */
@@ -572,12 +625,12 @@ index 0000000..054226a
 +
 +static struct Gadget *row(struct Gadget *g, struct NewGadget *ng, int y, const char *value, int idstr, int idload, int ideject)
 +{
-+	ng->ng_LeftEdge = OX + 120; ng->ng_TopEdge = OY + y; ng->ng_Width = 360; ng->ng_Height = 14;
++	ng->ng_LeftEdge = OX + 120; ng->ng_TopEdge = OY + y; ng->ng_Width = 360; ng->ng_Height = GH;
 +	ng->ng_GadgetText = NULL; ng->ng_GadgetID = idstr; ng->ng_Flags = 0;
 +	g = gad[idstr] = CreateGadget(STRING_KIND, g, ng, GTST_String, (ULONG)value, GTST_MaxChars, SYS_PATH - 1, TAG_DONE);
 +	ng->ng_LeftEdge = OX + 488; ng->ng_Width = 64; ng->ng_GadgetText = (STRPTR)"Load..."; ng->ng_GadgetID = idload;
 +	g = gad[idload] = CreateGadget(BUTTON_KIND, g, ng, TAG_DONE);
-+	ng->ng_LeftEdge = OX + 558; ng->ng_Width = 60; ng->ng_GadgetText = (STRPTR)"Eject"; ng->ng_GadgetID = ideject;
++	ng->ng_LeftEdge = OX + 558; ng->ng_Width = 62; ng->ng_GadgetText = (STRPTR)"Eject"; ng->ng_GadgetID = ideject;
 +	g = gad[ideject] = CreateGadget(BUTTON_KIND, g, ng, TAG_DONE);
 +	return g;
 +}
@@ -587,6 +640,16 @@ index 0000000..054226a
 +	ng->ng_LeftEdge = OX + x; ng->ng_TopEdge = OY + y; ng->ng_Width = w; ng->ng_Height = h;
 +	ng->ng_GadgetText = (STRPTR)label; ng->ng_GadgetID = id; ng->ng_Flags = 0;
 +	return gad[id] = CreateGadget(BUTTON_KIND, g, ng, GA_Disabled, disabled, TAG_DONE);
++}
++
++/* the Settings group's cycle gadgets: x of the gadgets, right of their labels */
++#define SET_X 324
++#define SET_GX (SET_X + 12 + 6 * 8 + 6)
++static struct Gadget *cycle(struct Gadget *g, struct NewGadget *ng, int y, int id, STRPTR *labels, int active)
++{
++	ng->ng_LeftEdge = OX + SET_GX; ng->ng_TopEdge = OY + y; ng->ng_Width = 620 - SET_GX; ng->ng_Height = GH;
++	ng->ng_GadgetText = NULL; ng->ng_GadgetID = id; ng->ng_Flags = 0;
++	return gad[id] = CreateGadget(CYCLE_KIND, g, ng, GTCY_Labels, (ULONG)labels, GTCY_Active, active, TAG_DONE);
 +}
 +
 +static void close_menu(void)
@@ -600,48 +663,77 @@ index 0000000..054226a
 +
 +static void draw_frame(struct SysMenu *m)
 +{
-+	logo(14, 4);
-+	DrawBevelBox(mwin->RPort, OX + 330, OY + 2, 298, 52, GT_VisualInfo, (ULONG)vi, TAG_DONE);
-+	text_at(330 + (298 - 25 * 8) / 2, 16, P_BLACK, "Amstrad CPC Plus emulator");
-+	text_at(330 + (298 - 28 * 8) / 2, 28, P_BLACK, "Arnold core by Kevin Thacker");
-+	text_at(330 + (298 - 26 * 8) / 2, 40, P_BLACK, "Amiga port 2026, GPL-2.0");
++	int r0 = y_head + FH + 1;
++	logo(14, y_head + 2);
++	box(SET_X, y_head, 628 - SET_X, 3 * ROW + FH + 3, " Settings ");
++	label(SET_GX, r0, "Model:");
++	label(SET_GX, r0 + ROW, "Video:");
++	label(SET_GX, r0 + 2 * ROW, "Speed:");
 +
-+	/* rows are 17 apart (14-high gadgets, 3 clear), labels sit on the gadget's
-+	 * text line (+9) */
-+	box(12, 58, 616, 64, " Media ");
-+	label(120, 79, "Cartridge:");
-+	label(120, 96, "Drive A:");
-+	label(120, 113, "Drive B:");
-+
-+	box(12, 127, 322, 64, " Game ");
-+	box(340, 127, 288, 64, " Settings (see the menus) ");
++	box(12, y_media, 616, 3 * ROW + FH + 3, " Media ");
++	label(120, y_media + FH + 1, "Cartridge:");
++	label(120, y_media + FH + 1 + ROW, "Drive A:");
++	label(120, y_media + FH + 1 + 2 * ROW, "Drive B:");
 +	draw_settings(m);
 +
 +	/* the status line sits in a recessed field */
-+	DrawBevelBox(mwin->RPort, OX + 12, OY + 216, 616, 14, GT_VisualInfo, (ULONG)vi, GTBB_Recessed, TRUE, TAG_DONE);
++	DrawBevelBox(mwin->RPort, OX + 12, OY + y_status, 616, FH + 4, GT_VisualInfo, (ULONG)vi, GTBB_Recessed, TRUE, TAG_DONE);
 +}
 +
 +/* the checkmarks in the menus from the settings */
 +static void set_checks(struct SysMenu *m)
 +{
 +	int i;
-+	int on[] = { M_SOUND, M_HIRES, M_SKIP0 + skip_index(m->skip), M_REF1 + refresh_index(m->refresh),
-+	             M_JOY0 + (m->joykeys >= 0 && m->joykeys <= 2 ? m->joykeys : 0), M_PAD0 + (m->pad ? 1 : 0) };
++	int on[] = { M_SKIP0 + skip_index(m->skip), M_REF1 + refresh_index(m->refresh),
++	             M_JOY0 + (m->joykeys >= 0 && m->joykeys <= 2 ? m->joykeys : 0), M_PAD0 + (m->pad ? 1 : 0),
++	             M_SPEED50 + (m->speed ? 1 : 0), M_VIDAUTO + video_of(m), M_MODEL464 + model_of(m) };
 +	for (i = 0; nm[i].nm_Type != NM_END; i++) {
 +		int id = (int)(ULONG)nm[i].nm_UserData, k, want = 0;
 +		if (!(nm[i].nm_Flags & CHECKIT)) continue;
-+		for (k = 0; k < 6; k++) if (on[k] == id) want = 1;
++		for (k = 0; k < (int)(sizeof on / sizeof on[0]); k++) if (on[k] == id) want = 1;
 +		if (id == M_SOUND) want = m->sound ? 1 : 0;
 +		if (id == M_HIRES) want = m->hires ? 1 : 0;
 +		if (want) nm[i].nm_Flags |= CHECKED; else nm[i].nm_Flags &= ~CHECKED;
 +	}
 +}
 +
++static int make_menus(struct SysMenu *m)
++{
++	set_checks(m);
++	menustrip = CreateMenus(nm, GTMN_FullMenu, TRUE, TAG_DONE);
++	return menustrip && LayoutMenus(menustrip, vi, GTMN_NewLookMenus, TRUE, TAG_DONE);
++}
++
++/* a cycle gadget changed a setting: the pull-downs' checkmarks follow */
++static void refresh_menus(struct SysMenu *m)
++{
++	ClearMenuStrip(mwin);
++	FreeMenus(menustrip); menustrip = NULL;
++	if (make_menus(m)) SetMenuStrip(mwin, menustrip);
++}
++
++static void set_model(struct SysMenu *m, int model)
++{
++	char t[96];
++	m->model = model;
++	if (m->can_continue && m->running_model >= 0 && model != m->running_model)
++		sprintf(t, "%s: takes effect on Power ON (running: %s).", (char *)model_labels[model], (char *)model_labels[m->running_model]);
++	else if (model < SYS_MODEL_PLUS)
++		sprintf(t, "%s: system ROMs, no cartridge. Power ON starts it.", (char *)model_labels[model]);
++	else
++		sprintf(t, "%s: takes effect on Power ON.", (char *)model_labels[model]);
++	status(t);
++}
++
 +static int open_menu(struct SysMenu *m)
 +{
 +	struct NewGadget ng;
 +	struct Gadget *g;
++	struct DimensionInfo dims;
++	ULONG modeid = Sys_ModeID(HIRES_KEY);
++	int sh = 256, wh;
 +
++	layout();
 +	/* pens 8-15: the logo picture's colours */
 +	{
 +		int i;
@@ -651,44 +743,49 @@ index 0000000..054226a
 +			menupal[3 + (8 + i) * 3] = Arnold_LogoPalette[i][2] * 0x01010101UL;
 +		}
 +	}
-+	mscr = OpenScreenTags(NULL, SA_Width, 640, SA_Height, 256, SA_Depth, 4,
-+		SA_DisplayID, PAL_MONITOR_ID | HIRES_KEY, SA_Font, (ULONG)&topaz8,
-+		SA_Title, (ULONG)"Arnold - Amstrad CPC Plus emulator.  (c) Kevin Thacker, GPL-2.0", SA_Pens, (ULONG)menupens,
++	/* the mode's own height: 256 lines PAL, 200 NTSC */
++	if (GetDisplayInfoData(NULL, (UBYTE *)&dims, sizeof dims, DTAG_DIMS, modeid) > 0)
++		sh = dims.Nominal.MaxY - dims.Nominal.MinY + 1;
++	if (sh < 200) sh = 200;
++	if (sh > 256) sh = 256;
++	mscr = OpenScreenTags(NULL, SA_Width, 640, SA_Height, sh, SA_Depth, 4,
++		SA_DisplayID, modeid, SA_Font, (ULONG)&topaz8,
++		SA_Title, (ULONG)"Arnold - Amstrad CPC / CPC Plus emulator.  (c) Kevin Thacker, GPL-2.0", SA_Pens, (ULONG)menupens,
 +		SA_ShowTitle, TRUE, SA_Colors32, (ULONG)menupal,
-+		/* NTSC (19 Oct 2026, John's A1200): without pal.monitor the 256-line menu
-+		 * shows only 200 lines; autoscroll lets the mouse slide the screen up to
-+		 * the bottom rows (the menu shortcuts work as well) */
++		/* a screen taller than the display (overscan settings) can still be slid */
 +		SA_AutoScroll, TRUE, TAG_DONE);
 +	if (!mscr) return 0;
++	Sys_Log("menu: screen mode %08lx, %d lines", (unsigned long)modeid, sh);
 +	vi = GetVisualInfo(mscr, TAG_DONE);
 +	if (!vi) { close_menu(); return 0; }
 +	OX = mscr->WBorLeft;
 +	OY = mscr->WBorTop + mscr->Font->ta_YSize + 1;
++	wh = OY + inner_h + mscr->WBorBottom;
++	if (wh > sh - mscr->BarHeight - 1) wh = sh - mscr->BarHeight - 1;
 +	g = CreateContext(&glist);
 +	memset(&ng, 0, sizeof ng);
 +	ng.ng_TextAttr = &topaz8; ng.ng_VisualInfo = vi;
-+	g = row(g, &ng, 70, m->cart, G_CART, G_CARTLOAD, G_CARTEJECT);
-+	g = row(g, &ng, 87, m->diska, G_DISKA, G_DISKALOAD, G_DISKAEJECT);
-+	g = row(g, &ng, 104, m->diskb, G_DISKB, G_DISKBLOAD, G_DISKBEJECT);
-+	g = button(g, &ng, 20, 138, 148, 14, G_SAVEGAME, "Save for game", 0);
-+	g = button(g, &ng, 174, 138, 152, 14, G_FORGETGAME, "Forget for game", !m->game_prefs);
-+	g = button(g, &ng, 20, 164, 148, 14, G_KEYS, "Keyboard...", 0);
-+	g = button(g, &ng, 174, 164, 152, 14, G_SHOT, "Screenshot", !m->can_continue);
-+	g = button(g, &ng, 20, 196, 140, 15, G_RESET, "Reset", 0);
-+	g = button(g, &ng, 173, 196, 140, 15, G_POWER, "Power ON", 0);
-+	g = button(g, &ng, 326, 196, 140, 15, G_CONTINUE, "Continue", !m->can_continue);
-+	g = button(g, &ng, 479, 196, 140, 15, G_QUIT, "Exit", 0);
++	g = cycle(g, &ng, y_head + FH + 1, G_MODEL, model_labels, model_of(m));
++	g = cycle(g, &ng, y_head + FH + 1 + ROW, G_VIDEO, video_labels, video_of(m));
++	g = cycle(g, &ng, y_head + FH + 1 + 2 * ROW, G_SPEED, speed_labels, m->speed ? 1 : 0);
++	g = row(g, &ng, y_media + FH + 1, m->cart, G_CART, G_CARTLOAD, G_CARTEJECT);
++	g = row(g, &ng, y_media + FH + 1 + ROW, m->diska, G_DISKA, G_DISKALOAD, G_DISKAEJECT);
++	g = row(g, &ng, y_media + FH + 1 + 2 * ROW, m->diskb, G_DISKB, G_DISKBLOAD, G_DISKBEJECT);
++	g = button(g, &ng, 12, y_buttons, 148, GH + 1, G_POWER, "Power ON", 0);
++	g = button(g, &ng, 168, y_buttons, 148, GH + 1, G_RESET, "Reset", 0);
++	g = button(g, &ng, 324, y_buttons, 148, GH + 1, G_CONTINUE, "Continue", !m->can_continue);
++	g = button(g, &ng, 480, y_buttons, 148, GH + 1, G_QUIT, "Exit", 0);
 +	if (!g) { close_menu(); return 0; }
-+	set_checks(m);
-+	menustrip = CreateMenus(nm, GTMN_FullMenu, TRUE, TAG_DONE);
-+	if (!menustrip || !LayoutMenus(menustrip, vi, GTMN_NewLookMenus, TRUE, TAG_DONE)) { close_menu(); return 0; }
++	if (!make_menus(m)) { close_menu(); return 0; }
++	/* version, credit and build time (date and hh:mm) in the title bar */
++	sprintf(wintitle, "Arnold v0.6 for Amiga - core: Kevin Thacker - built %.6s %.4s %.5s", __DATE__, __DATE__ + 7, __TIME__);
 +	mwin = OpenWindowTags(NULL, WA_CustomScreen, (ULONG)mscr, WA_Left, 0, WA_Top, mscr->BarHeight + 1,
-+		WA_Width, 640, WA_Height, 256 - mscr->BarHeight - 1,
-+		WA_Title, (ULONG)"Arnold for Amiga v0.5.2  (Amstrad CPC Plus / GX4000)  built " __DATE__ " " __TIME__,
++		WA_Width, 640, WA_Height, wh,
++		WA_Title, (ULONG)wintitle,
 +		WA_DepthGadget, TRUE, WA_CloseGadget, TRUE, WA_DragBar, FALSE,
 +		WA_Activate, TRUE, WA_NewLookMenus, TRUE,
 +		WA_Gadgets, (ULONG)glist, WA_SimpleRefresh, TRUE,
-+		WA_IDCMP, IDCMP_GADGETUP | IDCMP_CLOSEWINDOW | IDCMP_REFRESHWINDOW | IDCMP_RAWKEY | IDCMP_MENUPICK | IDCMP_EXTENDEDMOUSE | BUTTONIDCMP | STRINGIDCMP,
++		WA_IDCMP, IDCMP_GADGETUP | IDCMP_CLOSEWINDOW | IDCMP_REFRESHWINDOW | IDCMP_RAWKEY | IDCMP_MENUPICK | IDCMP_EXTENDEDMOUSE | BUTTONIDCMP | STRINGIDCMP | CYCLEIDCMP,
 +		TAG_DONE);
 +	if (!mwin) { close_menu(); return 0; }
 +	SetMenuStrip(mwin, menustrip);
@@ -696,8 +793,8 @@ index 0000000..054226a
 +	GT_RefreshWindow(mwin, NULL);
 +	{
 +		char line[SYS_PATH + 32];
-+		sprintf(line, "%s  Prefs: %s%s", m->status[0] ? m->status : (m->can_continue ? "Emulation paused: Help returns here, Continue resumes." : "Ready."),
-+			m->prefs[0] ? m->prefs : "(none)", m->game_prefs ? "  (game settings in use)" : "");
++		sprintf(line, "%s  Prefs: %s%s", m->status[0] ? m->status : (m->can_continue ? "Paused: Help returns here, Continue resumes." : "Ready."),
++			m->prefs[0] ? (char *)FilePart((STRPTR)m->prefs) : "(none)", m->game_prefs ? " +game" : "");
 +		m->status[0] = 0;
 +		status(line);
 +	}
@@ -712,6 +809,7 @@ index 0000000..054226a
 +}
 +
 +static void set_string(int id, const char *v) { GT_SetGadgetAttrs(gad[id], mwin, NULL, GTST_String, (ULONG)v, TAG_DONE); }
++static void set_cycle(int id, int v) { GT_SetGadgetAttrs(gad[id], mwin, NULL, GTCY_Active, v, TAG_DONE); }
 +
 +static void redraw_after_picture(struct SysMenu *m)
 +{
@@ -725,7 +823,8 @@ index 0000000..054226a
 +	GT_RefreshWindow(mwin, NULL);
 +}
 +
-+/* one chosen menu item; returns a SYS_MENU_ result to leave with, or -1 */
++/* one chosen menu item; returns a SYS_MENU_ result to leave with,
++ * MENU_REOPEN, or -1 */
 +static int menu_pick(struct SysMenu *m, struct MenuItem *item)
 +{
 +	int id = (int)(ULONG)GTMENUITEM_USERDATA(item);
@@ -736,10 +835,10 @@ index 0000000..054226a
 +	case M_LOADB: take_strings(m); if (ask_file("Disk for drive B (.dsk)", m->diskb)) set_string(G_DISKB, m->diskb); break;
 +	case M_EJECTALL: set_string(G_CART, ""); set_string(G_DISKA, ""); set_string(G_DISKB, ""); break;
 +	case M_KEYS: Sys_ShowPicture(mscr, "PROGDIR:Keyboard.iff"); redraw_after_picture(m); break;
-+	case M_SHOT: if (m->can_continue) return SYS_MENU_SHOT; break;
++	case M_SHOT: if (m->can_continue) return SYS_MENU_SHOT; status("Screenshot: nothing is running yet."); break;
 +	case M_SAVE: return SYS_MENU_SAVE;
 +	case M_SAVEGAME: return SYS_MENU_SAVEGAME;
-+	case M_FORGETGAME: if (m->game_prefs) return SYS_MENU_FORGETGAME; break;
++	case M_FORGETGAME: if (m->game_prefs) return SYS_MENU_FORGETGAME; status("This cartridge has no game settings."); break;
 +	case M_QUIT: return SYS_MENU_QUIT;
 +	case M_SOUND: m->sound = checked; break;
 +	case M_HIRES: m->hires = checked; break;
@@ -747,76 +846,97 @@ index 0000000..054226a
 +	case M_REF1: case M_REF2: case M_REF3: case M_REF4: m->refresh = id - M_REF1 + 1; break;
 +	case M_JOY0: case M_JOY1: case M_JOY2: m->joykeys = id - M_JOY0; break;
 +	case M_PAD0: case M_PAD1: m->pad = id - M_PAD0; break;
++	case M_SPEED50: case M_SPEEDDISP: m->speed = id - M_SPEED50; set_cycle(G_SPEED, m->speed); break;
++	case M_VIDAUTO: case M_VIDPAL: case M_VIDNTSC:
++		if (m->video != id - M_VIDAUTO) { m->video = id - M_VIDAUTO; return MENU_REOPEN; }
++		break;
++	case M_MODEL464: case M_MODEL664: case M_MODEL6128: case M_MODELPLUS: case M_MODELGX:
++		set_model(m, id - M_MODEL464); set_cycle(G_MODEL, m->model); break;
 +	}
 +	draw_settings(m);
 +	return -1;
 +}
 +
++void Sys_MenuClose(void) { close_menu(); }
++
 +int Sys_Menu(struct SysMenu *m)
 +{
-+	int result = SYS_MENU_QUIT, done = 0;
++	int result = SYS_MENU_QUIT, done, reopen;
 +	struct IntuiMessage *msg;
 +
 +	if (!GadToolsBase) GadToolsBase = OpenLibrary((STRPTR)"gadtools.library", 37);
 +	if (!AslBase) AslBase = OpenLibrary((STRPTR)"asl.library", 37);
 +	if (!GadToolsBase || !AslBase) return SYS_MENU_QUIT;
-+	if (!open_menu(m)) return SYS_MENU_QUIT;
++	close_menu();   /* one left open by the last call (e.g. a Power ON that failed) */
 +
-+	while (!done) {
-+		WaitPort(mwin->UserPort);
-+		while ((msg = GT_GetIMsg(mwin->UserPort))) {
-+			ULONG cls = msg->Class; UWORD code = msg->Code;
-+			struct Gadget *gd = (struct Gadget *)msg->IAddress;
-+			GT_ReplyIMsg(msg);
-+			if (cls == IDCMP_CLOSEWINDOW) { result = SYS_MENU_QUIT; done = 1; }
-+			else if (cls == IDCMP_REFRESHWINDOW) { GT_BeginRefresh(mwin); draw_frame(m); GT_EndRefresh(mwin, TRUE); }
-+			else if (cls == IDCMP_MENUPICK) {
-+				UWORD sel = code;
-+				while (sel != MENUNULL && !done) {
-+					struct MenuItem *item = ItemAddress(menustrip, sel);
-+					int r;
-+					if (!item) break;
-+					r = menu_pick(m, item);
-+					if (r >= 0) { result = r; done = 1; }
-+					sel = item->NextSelect;
++	/* a new video mode closes the screen and opens it again in that mode */
++	do {
++		Sys_VideoMode = video_of(m);
++		if (!open_menu(m)) return SYS_MENU_QUIT;
++		done = reopen = 0;
++		while (!done) {
++			WaitPort(mwin->UserPort);
++			while (!done && (msg = GT_GetIMsg(mwin->UserPort))) {
++				ULONG cls = msg->Class; UWORD code = msg->Code;
++				struct Gadget *gd = (struct Gadget *)msg->IAddress;
++				GT_ReplyIMsg(msg);
++				if (cls == IDCMP_CLOSEWINDOW) { result = SYS_MENU_QUIT; done = 1; }
++				else if (cls == IDCMP_REFRESHWINDOW) { GT_BeginRefresh(mwin); draw_frame(m); GT_EndRefresh(mwin, TRUE); }
++				else if (cls == IDCMP_MENUPICK) {
++					UWORD sel = code;
++					while (sel != MENUNULL && !done) {
++						struct MenuItem *item = ItemAddress(menustrip, sel);
++						int r;
++						if (!item) break;
++						r = menu_pick(m, item);
++						if (r == MENU_REOPEN) { reopen = 1; done = 1; }
++						else if (r >= 0) { result = r; done = 1; }
++						sel = item->NextSelect;
++					}
 +				}
-+			}
-+			else if (cls == IDCMP_RAWKEY) {
-+				if (Sys_MenuKeyLog) { if (!mkeylog) mkeylog = fopen("PROGDIR:menukeys.log", "w"); if (mkeylog) { fprintf(mkeylog, "%02x\n", code); fflush(mkeylog); } }
-+				/* Shortcuts (rawkeys): Help/C Continue, P Power ON, R Reset, Q Quit,
-+				 * S Save Prefs, K Keyboard picture, X Screenshot. */
-+				switch (code) {
-+				case 0x5f: case 0x33: if (m->can_continue) { result = SYS_MENU_CONTINUE; done = 1; } break;
-+				case 0x19: result = SYS_MENU_POWER; done = 1; break;
-+				case 0x13: result = SYS_MENU_RESET; done = 1; break;
-+				case 0x10: result = SYS_MENU_QUIT; done = 1; break;
-+				case 0x21: result = SYS_MENU_SAVE; done = 1; break;
-+				case 0x32: if (m->can_continue) { result = SYS_MENU_SHOT; done = 1; } break;
-+				case 0x27: Sys_ShowPicture(mscr, "PROGDIR:Keyboard.iff"); redraw_after_picture(m); break;
++				else if (cls == IDCMP_RAWKEY) {
++					if (Sys_MenuKeyLog) { if (!mkeylog) mkeylog = fopen("PROGDIR:menukeys.log", "w"); if (mkeylog) { fprintf(mkeylog, "%02x\n", code); fflush(mkeylog); } }
++					/* Shortcuts (rawkeys): Help/C Continue, P Power ON, R Reset, Q Quit,
++					 * S Save Prefs, K Keyboard picture, X Screenshot. */
++					switch (code) {
++					case 0x5f: case 0x33: if (m->can_continue) { result = SYS_MENU_CONTINUE; done = 1; } break;
++					case 0x19: result = SYS_MENU_POWER; done = 1; break;
++					case 0x13: result = SYS_MENU_RESET; done = 1; break;
++					case 0x10: result = SYS_MENU_QUIT; done = 1; break;
++					case 0x21: result = SYS_MENU_SAVE; done = 1; break;
++					case 0x32: if (m->can_continue) { result = SYS_MENU_SHOT; done = 1; } break;
++					case 0x27: Sys_ShowPicture(mscr, "PROGDIR:Keyboard.iff"); redraw_after_picture(m); break;
++					}
 +				}
-+			}
-+			else if (cls == IDCMP_GADGETUP) {
-+				switch (gd->GadgetID) {
-+				case G_CARTLOAD: take_strings(m); if (ask_file("Insert cartridge (.cpr)", m->cart)) set_string(G_CART, m->cart); break;
-+				case G_DISKALOAD: take_strings(m); if (ask_file("Disk for drive A (.dsk)", m->diska)) set_string(G_DISKA, m->diska); break;
-+				case G_DISKBLOAD: take_strings(m); if (ask_file("Disk for drive B (.dsk)", m->diskb)) set_string(G_DISKB, m->diskb); break;
-+				case G_CARTEJECT: set_string(G_CART, ""); break;
-+				case G_DISKAEJECT: set_string(G_DISKA, ""); break;
-+				case G_DISKBEJECT: set_string(G_DISKB, ""); break;
-+				case G_POWER: result = SYS_MENU_POWER; done = 1; break;
-+				case G_CONTINUE: if (m->can_continue) { result = SYS_MENU_CONTINUE; done = 1; } break;
-+				case G_RESET: result = SYS_MENU_RESET; done = 1; break;
-+				case G_QUIT: result = SYS_MENU_QUIT; done = 1; break;
-+				case G_SAVEGAME: result = SYS_MENU_SAVEGAME; done = 1; break;
-+				case G_SHOT: result = SYS_MENU_SHOT; done = 1; break;
-+				case G_KEYS: Sys_ShowPicture(mscr, "PROGDIR:Keyboard.iff"); redraw_after_picture(m); break;
-+				case G_FORGETGAME: result = SYS_MENU_FORGETGAME; done = 1; break;
++				else if (cls == IDCMP_GADGETUP) {
++					switch (gd->GadgetID) {
++					case G_CARTLOAD: take_strings(m); if (ask_file("Insert cartridge (.cpr)", m->cart)) set_string(G_CART, m->cart); break;
++					case G_DISKALOAD: take_strings(m); if (ask_file("Disk for drive A (.dsk)", m->diska)) set_string(G_DISKA, m->diska); break;
++					case G_DISKBLOAD: take_strings(m); if (ask_file("Disk for drive B (.dsk)", m->diskb)) set_string(G_DISKB, m->diskb); break;
++					case G_CARTEJECT: set_string(G_CART, ""); break;
++					case G_DISKAEJECT: set_string(G_DISKA, ""); break;
++					case G_DISKBEJECT: set_string(G_DISKB, ""); break;
++					case G_POWER: result = SYS_MENU_POWER; done = 1; break;
++					case G_CONTINUE: if (m->can_continue) { result = SYS_MENU_CONTINUE; done = 1; } break;
++					case G_RESET: result = SYS_MENU_RESET; done = 1; break;
++					case G_QUIT: result = SYS_MENU_QUIT; done = 1; break;
++					case G_MODEL: set_model(m, code < SYS_MODELS ? code : SYS_MODEL_PLUS); refresh_menus(m); break;
++					case G_SPEED:
++						m->speed = code ? 1 : 0; refresh_menus(m);
++						status(m->speed ? "Game speed: follows the display (60 Hz: 20% fast)." : "Game speed: the CPC's 50 Hz on any display.");
++						break;
++					case G_VIDEO: if (code <= 2 && code != video_of(m)) { m->video = code; reopen = 1; done = 1; } break;
++					}
 +				}
 +			}
 +		}
-+	}
-+	take_strings(m);
-+	close_menu();
++		take_strings(m);
++		/* 19 Oct 2026 (John): the menu screen stays open until the host has opened
++		 * the emulation screen in front of it (Sys_MenuClose), so Power ON or
++		 * Continue no longer flashes the Workbench for a frame or two */
++		if (reopen) close_menu();
++		if (reopen) sprintf(m->status, "Video mode: %s.", (char *)video_labels[video_of(m)]);
++	} while (reopen);
 +	return result;
 +}
 +
@@ -828,10 +948,10 @@ index 0000000..054226a
 +}
 diff --git a/src/amiga/amiga_sys.c b/src/amiga/amiga_sys.c
 new file mode 100644
-index 0000000..7f95de9
+index 0000000..65eecde
 --- /dev/null
 +++ b/src/amiga/amiga_sys.c
-@@ -0,0 +1,883 @@
+@@ -0,0 +1,1075 @@
 +/* Arnold on AmigaOS: screen, c2p, palette, keyboard and joystick.
 + * AmigaOS 3.x, AGA. Built with bebbo's m68k-amigaos-gcc, -noixemul. */
 +#include <exec/types.h>
@@ -859,7 +979,7 @@ index 0000000..7f95de9
 +#include <stdarg.h>
 +
 +unsigned long __stack = 256 * 1024;   /* libnix: enlarge the stack at start */
-+static const char ver[] __attribute__((used)) = "$VER: Arnold 0.5.2 (19.10.2026) Amiga port, GPL-2.0";
++static const char ver[] __attribute__((used)) = "$VER: Arnold 0.6 (19.10.2026) Amiga port, GPL-2.0";
 +
 +/* ---- diagnostic log ---- */
 +static FILE *logf;
@@ -882,6 +1002,7 @@ index 0000000..7f95de9
 +{
 +	extern struct Library *LowLevelBase;
 +	if (LowLevelBase) { CloseLibrary(LowLevelBase); LowLevelBase = NULL; }
++	{ extern void Sys_TimerClose(void); Sys_TimerClose(); }
 +	if (logf) { fclose(logf); logf = NULL; }
 +}
 +void Sys_MakeDir(const char *path)
@@ -1008,11 +1129,62 @@ index 0000000..7f95de9
 +	}
 +}
 +
++/* ---- video mode and display rate (19 Oct 2026, John's A1200 in NTSC) ----
++ * Sys_VideoMode: 0 Auto (the default monitor, as Workbench), 1 PAL, 2 NTSC.
++ * A forced PAL or NTSC mode that the system can't show (its monitor driver
++ * not mounted) falls back to Auto. */
++int Sys_VideoMode;
++unsigned long Sys_DisplayFrameUs = 20000;   /* measured VBlank interval of the last screen */
++static ULONG measured_mode = 0xffffffff;
++
++ULONG Sys_ModeID(ULONG key)
++{
++	ULONG id = key;
++	if (Sys_VideoMode == 1) id = PAL_MONITOR_ID | key;
++	else if (Sys_VideoMode == 2) id = NTSC_MONITOR_ID | key;
++	if (id != key && ModeNotAvailable(id)) {
++		Sys_Log("display: mode %08lx not available, using the default monitor", (unsigned long)id);
++		id = key;   /* DEFAULT_MONITOR_ID is 0 */
++	}
++	return id;
++}
++
++/* The VBlank interval of the screen just opened, timed with the E-clock over
++ * six frames (once per mode: Continue doesn't pay for it again). Whatever
++ * the mode ID says, this is the rate the display really runs at. */
++static void measure_vblank(ULONG modeid)
++{
++	unsigned long t0, t1;
++	int i;
++	if (modeid == measured_mode) return;
++	WaitTOF();
++	t0 = Sys_Micros();
++	for (i = 0; i < 6; i++) WaitTOF();
++	t1 = Sys_Micros();
++	if (t1 > t0) Sys_DisplayFrameUs = (t1 - t0) / 6;
++	measured_mode = modeid;
++	Sys_Log("display: VBlank every %lu us (%s), mode %08lx, viewport mode %08lx, gfx DisplayFlags %04x, E-clock %lu Hz",
++		Sys_DisplayFrameUs, Sys_Display50Hz() ? "50 Hz" : "not 50 Hz", (unsigned long)modeid,
++		(unsigned long)GetVPModeID(&scr->ViewPort), (unsigned)GfxBase->DisplayFlags, (unsigned long)SysBase->ex_EClockFrequency);
++}
++
++int Sys_Display50Hz(void) { return Sys_DisplayFrameUs > 18500 && Sys_DisplayFrameUs < 22000; }
++
++/* Paula's clock: 5 x the E-clock (PAL 3546895 Hz, NTSC 3579545 Hz). It comes
++ * from the machine's crystal, not the display mode: a PAL A1200 showing NTSC
++ * still has the PAL clock. */
++unsigned long Sys_ChipClock(void)
++{
++	unsigned long e = SysBase->ex_EClockFrequency;
++	if (e < 600000 || e > 800000) e = 709379;
++	return e * 5;
++}
++
 +int Sys_OpenDisplay(int cw, int ch, int hires)
 +{
 +	struct Rectangle rect;
-+	ULONG modeid = PAL_MONITOR_ID | (hires ? HIRES_KEY : LORES_KEY);
-+	int i, rw, rh;
++	ULONG modeid = Sys_ModeID(hires ? HIRES_KEY : LORES_KEY);
++	int i, rw, rh, ntsc_max;
 +
 +	CW = cw; CH = ch;
 +	c2p_init();
@@ -1022,19 +1194,39 @@ index 0000000..7f95de9
 +	if (!QueryOverscan(modeid, &rect, OSCAN_STANDARD)) {
 +		rect.MinX = 0; rect.MinY = 0; rect.MaxX = (hires ? 703 : 351); rect.MaxY = 271;
 +	}
++	/* NTSC (19 Oct 2026, John): standard overscan is only about 200 lines, which
++	 * crops games drawn to the screen edges. Take the mode's full vertical
++	 * overscan (OSCAN_MAX, about 240 lines; at most 240 here, centred in it)
++	 * and keep the standard horizontal extent (MAX starts left of what a
++	 * monitor shows). PAL keeps standard overscan, as before. */
++	ntsc_max = 0;
++	{
++		struct DimensionInfo dims;
++		struct Rectangle mx;
++		if (GetDisplayInfoData(NULL, (UBYTE *)&dims, sizeof dims, DTAG_DIMS, modeid) > 0
++		 && dims.Nominal.MaxY - dims.Nominal.MinY + 1 < 256
++		 && QueryOverscan(modeid, &mx, OSCAN_MAX) && mx.MaxY - mx.MinY > rect.MaxY - rect.MinY) {
++			int h = mx.MaxY - mx.MinY + 1, cut = 0;
++			if (h > 240) { cut = (h - 240) / 2; h = 240; }
++			rect.MinY = mx.MinY + cut;
++			rect.MaxY = rect.MinY + h - 1;
++			ntsc_max = 1;
++		}
++	}
 +	rw = rect.MaxX - rect.MinX + 1;
 +	rh = rect.MaxY - rect.MinY + 1;
 +	SW = (rw < cw ? rw : cw) & ~31;
 +	SH = rh < ch ? rh : ch;
-+	Sys_Log("display: mode %08lx overscan %d,%d-%d,%d screen %dx%d chunky %dx%d chip free %lu", (unsigned long)modeid,
++	Sys_Log("display: mode %08lx overscan%s %d,%d-%d,%d screen %dx%d chunky %dx%d chip free %lu", (unsigned long)modeid, ntsc_max ? " (full height)" : "",
 +		(int)rect.MinX, (int)rect.MinY, (int)rect.MaxX, (int)rect.MaxY, SW, SH, cw, ch, (unsigned long)AvailMem(MEMF_CHIP));
 +	XOFF = (cw - SW) / 2;
 +	YOFF = (ch - SH) / 2;
 +
 +	scr = OpenScreenTags(NULL,
 +		SA_Width, SW, SA_Height, SH, SA_Depth, 8,
-+		SA_DisplayID, modeid, SA_Overscan, OSCAN_STANDARD,
-+		SA_Left, (rw - SW) / 2, SA_Top, (rh - SH) / 2,
++		SA_DisplayID, modeid,
++		ntsc_max ? SA_DClip : SA_Overscan, ntsc_max ? (ULONG)&rect : OSCAN_STANDARD,
++		SA_Left, (ntsc_max ? rect.MinX : 0) + (rw - SW) / 2, SA_Top, (ntsc_max ? rect.MinY : 0) + (rh - SH) / 2,
 +		SA_Quiet, TRUE, SA_ShowTitle, FALSE, SA_Title, (ULONG)"Arnold",
 +		SA_Interleaved, TRUE,
 +		TAG_DONE);
@@ -1099,6 +1291,7 @@ index 0000000..7f95de9
 +	pal32[1 + 256 * 3] = 0;
 +	pal32[1 + SYS_OSD_PEN * 3] = 0xFFFFFFFF; pal32[2 + SYS_OSD_PEN * 3] = 0xDDDDDDDD; pal32[3 + SYS_OSD_PEN * 3] = 0;   /* OSD label: yellow */
 +	pal_dirty = 1; pal_dirty_all = 1;   /* new screen: load every pen once */
++	measure_vblank(modeid);
 +	Sys_Log("display: open");
 +	return 1;
 +}
@@ -1265,26 +1458,87 @@ index 0000000..7f95de9
 +	t1 = Sys_Micros(); Sys_Perf.wait_us += t1 - t0; Sys_Perf.wait_disp_us += t1 - t0;
 +}
 +
++/* Pacing (19 Oct 2026). Sys_SetPacing(timer, frame_us):
++ * - timer 0: one CPC frame per VBlank, as before (tuned on PAL; on a 60 Hz
++ *   display this is "Follow display": the game runs 20% fast);
++ * - timer 1: the CPC's 50 Hz from the E-clock, whatever the display: each
++ *   frame is due frame_us after the last one, and ChangeScreenBuffer shows it
++ *   at the next VBlank (on 60 Hz, one frame in five is shown twice).
++ * frame_us is the length of a sound block, so Paula and the emulation agree. */
++static int pace_timer;
++static unsigned long pace_us = 20000;
++static struct MsgPort *delayport;
++static struct timerequest *delayreq;
++
++void Sys_SetPacing(int timer, unsigned long frame_us)
++{
++	pace_timer = timer;
++	pace_us = frame_us;
++	Sys_Log("pacing: %s, %lu us a frame", timer ? "E-clock timer (50 Hz whatever the display)" : "display VBlank", frame_us);
++}
++
++static void timer_delay(unsigned long us)
++{
++	if (!delayreq) {
++		delayport = CreateMsgPort();
++		if (delayport) delayreq = (struct timerequest *)CreateIORequest(delayport, sizeof(struct timerequest));
++		if (delayreq && OpenDevice((STRPTR)TIMERNAME, UNIT_MICROHZ, (struct IORequest *)delayreq, 0) != 0) {
++			DeleteIORequest((struct IORequest *)delayreq); delayreq = NULL;
++		}
++		if (!delayreq) { Sys_Log("pacing: no timer.device MICROHZ, using WaitTOF"); pace_timer = 0; WaitTOF(); return; }
++	}
++	delayreq->tr_node.io_Command = TR_ADDREQUEST;
++	delayreq->tr_time.tv_secs = us / 1000000;
++	delayreq->tr_time.tv_micro = us % 1000000;
++	DoIO((struct IORequest *)delayreq);
++}
++
++static void timer_close(void)
++{
++	if (delayreq) { CloseDevice((struct IORequest *)delayreq); DeleteIORequest((struct IORequest *)delayreq); delayreq = NULL; }
++	if (delayport) { DeleteMsgPort(delayport); delayport = NULL; }
++}
++
 +long Sys_WaitFrame(void)
 +{
-+	/* One CPC frame per PAL VBlank. On time: WaitTOF, and the next frame is due
-+	 * 20 ms after that VBlank. Late (13 Oct 2026: BigMig took 40-80 ms a frame):
-+	 * no wait, and the schedule is kept, so the debt shows how far behind the
-+	 * emulation is; the frame skip uses it to catch up. More than 10 frames
-+	 * behind: give up the debt and restart the schedule from now.
++	/* VBlank mode: one CPC frame per VBlank. On time: WaitTOF, and the next
++	 * frame is due 20 ms (pace_us) after that VBlank. Late (13 Oct 2026: BigMig
++	 * took 40-80 ms a frame): no wait, and the schedule is kept, so the debt
++	 * shows how far behind the emulation is; the frame skip uses it to catch
++	 * up. More than 10 frames behind: give up the debt and restart the
++	 * schedule from now. Timer mode: the same, but the wait is for the due
++	 * time itself and the schedule is never re-locked to a VBlank.
 +	 * Returns how far behind schedule this frame ended, in us (0 if on time). */
 +	static unsigned long due;
++	static int was_timer;
 +	long behind = 0;
 +	unsigned long t0 = Sys_Micros();
 +	collect_disp();
-+	if (due == 0 || (long)(due - t0) > 500) {
-+		WaitTOF();
-+		due = Sys_Micros() + 20000;
++	if (pace_timer) {
++		long d;
++		if (!was_timer || due == 0 || (long)(t0 - due) > 1000000 || (long)(due - t0) > (long)(2 * pace_us)) due = t0 + pace_us;   /* (re)start */
++		was_timer = 1;
++		d = (long)(due - t0);
++		if (d > 500) {
++			timer_delay((unsigned long)d);
++			due += pace_us;
++		} else {
++			behind = (long)(t0 - due);
++			if (behind > 200000) due = t0 + pace_us;
++			else due += pace_us;
++			if (behind > 0) Sys_Perf.late_frames++;
++		}
 +	} else {
-+		behind = (long)(t0 - due);
-+		if (behind > 200000) due = t0 + 20000;   /* still reported: the skip carries on */
-+		else due += 20000;
-+		Sys_Perf.late_frames++;
++		was_timer = 0;
++		if (due == 0 || (long)(due - t0) > 500) {
++			WaitTOF();
++			due = Sys_Micros() + pace_us;
++		} else {
++			behind = (long)(t0 - due);
++			if (behind > 200000) due = t0 + pace_us;   /* still reported: the skip carries on */
++			else due += pace_us;
++			Sys_Perf.late_frames++;
++		}
 +	}
 +	t0 = Sys_Micros() - t0;
 +	Sys_Perf.wait_us += t0; Sys_Perf.wait_throttle_us += t0; Sys_Perf.throttle_calls++;
@@ -1456,11 +1710,19 @@ index 0000000..7f95de9
 +static UBYTE *aud_buf[2][ABUFS];      /* [channel][slot] in chip RAM */
 +static UBYTE aud_map[] = { 3 };       /* channels 0 and 1 */
 +static volatile int aud_rd, aud_wr, aud_count, aud_run;
-+static volatile unsigned long aud_underruns, aud_drops;
++static volatile unsigned long aud_underruns, aud_drops, aud_irqs;
 +static struct Interrupt aud_vbint;
 +static int aud_vbint_added;
++/* 19 Oct 2026: on a display that isn't 50 Hz the VBlank can't pace Paula, so
++ * the blocks are handed over by channel 0's own interrupt instead: Paula
++ * raises it when it latches a block (the start of its playback), and the
++ * pointer written then is latched when that block ends. The rate is then
++ * Paula's own: samples x period colour clocks a block. aud_mode 0 = VBlank
++ * server (PAL, as tuned), 1 = audio interrupt. */
++static int aud_mode, aud_first;
++static struct Interrupt aud_int, *aud_oldint;
 +
-+static LONG aud_vblank(register APTR data __asm("a1"))
++static void aud_feed(void)
 +{
 +	if (aud_run) {
 +		if (aud_count > 0) {
@@ -1468,16 +1730,34 @@ index 0000000..7f95de9
 +			custom.aud[1].ac_ptr = (UWORD *)aud_buf[1][aud_rd];
 +			aud_rd = (aud_rd + 1) % ABUFS;
 +			aud_count--;
-+		} else
++		} else if (aud_first)
++			aud_first = 0;   /* the start: nothing queued behind the first block yet */
++		else
 +			aud_underruns++;
 +	}
++}
++
++static LONG aud_vblank(register APTR data __asm("a1"))
++{
++	aud_feed();
 +	return 0;
 +}
 +
-+int Sys_AudioOpen(int period, int samples)
++/* exec interrupt handler (SetIntVector): must clear its request itself */
++static void aud_handler(register APTR data __asm("a1"))
++{
++	custom.intreq = INTF_AUD0;
++	aud_irqs++;
++	aud_feed();
++}
++
++unsigned long Sys_AudioIrqs(void) { return aud_irqs; }
++
++int Sys_AudioOpen(int period, int samples, int audint)
 +{
 +	int c, b;
 +	if (aud_open) return 1;
++	aud_mode = audint;
 +	if (samples & 1) samples--;
 +	aud_n = samples;
 +	audport = CreateMsgPort();
@@ -1505,14 +1785,27 @@ index 0000000..7f95de9
 +	custom.aud[0].ac_vol = 64;     custom.aud[1].ac_vol = 64;
 +	custom.aud[0].ac_len = aud_n >> 1; custom.aud[1].ac_len = aud_n >> 1;
 +	aud_rd = aud_wr = aud_count = 0; aud_run = 0;
-+	aud_vbint.is_Node.ln_Type = NT_INTERRUPT;
-+	aud_vbint.is_Node.ln_Pri = 0;
-+	aud_vbint.is_Node.ln_Name = (char *)"Arnold audio";
-+	aud_vbint.is_Data = NULL;
-+	aud_vbint.is_Code = (VOID (*)())aud_vblank;
-+	AddIntServer(INTB_VERTB, &aud_vbint);
-+	aud_vbint_added = 1;
-+	Sys_Log("audio: open, period %d, %d samples a block", period, samples);
++	if (aud_mode) {
++		aud_int.is_Node.ln_Type = NT_INTERRUPT;
++		aud_int.is_Node.ln_Pri = 0;
++		aud_int.is_Node.ln_Name = (char *)"Arnold audio";
++		aud_int.is_Data = NULL;
++		aud_int.is_Code = (VOID (*)())aud_handler;
++		custom.intena = INTF_AUD0;
++		custom.intreq = INTF_AUD0;
++		aud_oldint = SetIntVector(INTB_AUD0, &aud_int);
++		custom.intena = INTF_SETCLR | INTF_AUD0;
++	} else {
++		aud_vbint.is_Node.ln_Type = NT_INTERRUPT;
++		aud_vbint.is_Node.ln_Pri = 0;
++		aud_vbint.is_Node.ln_Name = (char *)"Arnold audio";
++		aud_vbint.is_Data = NULL;
++		aud_vbint.is_Code = (VOID (*)())aud_vblank;
++		AddIntServer(INTB_VERTB, &aud_vbint);
++		aud_vbint_added = 1;
++	}
++	Sys_Log("audio: open, period %d, %d samples a block, fed by %s, chip clock %lu Hz", period, samples,
++		aud_mode ? "the audio interrupt" : "the VBlank", Sys_ChipClock());
 +	return 1;
 +}
 +
@@ -1523,6 +1816,12 @@ index 0000000..7f95de9
 +	aud_run = 0;
 +	if (aud_vbint_added) { RemIntServer(INTB_VERTB, &aud_vbint); aud_vbint_added = 0; }
 +	custom.dmacon = DMAF_AUD0 | DMAF_AUD1;   /* clear */
++	if (aud_mode) {
++		custom.intena = INTF_AUD0;
++		SetIntVector(INTB_AUD0, aud_oldint);
++		custom.intreq = INTF_AUD0;
++		aud_oldint = NULL; aud_mode = 0;
++	}
 +	custom.aud[0].ac_vol = 0; custom.aud[1].ac_vol = 0;
 +	for (c = 0; c < 2; c++) for (b = 0; b < ABUFS; b++)
 +		if (aud_buf[c][b]) { FreeMem(aud_buf[c][b], aud_n); aud_buf[c][b] = NULL; }
@@ -1560,7 +1859,10 @@ index 0000000..7f95de9
 +		custom.aud[0].ac_ptr = (UWORD *)aud_buf[0][slot];
 +		custom.aud[1].ac_ptr = (UWORD *)aud_buf[1][slot];
 +		aud_rd = aud_wr; aud_count = 0;
++		aud_first = 1;
++		if (aud_mode) custom.intreq = INTF_AUD0;
 +		custom.dmacon = DMAF_SETCLR | DMAF_MASTER | DMAF_AUD0 | DMAF_AUD1;
++		if (aud_mode) custom.intena = INTF_SETCLR | INTF_AUD0;   /* off while paused, see Sys_AudioPause */
 +		aud_run = 1;
 +	}
 +	Enable();
@@ -1574,11 +1876,21 @@ index 0000000..7f95de9
 +	Disable();
 +	aud_run = 0;
 +	aud_rd = aud_wr = aud_count = 0;
-+	Enable();
++	/* 19 Oct 2026 (NTSC menu shear on John's A1200): with the audio DMA off,
++	 * an enabled AUD0 interrupt doesn't stop. Paula drops to manual mode and
++	 * asks for a new word every sample period once the handler clears the
++	 * request: about 22000 level-4 interrupts a second for as long as the
++	 * menu was up (70000 counted in one WinUAE menu visit). They hold off the
++	 * level-3 VBlank work of graphics and Intuition. So the interrupt is
++	 * switched off here, and Sys_AudioQueue switches it on again with the DMA. */
++	if (aud_mode) custom.intena = INTF_AUD0;
 +	custom.dmacon = DMAF_AUD0 | DMAF_AUD1;
++	if (aud_mode) custom.intreq = INTF_AUD0;
++	Enable();
 +}
 +
 +unsigned long Sys_Millis(void) { return frames * 20; }
++void Sys_TimerClose(void) { timer_close(); }
 +
 +void Sys_Message(const char *text)
 +{
@@ -1717,10 +2029,10 @@ index 0000000..7f95de9
 +}
 diff --git a/src/amiga/amiga_sys.h b/src/amiga/amiga_sys.h
 new file mode 100644
-index 0000000..3bc4c59
+index 0000000..cd0b82a
 --- /dev/null
 +++ b/src/amiga/amiga_sys.h
-@@ -0,0 +1,95 @@
+@@ -0,0 +1,112 @@
 +/* Arnold on AmigaOS: the OS-facing half of the host. No Arnold headers here
 + * (cpcglob.h has its own BOOL, which clashes with exec/types.h), so
 + * host_amiga.c talks to the Amiga through this small interface only. */
@@ -1735,7 +2047,13 @@ index 0000000..3bc4c59
 +void Sys_SetPaletteEntry(int index, unsigned char r, unsigned char g, unsigned char b);
 +void Sys_ShowFrame(const unsigned char *chunky, int pitch);  /* c2p changed lines, flip */
 +void Sys_MarkLineDirty(int y);  /* chunky line y changed: convert it into every buffer */
-+long Sys_WaitFrame(void);                                    /* VBlank pacing; returns us behind schedule */
++long Sys_WaitFrame(void);                                    /* frame pacing; returns us behind schedule */
++void Sys_SetPacing(int timer, unsigned long frame_us);       /* 0: one frame a VBlank; 1: E-clock timer, frame_us apart */
++/* Video mode of both screens: 0 Auto (default monitor, as Workbench), 1 PAL, 2 NTSC */
++extern int Sys_VideoMode;
++unsigned long Sys_ModeID(unsigned long key);                 /* LORES_KEY / HIRES_KEY with the chosen monitor */
++extern unsigned long Sys_DisplayFrameUs;                     /* measured VBlank interval of the last emulation screen */
++int  Sys_Display50Hz(void);
 +
 +/* Input. Sys_Poll drains Intuition events; returns 1 if the user asked to quit. */
 +int  Sys_Poll(void);
@@ -1755,7 +2073,8 @@ index 0000000..3bc4c59
 + * Paula period, samples the block length (even). Sys_AudioQueue takes a frame
 + * of the core's 16-bit native-order stereo samples; a VBlank interrupt hands
 + * the queued blocks to Paula one per frame. */
-+int  Sys_AudioOpen(int period, int samples);
++int  Sys_AudioOpen(int period, int samples, int audint);   /* audint: fed by Paula's own interrupt, not the VBlank */
++unsigned long Sys_ChipClock(void);   /* Paula clock, Hz (PAL 3546895, NTSC 3579545) */
 +void Sys_AudioClose(void);
 +void Sys_AudioQueue(const unsigned char *s16stereo, int samples);
 +
@@ -1769,20 +2088,30 @@ index 0000000..3bc4c59
 +	int skip, refresh;       /* frame skip (max in a row, 0 off) and fixed refresh (1 = every frame) */
 +	int joykeys;             /* keyboard as joystick: 0 off, 1 cursors, 2 QAOP */
 +	int pad;                 /* port 2 pad: 0 standard 2-button joystick, 1 CD32 pad */
++	int speed;               /* game speed: 0 the CPC's 50 Hz (E-clock timer off PAL), 1 follow the display */
++	int video;               /* video mode of both screens: 0 Auto (as Workbench), 1 PAL, 2 NTSC */
++	int model;               /* SYS_MODEL_*: takes effect on Power ON */
++	int running_model;       /* the model of the machine that is running (-1 none) */
 +	int can_continue;        /* a machine is running (Help brought us here) */
 +	char prefs[SYS_PATH];    /* shown in the status line */
 +	int game_prefs;          /* the cartridge has its own <file>.prefs (shown) */
 +	char status[80];         /* one-off status line for the next menu (cleared) */
 +};
++enum { SYS_MODEL_464 = 0, SYS_MODEL_664, SYS_MODEL_6128, SYS_MODEL_PLUS, SYS_MODEL_GX4000, SYS_MODELS };
 +enum { SYS_MENU_QUIT = 0, SYS_MENU_POWER, SYS_MENU_CONTINUE, SYS_MENU_RESET, SYS_MENU_SAVE,
 +       SYS_MENU_SAVEGAME, SYS_MENU_FORGETGAME, SYS_MENU_SHOT };
 +int  Sys_Menu(struct SysMenu *m);
++void Sys_MenuClose(void);           /* closes the menu screen Sys_Menu leaves open (call after the emulation screen is up) */
 +void Sys_MenuError(const char *text);
 +void Sys_ShowPicture(void *screen, const char *name);   /* amiga_iff.c: modal IFF viewer */
 +
 +/* Workbench start (amiga_wb.c): fills st from the icon's ToolTypes and a
 + * project icon; returns 1 when started from Workbench. */
-+struct SysStart { char prefs[SYS_PATH], media[SYS_PATH]; int menu, hires, nosound, skip, refresh, joykeys, pad; };   /* skip -1, refresh 0, joykeys -1: not given */
++struct SysStart { char prefs[SYS_PATH], media[SYS_PATH]; int menu, hires, nosound, skip, refresh, joykeys, pad, speed, video, model; };   /* skip -1, refresh 0, others -1: not given */
++int Sys_ParseModel(const char *v);   /* "464" "664" "6128" "PLUS" "GX4000" (any case) -> SYS_MODEL_*, -1 if not one */
++int Sys_ParseVideo(const char *v);   /* "AUTO" "PAL" "NTSC" or 0-2 -> 0-2, -1 if not one */
++int Sys_ParseSpeed(const char *v);   /* "50" or 0 -> 0, "DISPLAY" or 1 -> 1, -1 if not one */
++extern const char *Sys_ModelNames[SYS_MODELS], *Sys_VideoNames[3], *Sys_SpeedNames[2];   /* prefs words */
 +int  Sys_WBStart(int argc, char **argv, struct SysStart *st);
 +
 +unsigned long Sys_Millis(void);
@@ -1818,10 +2147,10 @@ index 0000000..3bc4c59
 +#endif
 diff --git a/src/amiga/amiga_wb.c b/src/amiga/amiga_wb.c
 new file mode 100644
-index 0000000..a838581
+index 0000000..f43c05c
 --- /dev/null
 +++ b/src/amiga/amiga_wb.c
-@@ -0,0 +1,85 @@
+@@ -0,0 +1,131 @@
 +/* Arnold on AmigaOS: Workbench start. With libnix, main() gets argc == 0 and
 + * argv == the WBStartup message. We read the PREFS ToolType from the icon we
 + * were started from (Arnold's own, or a preset project icon) and take a project icon
@@ -1859,6 +2188,12 @@ index 0000000..a838581
 +	if (tt) st->joykeys = atoi(tt);
 +	tt = (char *)FindToolType((STRPTR *)dobj->do_ToolTypes, (STRPTR)"PAD");
 +	if (tt) st->pad = !strcmp(tt, "CD32") || atoi(tt) == 1;
++	tt = (char *)FindToolType((STRPTR *)dobj->do_ToolTypes, (STRPTR)"SPEED");
++	if (tt) st->speed = Sys_ParseSpeed(tt);   /* SPEED=50 or SPEED=DISPLAY */
++	tt = (char *)FindToolType((STRPTR *)dobj->do_ToolTypes, (STRPTR)"VIDEO");
++	if (tt) st->video = Sys_ParseVideo(tt);   /* VIDEO=AUTO|PAL|NTSC */
++	tt = (char *)FindToolType((STRPTR *)dobj->do_ToolTypes, (STRPTR)"MODEL");
++	if (tt) st->model = Sys_ParseModel(tt);   /* MODEL=464|664|6128|PLUS|GX4000 */
 +	FreeDiskObject(dobj);
 +	return 1;
 +}
@@ -1869,7 +2204,7 @@ index 0000000..a838581
 +	struct WBArg *wa;
 +	memset(st, 0, sizeof *st);
 +	st->skip = -1;
-+	st->joykeys = -1; st->pad = -1;
++	st->joykeys = -1; st->pad = -1; st->speed = -1; st->video = -1; st->model = -1;
 +	if (argc != 0) return 0;
 +	wbs = (struct WBStartup *)argv;
 +	if (!wbs || wbs->sm_NumArgs < 1) return 0;
@@ -1886,7 +2221,7 @@ index 0000000..a838581
 +		struct SysStart pre;
 +		memset(&pre, 0, sizeof pre);
 +		pre.skip = -1;
-+		pre.joykeys = -1; pre.pad = -1;
++		pre.joykeys = -1; pre.pad = -1; pre.speed = -1; pre.video = -1; pre.model = -1;
 +		if (IconBase && read_tooltypes(wa[1].wa_Name, &pre) && pre.prefs[0]) {
 +			char dir[SYS_PATH];
 +			if (strchr(pre.prefs, ':') == NULL && NameFromLock(wa[1].wa_Lock, (STRPTR)dir, SYS_PATH)) {
@@ -1901,11 +2236,51 @@ index 0000000..a838581
 +			if (pre.refresh > 0) st->refresh = pre.refresh;
 +			if (pre.joykeys >= 0) st->joykeys = pre.joykeys;
 +			if (pre.pad >= 0) st->pad = pre.pad;
++			if (pre.speed >= 0) st->speed = pre.speed;
++			if (pre.video >= 0) st->video = pre.video;
++			if (pre.model >= 0) st->model = pre.model;
 +		} else if (NameFromLock(wa[1].wa_Lock, (STRPTR)st->media, SYS_PATH))
 +			AddPart((STRPTR)st->media, wa[1].wa_Name, SYS_PATH);
 +		CurrentDir(old);
 +	}
 +	return 1;
++}
++
++/* ---- setting words shared by prefs, arguments and ToolTypes ---- */
++const char *Sys_ModelNames[SYS_MODELS] = { "464", "664", "6128", "PLUS", "GX4000" };
++const char *Sys_VideoNames[3] = { "AUTO", "PAL", "NTSC" };
++const char *Sys_SpeedNames[2] = { "50", "DISPLAY" };
++
++static int word_index(const char *v, const char **names, int n)
++{
++	int i, k;
++	for (i = 0; i < n; i++) {
++		for (k = 0; names[i][k]; k++) {
++			char c = v[k];
++			if (c >= 'a' && c <= 'z') c -= 32;
++			if (c != names[i][k]) break;
++		}
++		if (!names[i][k] && (v[k] == 0 || v[k] == ' ' || v[k] == '\t')) return i;
++	}
++	return -1;
++}
++int Sys_ParseModel(const char *v)
++{
++	int i = word_index(v, Sys_ModelNames, SYS_MODELS);
++	if (i < 0 && v[0] == '6' && v[1] == '1' && v[2] == '2' && v[3] == '8' && (v[4] == '+' || v[4] == 'P' || v[4] == 'p')) i = SYS_MODEL_PLUS;
++	return i;
++}
++int Sys_ParseVideo(const char *v)
++{
++	int i = word_index(v, Sys_VideoNames, 3);
++	if (i < 0 && v[0] >= '0' && v[0] <= '2' && !v[1]) i = v[0] - '0';
++	return i;
++}
++int Sys_ParseSpeed(const char *v)
++{
++	int i = word_index(v, Sys_SpeedNames, 2);
++	if (i < 0 && (v[0] == '0' || v[0] == '1') && !v[1]) i = v[0] - '0';
++	return i;
 +}
 diff --git a/src/amiga/audio_conv.h b/src/amiga/audio_conv.h
 new file mode 100644
@@ -1930,10 +2305,10 @@ index 0000000..2a7118a
 +#endif
 diff --git a/src/amiga/host_amiga.c b/src/amiga/host_amiga.c
 new file mode 100644
-index 0000000..8596521
+index 0000000..39ca8af
 --- /dev/null
 +++ b/src/amiga/host_amiga.c
-@@ -0,0 +1,634 @@
+@@ -0,0 +1,746 @@
 +/* Arnold host for AmigaOS: implements src/cpc/host.h on top of amiga_sys.c.
 + * The core renders into an 8-bit chunky buffer (384 x 272, one byte per
 + * pixel, PaletteRemap indices); amiga_sys converts it to AGA bitplanes.
@@ -1966,6 +2341,7 @@ index 0000000..8596521
 +static SOUND_PLAYBACK_FORMAT sf = {2, 16, 22240};
 +static struct SysMenu menu;
 +static int display_open, audio_open;
++static int aud_period, aud_int;       /* how the open audio was set up (reopened when the timing changes) */
 +unsigned char hostpal[256][3];
 +static FILE *keylog;                  /* KEYLOG argument: raw key codes to PROGDIR:keys.log */
 +/* Test runs: KEYS=<script> drives the CPC keyboard by frame, SNAPDIR=<dir> takes
@@ -1984,6 +2360,8 @@ index 0000000..8596521
 + * like AmiMSX's Refresh setting; the adaptive skip works on top of it.
 + * A frame a test script will SNAP is always drawn. The core asks about the
 + * frame after next (it turns drawing on early, see arnold.c). */
++static int gx_autostart;   /* frames until the GX4000 auto-start presses f2 (0 = off) */
++static long help_after;    /* test: HELPAFTER=n presses Help once after n frames (0 = off) */
 +static int skip_max = 3, skip_run, refresh = 1;
 +static unsigned long refresh_count;
 +static long behind_us;
@@ -2098,8 +2476,16 @@ index 0000000..8596521
 +
 +void Host_SetPaletteEntry(int i, unsigned char r, unsigned char g, unsigned char b)
 +{
++	/* Amiga colour 0 also fills the screen surround (everything outside the
++	 * picture), so it shows the CPC's border colour, as a real monitor does
++	 * out to the tube's edge: blue for BASIC, black for most Plus games
++	 * (19 Oct 2026, John). The core's entry 0 itself is black (blanking). */
++	extern int Render_PaletteIndexBorder;
++	int bi = Render_PaletteIndexBorder;
 +	if (i >= 0 && i < 256) { hostpal[i][0] = r; hostpal[i][1] = g; hostpal[i][2] = b; }
++	if (i == 0 && bi > 0 && bi < 256) { r = hostpal[bi][0]; g = hostpal[bi][1]; b = hostpal[bi][2]; }
 +	Sys_SetPaletteEntry(i, r, g, b);
++	if (i == bi && bi > 0) Sys_SetPaletteEntry(0, r, g, b);
 +}
 +
 +/* Screenshot: PROGDIR:Arnold-NNN.iff and .png, first free number. */
@@ -2205,11 +2591,22 @@ index 0000000..8596521
 +		script_frame++;
 +	}
 +	{ static long hb; if (++hb % 50 == 0) Sys_Heartbeat(hb, behind_us); }
++	/* GX4000 with the Plus system cartridge (19 Oct 2026, John): that cartridge
++	 * shows the f1 BASIC / f2 Burnin' Rubber menu (the console came with a
++	 * game-only cartridge instead), and a console has no keyboard: press f2
++	 * for it, held for a few frames once the menu is up */
++	if (gx_autostart > 0) {
++		gx_autostart--;
++		if (gx_autostart == 6) CPC_SetKey(CPC_KEY_F2);
++		if (gx_autostart == 0) CPC_ClearKey(CPC_KEY_F2);
++	}
++	if (help_after > 0 && --help_after == 0) Sys_RequestQuit();
 +	if (Sys_Poll()) return TRUE;
 +	while (Sys_GetKey(&code, &down, &qual)) {
 +		if (keylog) { fprintf(keylog, "%02x %s q=%04x\n", code, down ? "down" : "up", qual); fflush(keylog); }
 +		if (code == RAW_HELP) { if (down) Sys_RequestQuit(); continue; }
 +		if (code < 128 && joykey(code, down)) continue;
++		if (menu.running_model == SYS_MODEL_GX4000) continue;   /* the console has no keyboard */
 +		if (code == 0x0d) {
 +			/* the Amiga's \ key: plain = the CPC's \, with Shift = the CPC's |
 +			 * (Shift+@), which RSX commands such as |CPM and Orion Prime's loader
@@ -2278,7 +2675,8 @@ index 0000000..8596521
 +	return 1;
 +}
 +
-+/* Arnold [file ...] [NOSOUND] [HIRES] [MENU] [P=prefs] [SKIP=n] [REFRESH=n] [JOYKEYS=0|1|2]: .cpr cartridge (default
++/* Arnold [file ...] [NOSOUND] [HIRES] [MENU] [P=prefs] [SKIP=n] [REFRESH=n] [JOYKEYS=0|1|2]
++ * [PAD=0|CD32] [SPEED=50|DISPLAY] [VIDEO=AUTO|PAL|NTSC] [MODEL=464|664|6128|PLUS|GX4000]: .cpr cartridge (default
 + * PROGDIR:roms/system.cpr), .dsk disk in drive A (a second one in B), .sna
 + * snapshot. Starts straight into the emulation unless MENU is given or
 + * nothing could be loaded. Help brings up the menu; Continue resumes. */
@@ -2300,6 +2698,9 @@ index 0000000..8596521
 +		else if (!strcmp(line, "refresh")) refresh = atoi(v);
 +		else if (!strcmp(line, "joykeys")) joykeys = atoi(v);
 +		else if (!strcmp(line, "pad")) Sys_PadType = atoi(v) == 1;
++		else if (!strcmp(line, "speed")) { int k = Sys_ParseSpeed(v); if (k >= 0) menu.speed = k; }
++		else if (!strcmp(line, "video")) { int k = Sys_ParseVideo(v); if (k >= 0) menu.video = k; }
++		else if (!strcmp(line, "model")) { int k = Sys_ParseModel(v); if (k >= 0) menu.model = k; }
 +		else if (!strcmp(line, "cart") && v[0]) strncpy(menu.cart, v, SYS_PATH - 1);
 +		else if (!strcmp(line, "diska")) strncpy(menu.diska, v, SYS_PATH - 1);
 +		else if (!strcmp(line, "diskb")) strncpy(menu.diskb, v, SYS_PATH - 1);
@@ -2312,8 +2713,10 @@ index 0000000..8596521
 +	FILE *f = fopen(menu.prefs, "w");
 +	char msg[SYS_PATH + 32];
 +	if (!f) { sprintf(msg, "Can't write prefs\n%s", menu.prefs); Sys_MenuError(msg); return; }
-+	fprintf(f, "; Arnold prefs\nsound=%d\nhires=%d\nskip=%d\nrefresh=%d\njoykeys=%d\npad=%d\ncart=%s\ndiska=%s\ndiskb=%s\n",
-+		menu.sound, menu.hires, skip_max, refresh, global_joykeys, Sys_PadType, menu.cart, menu.diska, menu.diskb);
++	fprintf(f, "; Arnold prefs\nsound=%d\nhires=%d\nskip=%d\nrefresh=%d\njoykeys=%d\npad=%d\nspeed=%s\nvideo=%s\nmodel=%s\ncart=%s\ndiska=%s\ndiskb=%s\n",
++		menu.sound, menu.hires, skip_max, refresh, global_joykeys, Sys_PadType,
++		Sys_SpeedNames[menu.speed ? 1 : 0], Sys_VideoNames[menu.video >= 0 && menu.video <= 2 ? menu.video : 0],
++		Sys_ModelNames[menu.model >= 0 && menu.model < SYS_MODELS ? menu.model : SYS_MODEL_PLUS], menu.cart, menu.diska, menu.diskb);
 +	fclose(f);
 +}
 +
@@ -2402,28 +2805,77 @@ index 0000000..8596521
 +}
 +static void apply_disks(void) { apply_disk(0, menu.diska); apply_disk(1, menu.diskb); }
 +
-+/* Power ON: cartridge in, Plus hardware, reset, disks in. */
++/* System ROMs of the plain CPCs (19 Oct 2026), from the drawer like
++ * system.cpr: roms/cpc464, cpc664, cpc6128 (os.rom, basic.rom) and
++ * roms/amsdos.rom; the English ROMs Arnold ships. Loaded on the Power ON that
++ * needs them and kept (the core points into them). */
++static unsigned char *rom_os, *rom_basic, *rom_dos;
++static int rom_model = -1;
++static int load_rom(const char *name, unsigned char **pp)
++{
++	unsigned char *d; unsigned long l;
++	if (!load_media("system ROM", name, &d, &l)) return 0;
++	if (l < 16384) { char msg[SYS_PATH + 40]; sprintf(msg, "Not a 16K ROM\n%s", name); Sys_MenuError(msg); free(d); return 0; }
++	if (*pp) free(*pp);
++	*pp = d;
++	return 1;
++}
++static int load_cpc_roms(int model)
++{
++	static const char *dir[] = { "cpc464", "cpc664", "cpc6128" };
++	char n[64];
++	if (rom_model == model) return 1;
++	rom_model = -1;
++	sprintf(n, "PROGDIR:roms/%s/os.rom", dir[model]);
++	if (!load_rom(n, &rom_os)) return 0;
++	sprintf(n, "PROGDIR:roms/%s/basic.rom", dir[model]);
++	if (!load_rom(n, &rom_basic)) return 0;
++	if (model != SYS_MODEL_464 && !rom_dos && !load_rom("PROGDIR:roms/amsdos.rom", &rom_dos)) return 0;
++	rom_model = model;
++	Sys_Log("system ROMs: %s loaded", dir[model]);
++	return 1;
++}
++
++/* Power ON: the chosen model's hardware, its ROMs or the cartridge, reset,
++ * disks in. Models (19 Oct 2026): 464 (64K, tape only: no disc interface),
++ * 664 (64K, disc), 6128 (128K, disc), 6128 Plus (cartridge, 128K, disc) and
++ * GX4000 (cartridge, 64K, no disc interface, no keyboard). */
 +static int power_on(void)
 +{
-+	unsigned char *data; unsigned long len;
-+	/* no cartridge chosen (John ejected it to boot a disk, 17 Oct 2026): the
-+	 * Plus needs one, so the system cartridge (BASIC + AMSDOS) goes in */
-+	if (!menu.cart[0]) strcpy(menu.cart, "PROGDIR:roms/system.cpr");
-+	if (!load_media("cartridge", menu.cart, &data, &len)) return 0;
-+	Sys_Log("cartridge '%s': %lu bytes", menu.cart, len);
++	unsigned char *data = NULL; unsigned long len = 0;
++	int model = menu.model >= 0 && menu.model < SYS_MODELS ? menu.model : SYS_MODEL_PLUS;
++	int plus = model == SYS_MODEL_PLUS || model == SYS_MODEL_GX4000;
++	if (plus) {
++		/* no cartridge chosen (John ejected it to boot a disk, 17 Oct 2026): the
++		 * Plus needs one, so the system cartridge (BASIC + AMSDOS) goes in */
++		if (!menu.cart[0]) strcpy(menu.cart, "PROGDIR:roms/system.cpr");
++		if (!load_media("cartridge", menu.cart, &data, &len)) return 0;
++		Sys_Log("cartridge '%s': %lu bytes", menu.cart, len);
++	} else if (!load_cpc_roms(model)) return 0;
 +	game_prefs_apply();
-+	if (cart_data) free(cart_data);
-+	cart_data = data;
-+	CPC_SetHardware(CPC_HW_CPCPLUS);
-+	Cartridge_Insert(data, len);
-+	Amstrad_DiscInterface_Install();
-+	Amstrad_RamExpansion_Install();
++	if (plus) {
++		if (cart_data) free(cart_data);
++		cart_data = data;
++		CPC_SetHardware(CPC_HW_CPCPLUS);
++		Cartridge_Insert(data, len);
++	} else {
++		CPC_SetOSRom(rom_os);
++		CPC_SetBASICRom(rom_basic);
++		CPC_SetDOSRom(model == SYS_MODEL_464 ? NULL : rom_dos);
++		CPC_SetHardware(CPC_HW_CPC);
++	}
++	if (model == SYS_MODEL_464 || model == SYS_MODEL_GX4000) Amstrad_DiscInterface_DeInstall();
++	else Amstrad_DiscInterface_Install();
++	if (model == SYS_MODEL_6128 || model == SYS_MODEL_PLUS) Amstrad_RamExpansion_Install();
++	else Amstrad_RamExpansion_DeInstall();
 +	/* a power cycle, not just a reset (18 Oct 2026): memory cleared and the
 +	 * paletted renderer's colours freed, so a game starts as it does from cold
 +	 * whatever ran before it */
 +	{ extern void CPC_PowerCycleMemory(void), Palette_Reset(void); CPC_PowerCycleMemory(); Palette_Reset(); }
 +	CPC_Reset();
-+	Sys_Log("power on: reset done");
++	menu.running_model = model;
++	gx_autostart = (model == SYS_MODEL_GX4000 && strstr(menu.cart, "system.cpr")) ? 150 : 0;   /* about 3 s, see Host_ProcessSystemEvents */
++	Sys_Log("power on: %s, reset done", Sys_ModelNames[model]);
 +	/* power cycle: both drives reloaded from their files */
 +	DiskImage_RemoveDisk(0); DiskImage_RemoveDisk(1);
 +	disk_in[0][0] = disk_in[1][0] = 0;
@@ -2441,7 +2893,30 @@ index 0000000..8596521
 +	if (display_open) { Sys_CloseDisplay(); display_open = 0; }
 +	Render_SetRenderingAccuracyForWindowedMode(menu.hires ? RENDERING_ACCURACY_HIGH : RENDERING_ACCURACY_LOW);
 +	if (!Render_SetDisplayWindowed()) { Sys_MenuError("Can't open the AGA screen"); return 0; }
-+	if (menu.sound && !audio_open && Sys_AudioOpen(AUD_PERIOD, AUD_SAMPLES)) { audio_open = 1; CPC_SetAudioActive(TRUE); }
++	/* Timing (19 Oct 2026). A 50 Hz display: one CPC frame per VBlank and Paula
++	 * fed from the VBlank, as tuned on PAL. Any other rate (NTSC 60 Hz):
++	 * - Game speed "50 Hz": the E-clock paces the frames, Paula's own interrupt
++	 *   feeds it, and the period makes a block of 444 samples last one CPC
++	 *   frame (19968 us) for this machine's chip clock; the frame time is set
++	 *   to that block's exact length so sound and emulation never drift.
++	 * - "Follow display": one frame per VBlank (60 Hz: 20% fast, as before),
++	 *   with the period shortened so the blocks keep up. */
++	{
++		unsigned long clk = Sys_ChipClock(), fus, target;
++		int period, audint, timer;
++		if (Sys_Display50Hz()) { period = AUD_PERIOD; audint = 0; timer = 0; fus = 20000; }
++		else {
++			target = menu.speed ? Sys_DisplayFrameUs : 19968;
++			period = (int)(((unsigned long long)target * clk + 444ULL * 500000ULL) / (444ULL * 1000000ULL));
++			if (period < 124) period = 124;
++			audint = 1; timer = !menu.speed;
++			fus = menu.speed ? Sys_DisplayFrameUs : (unsigned long)(444ULL * period * 1000000ULL / clk);
++		}
++		Sys_SetPacing(timer, fus);
++		if (audio_open && (period != aud_period || audint != aud_int)) { Sys_AudioClose(); audio_open = 0; }
++		aud_period = period; aud_int = audint;
++	}
++	if (menu.sound && !audio_open && Sys_AudioOpen(aud_period, AUD_SAMPLES, aud_int)) { audio_open = 1; CPC_SetAudioActive(TRUE); }
 +	if (!menu.sound && audio_open) { Sys_AudioClose(); audio_open = 0; CPC_SetAudioActive(FALSE); }
 +	CPC_ClearKeyboard();
 +	Sys_Log("emulation: screen open, sound %s", audio_open ? "on" : "off");
@@ -2458,6 +2933,7 @@ index 0000000..8596521
 +	strcpy(menu.cart, "PROGDIR:roms/system.cpr");
 +	strcpy(menu.prefs, "PROGDIR:Arnold.prefs");
 +	menu.sound = 1;
++	menu.model = SYS_MODEL_PLUS; menu.running_model = -1;
 +	Sys_LogOpen();
 +	Sys_LogStart(argc);
 +	for (i = 1; i < argc; i++) Sys_Log("arg %d: %s", i, argv[i]);
@@ -2470,6 +2946,9 @@ index 0000000..8596521
 +		if (st.refresh > 0) refresh = st.refresh;
 +		if (st.joykeys >= 0) joykeys = st.joykeys;
 +		if (st.pad >= 0) Sys_PadType = st.pad;
++		if (st.speed >= 0) menu.speed = st.speed;
++		if (st.video >= 0) menu.video = st.video;
++		if (st.model >= 0) menu.model = st.model;
 +		if (has_ext(st.media, ".cpr")) { strncpy(menu.cart, st.media, SYS_PATH - 1); media_given = 1; }
 +		else if (has_ext(st.media, ".dsk")) { strncpy(menu.diska, st.media, SYS_PATH - 1); menu.diskb[0] = 0; media_given = 1; }
 +		else if (has_ext(st.media, ".sna")) { sna = st.media; media_given = 1; }
@@ -2492,6 +2971,9 @@ index 0000000..8596521
 +			else if (!kwncmp(argv[i], "JOYKEYS=", 8)) joykeys = atoi(argv[i] + 8);
 +			else if (!kwcmp(argv[i], "CD32") || !kwcmp(argv[i], "PAD=CD32") || !kwcmp(argv[i], "PAD=1")) Sys_PadType = 1;
 +			else if (!kwcmp(argv[i], "PAD=0") || !kwcmp(argv[i], "PAD=STANDARD")) Sys_PadType = 0;
++			else if (!kwncmp(argv[i], "SPEED=", 6)) { int k = Sys_ParseSpeed(argv[i] + 6); if (k >= 0) menu.speed = k; }
++			else if (!kwncmp(argv[i], "VIDEO=", 6)) { int k = Sys_ParseVideo(argv[i] + 6); if (k >= 0) menu.video = k; }
++			else if (!kwncmp(argv[i], "MODEL=", 6)) { int k = Sys_ParseModel(argv[i] + 6); if (k >= 0) menu.model = k; }
 +			else if (!kwcmp(argv[i], "BENCH")) {
 +				/* machine timings to the Shell and PROGDIR:bench.txt, then exit */
 +				FILE *bf = fopen("PROGDIR:bench.txt", "w");
@@ -2503,13 +2985,16 @@ index 0000000..8596521
 +			else if (!kwncmp(argv[i], "SNAPDIR=", 8)) strncpy(snapdir, argv[i] + 8, SYS_PATH - 1);
 +			else if (!kwcmp(argv[i], "HIRES")) hires = 1;
 +			else if (!kwcmp(argv[i], "MENU")) want_menu = 1;
++			else if (!kwncmp(argv[i], "HELPAFTER=", 10)) help_after = atol(argv[i] + 10);
 +			else if (!kwncmp(argv[i], "P=", 2)) ;
 +			else if (has_ext(argv[i], ".cpr")) { strncpy(menu.cart, argv[i], SYS_PATH - 1); media_given = 1; }
 +			else if (has_ext(argv[i], ".dsk")) { if (!ndisk) menu.diskb[0] = 0; strncpy(ndisk++ ? menu.diskb : menu.diska, argv[i], SYS_PATH - 1); media_given = 1; }
 +			else if (has_ext(argv[i], ".sna")) { sna = argv[i]; media_given = 1; }
 +		}
 +	}
-+	Sys_Log("prefs '%s': sound %d hires %d skip %d refresh %d cart '%s'", menu.prefs, menu.sound, menu.hires, skip_max, refresh, menu.cart);
++	Sys_Log("prefs '%s': sound %d hires %d skip %d refresh %d model %s video %s speed %s cart '%s'", menu.prefs, menu.sound, menu.hires, skip_max, refresh,
++		Sys_ModelNames[menu.model], Sys_VideoNames[menu.video], Sys_SpeedNames[menu.speed], menu.cart);
++	Sys_VideoMode = menu.video;
 +	if (script_on) Sys_MakeDir(snapdir);
 +	if (nosound) menu.sound = 0;
 +	if (hires) menu.hires = 1;
@@ -2530,11 +3015,13 @@ index 0000000..8596521
 +
 +	for (;;) {
 +		if (want_menu) {
-+			Sys_Log("menu");
++			{ extern unsigned long Sys_AudioIrqs(void); Sys_Log("menu (audio interrupts so far %lu)", Sys_AudioIrqs()); }
 +			menu.skip = skip_max; menu.refresh = refresh; menu.joykeys = joykeys; menu.pad = Sys_PadType;
 +			action = Sys_Menu(&menu);
 +			skip_max = menu.skip; refresh = menu.refresh > 0 ? menu.refresh : 1; joykeys = menu.joykeys; Sys_PadType = menu.pad;
-+			Sys_Log("menu action %d", action);
++			Sys_VideoMode = menu.video;
++			{ extern unsigned long Sys_AudioIrqs(void); Sys_Log("menu action %d (audio interrupts so far %lu)", action, Sys_AudioIrqs()); }
++			if (action != SYS_MENU_POWER && action != SYS_MENU_RESET && action != SYS_MENU_CONTINUE) Sys_MenuClose();
 +			if (action == SYS_MENU_QUIT) break;
 +			if (!menu.game_prefs) { global_sound = menu.sound; global_hires = menu.hires; global_joykeys = joykeys; }
 +			if (action == SYS_MENU_SAVE) { int gs = menu.sound, gh = menu.hires; if (menu.game_prefs) { menu.sound = global_sound; menu.hires = global_hires; } else global_joykeys = joykeys; prefs_save(); menu.sound = gs; menu.hires = gh; continue; }
@@ -2545,7 +3032,7 @@ index 0000000..8596521
 +			if (action == SYS_MENU_RESET) { if (!menu.can_continue && !power_on()) continue; CPC_Reset(); }
 +			if (action == SYS_MENU_CONTINUE || action == SYS_MENU_RESET) apply_disks();   /* disk swap */
 +		}
-+		if (!open_emulation()) { want_menu = 1; continue; }
++		{ int ok = open_emulation(); Sys_MenuClose(); if (!ok) { want_menu = 1; continue; } }
 +		menu.can_continue = 1;
 +		Sys_Log("running");
 +		CPCEmulation_Run();                 /* returns when Help is pressed (or a script QUIT) */

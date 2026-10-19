@@ -1,6 +1,6 @@
-From 3304a30e4e151c80c506376b7eb4d5b3371b7d78 Mon Sep 17 00:00:00 2001
+From 2f8a05d204638689d42988b0fbd5e534b5cc9eae Mon Sep 17 00:00:00 2001
 From: John Stringer <jcec_1@yahoo.co.uk>
-Date: Mon, 19 Oct 2026 07:45:59 +0100
+Date: Mon, 19 Oct 2026 20:36:00 +0100
 Subject: [PATCH 17/21] Plus: IM2 vector worked out at interrupt acknowledge
 
 On the Plus the ASIC puts the vector of the interrupt being acknowledged on the

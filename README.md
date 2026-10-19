@@ -1,6 +1,6 @@
 # Arnold for Amiga
 
-Amstrad CPC 6128 Plus / GX4000 emulator for AGA Amigas with a 68040 or better: an A1200
+Amstrad CPC 6128 Plus / GX4000 and CPC 464/664/6128 emulator for AGA Amigas with a 68040 or better: an A1200
 with a PiStorm32 (Emu68), 68060 cards, or BigMig on MiSTer. It is a port of Kevin Thacker's
 **Arnold** to 68k AmigaOS 3.x, with the front end modelled on AmiMSX. GPL-2.0.
 
@@ -12,6 +12,11 @@ and asked for it to keep the Arnold name.
 
 - CPC Plus / GX4000 cartridges (.cpr), disks (.dsk and extended .dsk, with BASIC and AMSDOS
   from the Plus system cartridge) and snapshots (.sna).
+- Models: CPC 464, 664 and 6128 (booting to BASIC from their own system ROMs), 6128 Plus and
+  GX4000, picked in the menu's Settings box.
+- PAL and NTSC: Video mode Auto/PAL/NTSC; on a 60 Hz NTSC display the CPC still runs at its
+  own 50 Hz (frames timed from the E-clock, Paula at the matching rate), or follows the display
+  if you prefer. The menu fits a 200-line NTSC screen.
 - Full speed with sound on a PiStorm A1200: 39-58% of the frame budget in the games measured.
   Paula sound, 8-bit stereo. Frame skip for slower machines, with every drawn frame exact.
 - Menu on Help: media, sound, screen mode, frame skip, joystick-from-keyboard, per-game
@@ -19,13 +24,14 @@ and asked for it to keep the Arnold name.
 - Joystick in port 2, two-button and CD32 pads, keyboard as joystick.
 
 Not yet: writing changed disks back to the .dsk file (SAVE lasts until Power ON or Exit),
-tape, the plain CPC 464/664/6128 (the port is Plus only so far). Known issues are listed in
-the drawer's README.txt (Sonic GX speed, Pinball Dreams, NTSC speed).
+tape (so the CPC 464 runs BASIC only). Known issues are listed in the drawer's README.txt
+(Sonic GX speed, Pinball Dreams, NTSC cropping of edge-drawn games).
 
 ## Download
 
 The release zip holds the Amiga drawer (four builds: 68040 and 68060, each at -O2 and -O3,
-all soft-float), icons, presets, the Plus system cartridge and a user README. See the
+all soft-float), icons, presets, the Plus system cartridge, the CPC 464/664/6128 system ROMs
+and a user README. See the
 Releases page.
 
 ## Core fixes

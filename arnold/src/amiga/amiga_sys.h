@@ -12,7 +12,13 @@ void Sys_CloseDisplay(void);
 void Sys_SetPaletteEntry(int index, unsigned char r, unsigned char g, unsigned char b);
 void Sys_ShowFrame(const unsigned char *chunky, int pitch);  /* c2p changed lines, flip */
 void Sys_MarkLineDirty(int y);  /* chunky line y changed: convert it into every buffer */
-long Sys_WaitFrame(void);                                    /* VBlank pacing; returns us behind schedule */
+long Sys_WaitFrame(void);                                    /* frame pacing; returns us behind schedule */
+void Sys_SetPacing(int timer, unsigned long frame_us);       /* 0: one frame a VBlank; 1: E-clock timer, frame_us apart */
+/* Video mode of both screens: 0 Auto (default monitor, as Workbench), 1 PAL, 2 NTSC */
+extern int Sys_VideoMode;
+unsigned long Sys_ModeID(unsigned long key);                 /* LORES_KEY / HIRES_KEY with the chosen monitor */
+extern unsigned long Sys_DisplayFrameUs;                     /* measured VBlank interval of the last emulation screen */
+int  Sys_Display50Hz(void);
 
 /* Input. Sys_Poll drains Intuition events; returns 1 if the user asked to quit. */
 int  Sys_Poll(void);
@@ -32,7 +38,8 @@ unsigned long Sys_JoyRaw(int port); /* last lowlevel.library ReadJoyPort value (
  * Paula period, samples the block length (even). Sys_AudioQueue takes a frame
  * of the core's 16-bit native-order stereo samples; a VBlank interrupt hands
  * the queued blocks to Paula one per frame. */
-int  Sys_AudioOpen(int period, int samples);
+int  Sys_AudioOpen(int period, int samples, int audint);   /* audint: fed by Paula's own interrupt, not the VBlank */
+unsigned long Sys_ChipClock(void);   /* Paula clock, Hz (PAL 3546895, NTSC 3579545) */
 void Sys_AudioClose(void);
 void Sys_AudioQueue(const unsigned char *s16stereo, int samples);
 
@@ -46,20 +53,30 @@ struct SysMenu {
 	int skip, refresh;       /* frame skip (max in a row, 0 off) and fixed refresh (1 = every frame) */
 	int joykeys;             /* keyboard as joystick: 0 off, 1 cursors, 2 QAOP */
 	int pad;                 /* port 2 pad: 0 standard 2-button joystick, 1 CD32 pad */
+	int speed;               /* game speed: 0 the CPC's 50 Hz (E-clock timer off PAL), 1 follow the display */
+	int video;               /* video mode of both screens: 0 Auto (as Workbench), 1 PAL, 2 NTSC */
+	int model;               /* SYS_MODEL_*: takes effect on Power ON */
+	int running_model;       /* the model of the machine that is running (-1 none) */
 	int can_continue;        /* a machine is running (Help brought us here) */
 	char prefs[SYS_PATH];    /* shown in the status line */
 	int game_prefs;          /* the cartridge has its own <file>.prefs (shown) */
 	char status[80];         /* one-off status line for the next menu (cleared) */
 };
+enum { SYS_MODEL_464 = 0, SYS_MODEL_664, SYS_MODEL_6128, SYS_MODEL_PLUS, SYS_MODEL_GX4000, SYS_MODELS };
 enum { SYS_MENU_QUIT = 0, SYS_MENU_POWER, SYS_MENU_CONTINUE, SYS_MENU_RESET, SYS_MENU_SAVE,
        SYS_MENU_SAVEGAME, SYS_MENU_FORGETGAME, SYS_MENU_SHOT };
 int  Sys_Menu(struct SysMenu *m);
+void Sys_MenuClose(void);           /* closes the menu screen Sys_Menu leaves open (call after the emulation screen is up) */
 void Sys_MenuError(const char *text);
 void Sys_ShowPicture(void *screen, const char *name);   /* amiga_iff.c: modal IFF viewer */
 
 /* Workbench start (amiga_wb.c): fills st from the icon's ToolTypes and a
  * project icon; returns 1 when started from Workbench. */
-struct SysStart { char prefs[SYS_PATH], media[SYS_PATH]; int menu, hires, nosound, skip, refresh, joykeys, pad; };   /* skip -1, refresh 0, joykeys -1: not given */
+struct SysStart { char prefs[SYS_PATH], media[SYS_PATH]; int menu, hires, nosound, skip, refresh, joykeys, pad, speed, video, model; };   /* skip -1, refresh 0, others -1: not given */
+int Sys_ParseModel(const char *v);   /* "464" "664" "6128" "PLUS" "GX4000" (any case) -> SYS_MODEL_*, -1 if not one */
+int Sys_ParseVideo(const char *v);   /* "AUTO" "PAL" "NTSC" or 0-2 -> 0-2, -1 if not one */
+int Sys_ParseSpeed(const char *v);   /* "50" or 0 -> 0, "DISPLAY" or 1 -> 1, -1 if not one */
+extern const char *Sys_ModelNames[SYS_MODELS], *Sys_VideoNames[3], *Sys_SpeedNames[2];   /* prefs words */
 int  Sys_WBStart(int argc, char **argv, struct SysStart *st);
 
 unsigned long Sys_Millis(void);

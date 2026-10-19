@@ -252,12 +252,29 @@ int main(int argc, char **argv)
 	if (!CPCEmulation_CheckEndianness()) { printf("ENDIANNESS CHECK FAILED\n"); return 1; }
 	CPC_Initialise();
 	CPCEmulation_InitialiseDefaultSetup();
+	if (getenv("HW") && strcmp(getenv("HW"), "PLUS")) {
+		/* HW=464|664|6128: a plain CPC with the system ROMs from ROMDIR (default
+		 * ../roms), as the Amiga host's Model setting does it (19 Oct 2026); the
+		 * cartridge argument is ignored */
+		const char *hw = getenv("HW"), *rd = getenv("ROMDIR") ? getenv("ROMDIR") : "../roms";
+		char n[512]; unsigned char *os, *basic, *dos = NULL; unsigned long l;
+		const char *d = !strcmp(hw, "464") ? "cpc464e" : !strcmp(hw, "664") ? "cpc664e" : "cpc6128e";
+		sprintf(n, "%s/%s/os.rom", rd, d); if (!Host_LoadFile(n, &os, &l)) { printf("no %s\n", n); return 1; }
+		sprintf(n, "%s/%s/basic.rom", rd, d); if (!Host_LoadFile(n, &basic, &l)) { printf("no %s\n", n); return 1; }
+		if (strcmp(hw, "464")) { sprintf(n, "%s/amsdose/amsdos.rom", rd); if (!Host_LoadFile(n, &dos, &l)) { printf("no %s\n", n); return 1; } }
+		CPC_SetOSRom(os); CPC_SetBASICRom(basic); CPC_SetDOSRom(dos);
+		CPC_SetHardware(CPC_HW_CPC);
+		if (dos) Amstrad_DiscInterface_Install(); else Amstrad_DiscInterface_DeInstall();
+		if (!strcmp(hw, "6128")) Amstrad_RamExpansion_Install(); else Amstrad_RamExpansion_DeInstall();
+		CPC_Reset();
+	} else {
 	if (!Host_LoadFile(cartname, &cart, &cartlen)) { printf("no cart\n"); return 1; }
 	CPC_SetHardware(CPC_HW_CPCPLUS);
 	Cartridge_Insert(cart, cartlen);
 	Amstrad_DiscInterface_Install();
 	Amstrad_RamExpansion_Install();
 	CPC_Reset();
+	}
 	insert_disk(0, "DISKA");
 	insert_disk(1, "DISKB");
 	dump_disk(0, "DISKDUMP");

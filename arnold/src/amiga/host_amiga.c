@@ -30,6 +30,7 @@ static GRAPHICS_BUFFER_COLOUR_FORMAT cf;
 static SOUND_PLAYBACK_FORMAT sf = {2, 16, 22240};
 static struct SysMenu menu;
 static int display_open, audio_open;
+static int aud_period, aud_int;       /* how the open audio was set up (reopened when the timing changes) */
 unsigned char hostpal[256][3];
 static FILE *keylog;                  /* KEYLOG argument: raw key codes to PROGDIR:keys.log */
 /* Test runs: KEYS=<script> drives the CPC keyboard by frame, SNAPDIR=<dir> takes
@@ -48,6 +49,8 @@ static int script_quit;
  * like AmiMSX's Refresh setting; the adaptive skip works on top of it.
  * A frame a test script will SNAP is always drawn. The core asks about the
  * frame after next (it turns drawing on early, see arnold.c). */
+static int gx_autostart;   /* frames until the GX4000 auto-start presses f2 (0 = off) */
+static long help_after;    /* test: HELPAFTER=n presses Help once after n frames (0 = off) */
 static int skip_max = 3, skip_run, refresh = 1;
 static unsigned long refresh_count;
 static long behind_us;
@@ -162,8 +165,16 @@ void Host_SwapGraphicsBuffers(void)
 
 void Host_SetPaletteEntry(int i, unsigned char r, unsigned char g, unsigned char b)
 {
+	/* Amiga colour 0 also fills the screen surround (everything outside the
+	 * picture), so it shows the CPC's border colour, as a real monitor does
+	 * out to the tube's edge: blue for BASIC, black for most Plus games
+	 * (19 Oct 2026, John). The core's entry 0 itself is black (blanking). */
+	extern int Render_PaletteIndexBorder;
+	int bi = Render_PaletteIndexBorder;
 	if (i >= 0 && i < 256) { hostpal[i][0] = r; hostpal[i][1] = g; hostpal[i][2] = b; }
+	if (i == 0 && bi > 0 && bi < 256) { r = hostpal[bi][0]; g = hostpal[bi][1]; b = hostpal[bi][2]; }
 	Sys_SetPaletteEntry(i, r, g, b);
+	if (i == bi && bi > 0) Sys_SetPaletteEntry(0, r, g, b);
 }
 
 /* Screenshot: PROGDIR:Arnold-NNN.iff and .png, first free number. */
@@ -269,11 +280,22 @@ BOOL Host_ProcessSystemEvents(void)
 		script_frame++;
 	}
 	{ static long hb; if (++hb % 50 == 0) Sys_Heartbeat(hb, behind_us); }
+	/* GX4000 with the Plus system cartridge (19 Oct 2026, John): that cartridge
+	 * shows the f1 BASIC / f2 Burnin' Rubber menu (the console came with a
+	 * game-only cartridge instead), and a console has no keyboard: press f2
+	 * for it, held for a few frames once the menu is up */
+	if (gx_autostart > 0) {
+		gx_autostart--;
+		if (gx_autostart == 6) CPC_SetKey(CPC_KEY_F2);
+		if (gx_autostart == 0) CPC_ClearKey(CPC_KEY_F2);
+	}
+	if (help_after > 0 && --help_after == 0) Sys_RequestQuit();
 	if (Sys_Poll()) return TRUE;
 	while (Sys_GetKey(&code, &down, &qual)) {
 		if (keylog) { fprintf(keylog, "%02x %s q=%04x\n", code, down ? "down" : "up", qual); fflush(keylog); }
 		if (code == RAW_HELP) { if (down) Sys_RequestQuit(); continue; }
 		if (code < 128 && joykey(code, down)) continue;
+		if (menu.running_model == SYS_MODEL_GX4000) continue;   /* the console has no keyboard */
 		if (code == 0x0d) {
 			/* the Amiga's \ key: plain = the CPC's \, with Shift = the CPC's |
 			 * (Shift+@), which RSX commands such as |CPM and Orion Prime's loader
@@ -342,7 +364,8 @@ static int has_ext(const char *n, const char *ext)
 	return 1;
 }
 
-/* Arnold [file ...] [NOSOUND] [HIRES] [MENU] [P=prefs] [SKIP=n] [REFRESH=n] [JOYKEYS=0|1|2]: .cpr cartridge (default
+/* Arnold [file ...] [NOSOUND] [HIRES] [MENU] [P=prefs] [SKIP=n] [REFRESH=n] [JOYKEYS=0|1|2]
+ * [PAD=0|CD32] [SPEED=50|DISPLAY] [VIDEO=AUTO|PAL|NTSC] [MODEL=464|664|6128|PLUS|GX4000]: .cpr cartridge (default
  * PROGDIR:roms/system.cpr), .dsk disk in drive A (a second one in B), .sna
  * snapshot. Starts straight into the emulation unless MENU is given or
  * nothing could be loaded. Help brings up the menu; Continue resumes. */
@@ -364,6 +387,9 @@ static void prefs_load(void)
 		else if (!strcmp(line, "refresh")) refresh = atoi(v);
 		else if (!strcmp(line, "joykeys")) joykeys = atoi(v);
 		else if (!strcmp(line, "pad")) Sys_PadType = atoi(v) == 1;
+		else if (!strcmp(line, "speed")) { int k = Sys_ParseSpeed(v); if (k >= 0) menu.speed = k; }
+		else if (!strcmp(line, "video")) { int k = Sys_ParseVideo(v); if (k >= 0) menu.video = k; }
+		else if (!strcmp(line, "model")) { int k = Sys_ParseModel(v); if (k >= 0) menu.model = k; }
 		else if (!strcmp(line, "cart") && v[0]) strncpy(menu.cart, v, SYS_PATH - 1);
 		else if (!strcmp(line, "diska")) strncpy(menu.diska, v, SYS_PATH - 1);
 		else if (!strcmp(line, "diskb")) strncpy(menu.diskb, v, SYS_PATH - 1);
@@ -376,8 +402,10 @@ static void prefs_save(void)
 	FILE *f = fopen(menu.prefs, "w");
 	char msg[SYS_PATH + 32];
 	if (!f) { sprintf(msg, "Can't write prefs\n%s", menu.prefs); Sys_MenuError(msg); return; }
-	fprintf(f, "; Arnold prefs\nsound=%d\nhires=%d\nskip=%d\nrefresh=%d\njoykeys=%d\npad=%d\ncart=%s\ndiska=%s\ndiskb=%s\n",
-		menu.sound, menu.hires, skip_max, refresh, global_joykeys, Sys_PadType, menu.cart, menu.diska, menu.diskb);
+	fprintf(f, "; Arnold prefs\nsound=%d\nhires=%d\nskip=%d\nrefresh=%d\njoykeys=%d\npad=%d\nspeed=%s\nvideo=%s\nmodel=%s\ncart=%s\ndiska=%s\ndiskb=%s\n",
+		menu.sound, menu.hires, skip_max, refresh, global_joykeys, Sys_PadType,
+		Sys_SpeedNames[menu.speed ? 1 : 0], Sys_VideoNames[menu.video >= 0 && menu.video <= 2 ? menu.video : 0],
+		Sys_ModelNames[menu.model >= 0 && menu.model < SYS_MODELS ? menu.model : SYS_MODEL_PLUS], menu.cart, menu.diska, menu.diskb);
 	fclose(f);
 }
 
@@ -466,28 +494,77 @@ static void apply_disk(int drive, const char *name)
 }
 static void apply_disks(void) { apply_disk(0, menu.diska); apply_disk(1, menu.diskb); }
 
-/* Power ON: cartridge in, Plus hardware, reset, disks in. */
+/* System ROMs of the plain CPCs (19 Oct 2026), from the drawer like
+ * system.cpr: roms/cpc464, cpc664, cpc6128 (os.rom, basic.rom) and
+ * roms/amsdos.rom; the English ROMs Arnold ships. Loaded on the Power ON that
+ * needs them and kept (the core points into them). */
+static unsigned char *rom_os, *rom_basic, *rom_dos;
+static int rom_model = -1;
+static int load_rom(const char *name, unsigned char **pp)
+{
+	unsigned char *d; unsigned long l;
+	if (!load_media("system ROM", name, &d, &l)) return 0;
+	if (l < 16384) { char msg[SYS_PATH + 40]; sprintf(msg, "Not a 16K ROM\n%s", name); Sys_MenuError(msg); free(d); return 0; }
+	if (*pp) free(*pp);
+	*pp = d;
+	return 1;
+}
+static int load_cpc_roms(int model)
+{
+	static const char *dir[] = { "cpc464", "cpc664", "cpc6128" };
+	char n[64];
+	if (rom_model == model) return 1;
+	rom_model = -1;
+	sprintf(n, "PROGDIR:roms/%s/os.rom", dir[model]);
+	if (!load_rom(n, &rom_os)) return 0;
+	sprintf(n, "PROGDIR:roms/%s/basic.rom", dir[model]);
+	if (!load_rom(n, &rom_basic)) return 0;
+	if (model != SYS_MODEL_464 && !rom_dos && !load_rom("PROGDIR:roms/amsdos.rom", &rom_dos)) return 0;
+	rom_model = model;
+	Sys_Log("system ROMs: %s loaded", dir[model]);
+	return 1;
+}
+
+/* Power ON: the chosen model's hardware, its ROMs or the cartridge, reset,
+ * disks in. Models (19 Oct 2026): 464 (64K, tape only: no disc interface),
+ * 664 (64K, disc), 6128 (128K, disc), 6128 Plus (cartridge, 128K, disc) and
+ * GX4000 (cartridge, 64K, no disc interface, no keyboard). */
 static int power_on(void)
 {
-	unsigned char *data; unsigned long len;
-	/* no cartridge chosen (John ejected it to boot a disk, 17 Oct 2026): the
-	 * Plus needs one, so the system cartridge (BASIC + AMSDOS) goes in */
-	if (!menu.cart[0]) strcpy(menu.cart, "PROGDIR:roms/system.cpr");
-	if (!load_media("cartridge", menu.cart, &data, &len)) return 0;
-	Sys_Log("cartridge '%s': %lu bytes", menu.cart, len);
+	unsigned char *data = NULL; unsigned long len = 0;
+	int model = menu.model >= 0 && menu.model < SYS_MODELS ? menu.model : SYS_MODEL_PLUS;
+	int plus = model == SYS_MODEL_PLUS || model == SYS_MODEL_GX4000;
+	if (plus) {
+		/* no cartridge chosen (John ejected it to boot a disk, 17 Oct 2026): the
+		 * Plus needs one, so the system cartridge (BASIC + AMSDOS) goes in */
+		if (!menu.cart[0]) strcpy(menu.cart, "PROGDIR:roms/system.cpr");
+		if (!load_media("cartridge", menu.cart, &data, &len)) return 0;
+		Sys_Log("cartridge '%s': %lu bytes", menu.cart, len);
+	} else if (!load_cpc_roms(model)) return 0;
 	game_prefs_apply();
-	if (cart_data) free(cart_data);
-	cart_data = data;
-	CPC_SetHardware(CPC_HW_CPCPLUS);
-	Cartridge_Insert(data, len);
-	Amstrad_DiscInterface_Install();
-	Amstrad_RamExpansion_Install();
+	if (plus) {
+		if (cart_data) free(cart_data);
+		cart_data = data;
+		CPC_SetHardware(CPC_HW_CPCPLUS);
+		Cartridge_Insert(data, len);
+	} else {
+		CPC_SetOSRom(rom_os);
+		CPC_SetBASICRom(rom_basic);
+		CPC_SetDOSRom(model == SYS_MODEL_464 ? NULL : rom_dos);
+		CPC_SetHardware(CPC_HW_CPC);
+	}
+	if (model == SYS_MODEL_464 || model == SYS_MODEL_GX4000) Amstrad_DiscInterface_DeInstall();
+	else Amstrad_DiscInterface_Install();
+	if (model == SYS_MODEL_6128 || model == SYS_MODEL_PLUS) Amstrad_RamExpansion_Install();
+	else Amstrad_RamExpansion_DeInstall();
 	/* a power cycle, not just a reset (18 Oct 2026): memory cleared and the
 	 * paletted renderer's colours freed, so a game starts as it does from cold
 	 * whatever ran before it */
 	{ extern void CPC_PowerCycleMemory(void), Palette_Reset(void); CPC_PowerCycleMemory(); Palette_Reset(); }
 	CPC_Reset();
-	Sys_Log("power on: reset done");
+	menu.running_model = model;
+	gx_autostart = (model == SYS_MODEL_GX4000 && strstr(menu.cart, "system.cpr")) ? 150 : 0;   /* about 3 s, see Host_ProcessSystemEvents */
+	Sys_Log("power on: %s, reset done", Sys_ModelNames[model]);
 	/* power cycle: both drives reloaded from their files */
 	DiskImage_RemoveDisk(0); DiskImage_RemoveDisk(1);
 	disk_in[0][0] = disk_in[1][0] = 0;
@@ -505,7 +582,30 @@ static int open_emulation(void)
 	if (display_open) { Sys_CloseDisplay(); display_open = 0; }
 	Render_SetRenderingAccuracyForWindowedMode(menu.hires ? RENDERING_ACCURACY_HIGH : RENDERING_ACCURACY_LOW);
 	if (!Render_SetDisplayWindowed()) { Sys_MenuError("Can't open the AGA screen"); return 0; }
-	if (menu.sound && !audio_open && Sys_AudioOpen(AUD_PERIOD, AUD_SAMPLES)) { audio_open = 1; CPC_SetAudioActive(TRUE); }
+	/* Timing (19 Oct 2026). A 50 Hz display: one CPC frame per VBlank and Paula
+	 * fed from the VBlank, as tuned on PAL. Any other rate (NTSC 60 Hz):
+	 * - Game speed "50 Hz": the E-clock paces the frames, Paula's own interrupt
+	 *   feeds it, and the period makes a block of 444 samples last one CPC
+	 *   frame (19968 us) for this machine's chip clock; the frame time is set
+	 *   to that block's exact length so sound and emulation never drift.
+	 * - "Follow display": one frame per VBlank (60 Hz: 20% fast, as before),
+	 *   with the period shortened so the blocks keep up. */
+	{
+		unsigned long clk = Sys_ChipClock(), fus, target;
+		int period, audint, timer;
+		if (Sys_Display50Hz()) { period = AUD_PERIOD; audint = 0; timer = 0; fus = 20000; }
+		else {
+			target = menu.speed ? Sys_DisplayFrameUs : 19968;
+			period = (int)(((unsigned long long)target * clk + 444ULL * 500000ULL) / (444ULL * 1000000ULL));
+			if (period < 124) period = 124;
+			audint = 1; timer = !menu.speed;
+			fus = menu.speed ? Sys_DisplayFrameUs : (unsigned long)(444ULL * period * 1000000ULL / clk);
+		}
+		Sys_SetPacing(timer, fus);
+		if (audio_open && (period != aud_period || audint != aud_int)) { Sys_AudioClose(); audio_open = 0; }
+		aud_period = period; aud_int = audint;
+	}
+	if (menu.sound && !audio_open && Sys_AudioOpen(aud_period, AUD_SAMPLES, aud_int)) { audio_open = 1; CPC_SetAudioActive(TRUE); }
 	if (!menu.sound && audio_open) { Sys_AudioClose(); audio_open = 0; CPC_SetAudioActive(FALSE); }
 	CPC_ClearKeyboard();
 	Sys_Log("emulation: screen open, sound %s", audio_open ? "on" : "off");
@@ -522,6 +622,7 @@ int main(int argc, char **argv)
 	strcpy(menu.cart, "PROGDIR:roms/system.cpr");
 	strcpy(menu.prefs, "PROGDIR:Arnold.prefs");
 	menu.sound = 1;
+	menu.model = SYS_MODEL_PLUS; menu.running_model = -1;
 	Sys_LogOpen();
 	Sys_LogStart(argc);
 	for (i = 1; i < argc; i++) Sys_Log("arg %d: %s", i, argv[i]);
@@ -534,6 +635,9 @@ int main(int argc, char **argv)
 		if (st.refresh > 0) refresh = st.refresh;
 		if (st.joykeys >= 0) joykeys = st.joykeys;
 		if (st.pad >= 0) Sys_PadType = st.pad;
+		if (st.speed >= 0) menu.speed = st.speed;
+		if (st.video >= 0) menu.video = st.video;
+		if (st.model >= 0) menu.model = st.model;
 		if (has_ext(st.media, ".cpr")) { strncpy(menu.cart, st.media, SYS_PATH - 1); media_given = 1; }
 		else if (has_ext(st.media, ".dsk")) { strncpy(menu.diska, st.media, SYS_PATH - 1); menu.diskb[0] = 0; media_given = 1; }
 		else if (has_ext(st.media, ".sna")) { sna = st.media; media_given = 1; }
@@ -556,6 +660,9 @@ int main(int argc, char **argv)
 			else if (!kwncmp(argv[i], "JOYKEYS=", 8)) joykeys = atoi(argv[i] + 8);
 			else if (!kwcmp(argv[i], "CD32") || !kwcmp(argv[i], "PAD=CD32") || !kwcmp(argv[i], "PAD=1")) Sys_PadType = 1;
 			else if (!kwcmp(argv[i], "PAD=0") || !kwcmp(argv[i], "PAD=STANDARD")) Sys_PadType = 0;
+			else if (!kwncmp(argv[i], "SPEED=", 6)) { int k = Sys_ParseSpeed(argv[i] + 6); if (k >= 0) menu.speed = k; }
+			else if (!kwncmp(argv[i], "VIDEO=", 6)) { int k = Sys_ParseVideo(argv[i] + 6); if (k >= 0) menu.video = k; }
+			else if (!kwncmp(argv[i], "MODEL=", 6)) { int k = Sys_ParseModel(argv[i] + 6); if (k >= 0) menu.model = k; }
 			else if (!kwcmp(argv[i], "BENCH")) {
 				/* machine timings to the Shell and PROGDIR:bench.txt, then exit */
 				FILE *bf = fopen("PROGDIR:bench.txt", "w");
@@ -567,13 +674,16 @@ int main(int argc, char **argv)
 			else if (!kwncmp(argv[i], "SNAPDIR=", 8)) strncpy(snapdir, argv[i] + 8, SYS_PATH - 1);
 			else if (!kwcmp(argv[i], "HIRES")) hires = 1;
 			else if (!kwcmp(argv[i], "MENU")) want_menu = 1;
+			else if (!kwncmp(argv[i], "HELPAFTER=", 10)) help_after = atol(argv[i] + 10);
 			else if (!kwncmp(argv[i], "P=", 2)) ;
 			else if (has_ext(argv[i], ".cpr")) { strncpy(menu.cart, argv[i], SYS_PATH - 1); media_given = 1; }
 			else if (has_ext(argv[i], ".dsk")) { if (!ndisk) menu.diskb[0] = 0; strncpy(ndisk++ ? menu.diskb : menu.diska, argv[i], SYS_PATH - 1); media_given = 1; }
 			else if (has_ext(argv[i], ".sna")) { sna = argv[i]; media_given = 1; }
 		}
 	}
-	Sys_Log("prefs '%s': sound %d hires %d skip %d refresh %d cart '%s'", menu.prefs, menu.sound, menu.hires, skip_max, refresh, menu.cart);
+	Sys_Log("prefs '%s': sound %d hires %d skip %d refresh %d model %s video %s speed %s cart '%s'", menu.prefs, menu.sound, menu.hires, skip_max, refresh,
+		Sys_ModelNames[menu.model], Sys_VideoNames[menu.video], Sys_SpeedNames[menu.speed], menu.cart);
+	Sys_VideoMode = menu.video;
 	if (script_on) Sys_MakeDir(snapdir);
 	if (nosound) menu.sound = 0;
 	if (hires) menu.hires = 1;
@@ -594,11 +704,13 @@ int main(int argc, char **argv)
 
 	for (;;) {
 		if (want_menu) {
-			Sys_Log("menu");
+			{ extern unsigned long Sys_AudioIrqs(void); Sys_Log("menu (audio interrupts so far %lu)", Sys_AudioIrqs()); }
 			menu.skip = skip_max; menu.refresh = refresh; menu.joykeys = joykeys; menu.pad = Sys_PadType;
 			action = Sys_Menu(&menu);
 			skip_max = menu.skip; refresh = menu.refresh > 0 ? menu.refresh : 1; joykeys = menu.joykeys; Sys_PadType = menu.pad;
-			Sys_Log("menu action %d", action);
+			Sys_VideoMode = menu.video;
+			{ extern unsigned long Sys_AudioIrqs(void); Sys_Log("menu action %d (audio interrupts so far %lu)", action, Sys_AudioIrqs()); }
+			if (action != SYS_MENU_POWER && action != SYS_MENU_RESET && action != SYS_MENU_CONTINUE) Sys_MenuClose();
 			if (action == SYS_MENU_QUIT) break;
 			if (!menu.game_prefs) { global_sound = menu.sound; global_hires = menu.hires; global_joykeys = joykeys; }
 			if (action == SYS_MENU_SAVE) { int gs = menu.sound, gh = menu.hires; if (menu.game_prefs) { menu.sound = global_sound; menu.hires = global_hires; } else global_joykeys = joykeys; prefs_save(); menu.sound = gs; menu.hires = gh; continue; }
@@ -609,7 +721,7 @@ int main(int argc, char **argv)
 			if (action == SYS_MENU_RESET) { if (!menu.can_continue && !power_on()) continue; CPC_Reset(); }
 			if (action == SYS_MENU_CONTINUE || action == SYS_MENU_RESET) apply_disks();   /* disk swap */
 		}
-		if (!open_emulation()) { want_menu = 1; continue; }
+		{ int ok = open_emulation(); Sys_MenuClose(); if (!ok) { want_menu = 1; continue; } }
 		menu.can_continue = 1;
 		Sys_Log("running");
 		CPCEmulation_Run();                 /* returns when Help is pressed (or a script QUIT) */
