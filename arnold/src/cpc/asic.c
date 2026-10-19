@@ -57,6 +57,11 @@
 
 
 static ASIC_DATA ASIC_Data;
+#ifndef NO_DMA_STAGGER
+/* staggered DMA interrupts, see ASIC_DMA_Tick */
+struct { int Done; int Delay[3]; } ASIC_DMA_Stagger;
+int ASIC_DMA_IntPending;
+#endif
 /* Amiga port: C. Bit c set = some sprite active on this line covers CRTC column
  * c (0-63). Rebuilt lazily after anything it depends on changes (enable masks,
  * sprite position/size); lets ASIC_BuildDisplayReturnMaskWithPixels skip the
@@ -482,7 +487,11 @@ void    ASIC_Reset(void)
        
         /* no split */
         ASIC_Data.ASIC_RasterSplitLine = 0;
-        
+#ifndef NO_DMA_STAGGER
+        memset(&ASIC_DMA_Stagger, 0, sizeof(ASIC_DMA_Stagger));
+        ASIC_DMA_IntPending = 0;
+#endif
+
         /* no automatic clearing of DMA ints */
 		/* bits 7-1 are undefined at reset */
 		/* bit 0 set to 1 at reset */
@@ -1144,6 +1153,20 @@ static void     ASIC_TriggerInterrupt(void)
         }
 }
 
+#ifndef NO_INTHOLD_FIX
+/* Amiga port: after an acknowledge, keep requesting any interrupt still
+ * pending (cpc.c Z80_AcknowledgeInterrupt). Only the request: the vector of
+ * the interrupt being acknowledged is already on the bus, and the next one's
+ * is worked out when it is acknowledged (NO_IVEC_FIX off). */
+void    ASIC_ReassertInterrupt(void)
+{
+        if (ASIC_Data.InternalDCSR & 0x0f0)
+        {
+                Z80_SetInterruptRequest();
+        }
+}
+#endif
+
 /* calculate a interrupt vector to supply in IM2 or ignore in IM1 based on interrupts active. */
 int     ASIC_CalculateInterruptVector(void)
 {
@@ -1644,6 +1667,16 @@ void    ASIC_WriteRam(int Addr,int Data)
 #else
                 ASIC_Data.InternalDCSR = (unsigned char)((ASIC_Data.InternalDCSR & 0x070) | (Data & 0x07));
 #endif
+#ifndef NO_INTHOLD_FIX
+                /* Amiga port (19 Oct 2026): the INT line follows the pending
+                 * sources (see Z80_AcknowledgeInterrupt): clearing the last one
+                 * drops the request. Copter 271 (IM1, no automatic clear) clears
+                 * its DMA interrupt here and would otherwise take a phantom one. */
+                if ((ASIC_Data.InternalDCSR & 0x0f0) == 0)
+                {
+                        Z80_ClearInterruptRequest();
+                }
+#endif
 
                 ASIC_UpdateRAMWithInternalDCSR();
 
@@ -1711,6 +1744,51 @@ INLINE static void ASIC_DMA_WriteChannelAddr(int ChannelIndex, int Addr)
 {
         ASIC_Data.DMA[ChannelIndex].Addr.Addr_W = (unsigned short)Addr;
 }
+
+#ifndef NO_DMA_STAGGER
+/* Amiga port (19 Oct 2026): the ASIC runs the three DMA channels one after
+ * another during HSYNC, about a microsecond each (CPCEC: one command fetch or
+ * parse per microsecond, channel 0 first). Arnold ran them at the same
+ * instant, so when channels 0 and 1 both reached an INT on the same line both
+ * requests were already pending at the Z80's next instruction and DMA 1 won
+ * on priority; on the real machine a halted Z80 takes DMA 0's interrupt
+ * before DMA 1 raises its own. Sonic GX restarts all its DMA lists from the
+ * DMA 0 handler; served second, and with the request dropped after DMA 1's
+ * acknowledge (NO_INTHOLD_FIX, cpc.c), it ran a line late and pushed the
+ * whole frame (DMA 2's split interrupt included) one line later for good:
+ * the Green Hill split was written after its line had passed and the lower
+ * screen showed the wrong band. Now a channel's INT is raised one
+ * microsecond after each lower channel that ran a command on this line
+ * (CRTC_DoCycles counts it down). NO_DMA_STAGGER: the old behaviour. */
+void   ASIC_DMA_Tick(int Cycles)
+{
+        int i, Raised = 0;
+
+        ASIC_DMA_IntPending = 0;
+        for (i = 0; i < 3; i++)
+        {
+                if (ASIC_DMA_Stagger.Delay[i] > 0)
+                {
+                        ASIC_DMA_Stagger.Delay[i] -= Cycles;
+                        if (ASIC_DMA_Stagger.Delay[i] <= 0)
+                        {
+                                ASIC_DMA_Stagger.Delay[i] = 0;
+                                ASIC_Data.InternalDCSR |= 1<<(6-i);
+                                Raised = 1;
+                        }
+                        else
+                        {
+                                ASIC_DMA_IntPending = 1;
+                        }
+                }
+        }
+        if (Raised)
+        {
+                ASIC_UpdateRAMWithInternalDCSR();
+                ASIC_TriggerInterrupt();
+        }
+}
+#endif
 
 void    ASIC_DMA_ExecuteCommand(int ChannelIndex)
 {
@@ -1810,6 +1888,15 @@ void    ASIC_DMA_ExecuteCommand(int ChannelIndex)
                                 /* INT */
 
                                 /* set channel interrupt */
+#ifndef NO_DMA_STAGGER
+                                if (ASIC_DMA_Stagger.Done != 0)
+                                {
+                                        /* raised later (see ASIC_DMA_Tick) */
+                                        ASIC_DMA_Stagger.Delay[ChannelIndex] = ASIC_DMA_Stagger.Done;
+                                        ASIC_DMA_IntPending = 1;
+                                }
+                                else
+#endif
                                 ASIC_Data.InternalDCSR|=1<<(6-ChannelIndex);
                         }
 
@@ -1824,6 +1911,9 @@ void    ASIC_DMA_ExecuteCommand(int ChannelIndex)
         }
 
 		ASIC_DMA_WriteChannelAddr(ChannelIndex, Addr);
+#ifndef NO_DMA_STAGGER
+		ASIC_DMA_Stagger.Done++;
+#endif
 
 /*        ASIC_Data.DMA[ChannelIndex].Addr.Addr_W=(unsigned short)Addr; */
 
@@ -1935,6 +2025,9 @@ void    ASIC_DoDMA()
 {
 	if ((ASIC_Data.InternalDCSR & (0x001|0x002|0x04))==0)
 		return;
+#ifndef NO_DMA_STAGGER
+	ASIC_DMA_Stagger.Done = 0;
+#endif
 
         if (ASIC_Data.InternalDCSR & 0x001)
         {

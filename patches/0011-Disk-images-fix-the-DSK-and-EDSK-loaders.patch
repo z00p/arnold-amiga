@@ -1,7 +1,7 @@
-From 55ad8eded62cb9a059af8ec4444b4d7c82537140 Mon Sep 17 00:00:00 2001
+From 32f988295da2a153bfe5a669188cec10bb896f92 Mon Sep 17 00:00:00 2001
 From: John Stringer <jcec_1@yahoo.co.uk>
-Date: Sun, 18 Oct 2026 22:20:13 +0100
-Subject: [PATCH 11/20] Disk images: fix the DSK and EDSK loaders
+Date: Mon, 19 Oct 2026 07:45:57 +0100
+Subject: [PATCH 11/21] Disk images: fix the DSK and EDSK loaders
 
 EDSK: the loader stepped and copied each sector by the larger of its stored
 length and its ID's size (N), so a short sector, such as the common N=6

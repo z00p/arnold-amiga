@@ -185,6 +185,20 @@ changes. NO_IVEC_FIX restores the old code."
 post bbf17a9 arnold/src/cpc/z80/z80macros.h
 commit "Z80: NO_Z80V_FIX builds again" "The switch's macro needs the operand passed in."
 
+post 69fed41 arnold/src/cpc/asic.c arnold/src/cpc/asic.h arnold/src/cpc/cpc.c arnold/src/cpc/crtc.c
+commit "Plus: hold the interrupt request while ASIC interrupts are pending; stagger DMA INTs" \
+"Two Plus interrupt fixes, as CPCEC models them. (1) After acknowledging one ASIC
+interrupt, the Z80's request was cleared even when another (e.g. DMA 0 after
+DMA 1) was still pending, so that one was taken a line late at the next HSYNC.
+The request is now held while any ASIC interrupt is pending; a DCSR write that
+clears the last one drops it. NO_INTHOLD_FIX. (2) The DMA channels ran at the
+same instant; the ASIC runs them one after another, so a channel's INT is now
+raised 1 us after each lower channel that ran a command on that line.
+NO_DMA_STAGGER. Sonic GX restarts its DMA lists from the DMA 0 interrupt; when
+DMA 1's interrupt landed on the same line the restart slipped and its split
+screen interrupt came too late (stacked bands in Green Hill), and its special
+stage froze. Both now match CPCEC; no other homebrew cart changes."
+
 post HEAD arnold/src/cpc
 commit "Core: remaining changes" "Small changes made after the fixes above."
 

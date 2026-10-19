@@ -1,0 +1,292 @@
+From 1e4814693a90fcc3c86bdababdf367cb85e000c6 Mon Sep 17 00:00:00 2001
+From: John Stringer <jcec_1@yahoo.co.uk>
+Date: Mon, 19 Oct 2026 07:46:00 +0100
+Subject: [PATCH 19/21] Plus: hold the interrupt request while ASIC interrupts
+ are pending; stagger DMA INTs
+
+Two Plus interrupt fixes, as CPCEC models them. (1) After acknowledging one ASIC
+interrupt, the Z80's request was cleared even when another (e.g. DMA 0 after
+DMA 1) was still pending, so that one was taken a line late at the next HSYNC.
+The request is now held while any ASIC interrupt is pending; a DCSR write that
+clears the last one drops it. NO_INTHOLD_FIX. (2) The DMA channels ran at the
+same instant; the ASIC runs them one after another, so a channel's INT is now
+raised 1 us after each lower channel that ran a command on that line.
+NO_DMA_STAGGER. Sonic GX restarts its DMA lists from the DMA 0 interrupt; when
+DMA 1's interrupt landed on the same line the restart slipped and its split
+screen interrupt came too late (stacked bands in Green Hill), and its special
+stage froze. Both now match CPCEC; no other homebrew cart changes.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ src/cpc/asic.c | 95 +++++++++++++++++++++++++++++++++++++++++++++++++-
+ src/cpc/asic.h |  8 +++++
+ src/cpc/cpc.c  | 14 ++++++++
+ src/cpc/crtc.c | 24 +++++++++++++
+ 4 files changed, 140 insertions(+), 1 deletion(-)
+
+diff --git a/src/cpc/asic.c b/src/cpc/asic.c
+index be4f2b0..92430b4 100644
+--- a/src/cpc/asic.c
++++ b/src/cpc/asic.c
+@@ -57,6 +57,11 @@
+ 
+ 
+ static ASIC_DATA ASIC_Data;
++#ifndef NO_DMA_STAGGER
++/* staggered DMA interrupts, see ASIC_DMA_Tick */
++struct { int Done; int Delay[3]; } ASIC_DMA_Stagger;
++int ASIC_DMA_IntPending;
++#endif
+ /* Amiga port: C. Bit c set = some sprite active on this line covers CRTC column
+  * c (0-63). Rebuilt lazily after anything it depends on changes (enable masks,
+  * sprite position/size); lets ASIC_BuildDisplayReturnMaskWithPixels skip the
+@@ -482,7 +487,11 @@ void    ASIC_Reset(void)
+        
+         /* no split */
+         ASIC_Data.ASIC_RasterSplitLine = 0;
+-        
++#ifndef NO_DMA_STAGGER
++        memset(&ASIC_DMA_Stagger, 0, sizeof(ASIC_DMA_Stagger));
++        ASIC_DMA_IntPending = 0;
++#endif
++
+         /* no automatic clearing of DMA ints */
+ 		/* bits 7-1 are undefined at reset */
+ 		/* bit 0 set to 1 at reset */
+@@ -1144,6 +1153,20 @@ static void     ASIC_TriggerInterrupt(void)
+         }
+ }
+ 
++#ifndef NO_INTHOLD_FIX
++/* Amiga port: after an acknowledge, keep requesting any interrupt still
++ * pending (cpc.c Z80_AcknowledgeInterrupt). Only the request: the vector of
++ * the interrupt being acknowledged is already on the bus, and the next one's
++ * is worked out when it is acknowledged (NO_IVEC_FIX off). */
++void    ASIC_ReassertInterrupt(void)
++{
++        if (ASIC_Data.InternalDCSR & 0x0f0)
++        {
++                Z80_SetInterruptRequest();
++        }
++}
++#endif
++
+ /* calculate a interrupt vector to supply in IM2 or ignore in IM1 based on interrupts active. */
+ int     ASIC_CalculateInterruptVector(void)
+ {
+@@ -1644,6 +1667,16 @@ void    ASIC_WriteRam(int Addr,int Data)
+ #else
+                 ASIC_Data.InternalDCSR = (unsigned char)((ASIC_Data.InternalDCSR & 0x070) | (Data & 0x07));
+ #endif
++#ifndef NO_INTHOLD_FIX
++                /* Amiga port (19 Oct 2026): the INT line follows the pending
++                 * sources (see Z80_AcknowledgeInterrupt): clearing the last one
++                 * drops the request. Copter 271 (IM1, no automatic clear) clears
++                 * its DMA interrupt here and would otherwise take a phantom one. */
++                if ((ASIC_Data.InternalDCSR & 0x0f0) == 0)
++                {
++                        Z80_ClearInterruptRequest();
++                }
++#endif
+ 
+                 ASIC_UpdateRAMWithInternalDCSR();
+ 
+@@ -1712,6 +1745,51 @@ INLINE static void ASIC_DMA_WriteChannelAddr(int ChannelIndex, int Addr)
+         ASIC_Data.DMA[ChannelIndex].Addr.Addr_W = (unsigned short)Addr;
+ }
+ 
++#ifndef NO_DMA_STAGGER
++/* Amiga port (19 Oct 2026): the ASIC runs the three DMA channels one after
++ * another during HSYNC, about a microsecond each (CPCEC: one command fetch or
++ * parse per microsecond, channel 0 first). Arnold ran them at the same
++ * instant, so when channels 0 and 1 both reached an INT on the same line both
++ * requests were already pending at the Z80's next instruction and DMA 1 won
++ * on priority; on the real machine a halted Z80 takes DMA 0's interrupt
++ * before DMA 1 raises its own. Sonic GX restarts all its DMA lists from the
++ * DMA 0 handler; served second, and with the request dropped after DMA 1's
++ * acknowledge (NO_INTHOLD_FIX, cpc.c), it ran a line late and pushed the
++ * whole frame (DMA 2's split interrupt included) one line later for good:
++ * the Green Hill split was written after its line had passed and the lower
++ * screen showed the wrong band. Now a channel's INT is raised one
++ * microsecond after each lower channel that ran a command on this line
++ * (CRTC_DoCycles counts it down). NO_DMA_STAGGER: the old behaviour. */
++void   ASIC_DMA_Tick(int Cycles)
++{
++        int i, Raised = 0;
++
++        ASIC_DMA_IntPending = 0;
++        for (i = 0; i < 3; i++)
++        {
++                if (ASIC_DMA_Stagger.Delay[i] > 0)
++                {
++                        ASIC_DMA_Stagger.Delay[i] -= Cycles;
++                        if (ASIC_DMA_Stagger.Delay[i] <= 0)
++                        {
++                                ASIC_DMA_Stagger.Delay[i] = 0;
++                                ASIC_Data.InternalDCSR |= 1<<(6-i);
++                                Raised = 1;
++                        }
++                        else
++                        {
++                                ASIC_DMA_IntPending = 1;
++                        }
++                }
++        }
++        if (Raised)
++        {
++                ASIC_UpdateRAMWithInternalDCSR();
++                ASIC_TriggerInterrupt();
++        }
++}
++#endif
++
+ void    ASIC_DMA_ExecuteCommand(int ChannelIndex)
+ {
+         Z80_WORD        Command;
+@@ -1810,6 +1888,15 @@ void    ASIC_DMA_ExecuteCommand(int ChannelIndex)
+                                 /* INT */
+ 
+                                 /* set channel interrupt */
++#ifndef NO_DMA_STAGGER
++                                if (ASIC_DMA_Stagger.Done != 0)
++                                {
++                                        /* raised later (see ASIC_DMA_Tick) */
++                                        ASIC_DMA_Stagger.Delay[ChannelIndex] = ASIC_DMA_Stagger.Done;
++                                        ASIC_DMA_IntPending = 1;
++                                }
++                                else
++#endif
+                                 ASIC_Data.InternalDCSR|=1<<(6-ChannelIndex);
+                         }
+ 
+@@ -1824,6 +1911,9 @@ void    ASIC_DMA_ExecuteCommand(int ChannelIndex)
+         }
+ 
+ 		ASIC_DMA_WriteChannelAddr(ChannelIndex, Addr);
++#ifndef NO_DMA_STAGGER
++		ASIC_DMA_Stagger.Done++;
++#endif
+ 
+ /*        ASIC_Data.DMA[ChannelIndex].Addr.Addr_W=(unsigned short)Addr; */
+ 
+@@ -1935,6 +2025,9 @@ void    ASIC_DoDMA()
+ {
+ 	if ((ASIC_Data.InternalDCSR & (0x001|0x002|0x04))==0)
+ 		return;
++#ifndef NO_DMA_STAGGER
++	ASIC_DMA_Stagger.Done = 0;
++#endif
+ 
+         if (ASIC_Data.InternalDCSR & 0x001)
+         {
+diff --git a/src/cpc/asic.h b/src/cpc/asic.h
+index 20c5017..6566eb3 100644
+--- a/src/cpc/asic.h
++++ b/src/cpc/asic.h
+@@ -52,6 +52,14 @@ unsigned char *ASIC_GetRamPtr(void);
+ unsigned long ASIC_BuildDisplayReturnMaskWithPixels(int Line, int HCount, /*int MonitorHorizontalCount, int ActualY,*/ int *pPixels);
+ 
+ void    ASIC_DoDMA(void);
++#ifndef NO_DMA_STAGGER
++/* Amiga port: DMA interrupts raised a microsecond per lower channel later */
++extern int ASIC_DMA_IntPending;
++void    ASIC_DMA_Tick(int Cycles);
++#endif
++#ifndef NO_INTHOLD_FIX
++void    ASIC_ReassertInterrupt(void);
++#endif
+ 
+ void    ASIC_HSync(int,int);
+ 
+diff --git a/src/cpc/cpc.c b/src/cpc/cpc.c
+index b4f678a..409c1a3 100644
+--- a/src/cpc/cpc.c
++++ b/src/cpc/cpc.c
+@@ -3135,6 +3135,20 @@ void    Z80_AcknowledgeInterrupt(void)
+ #endif
+ 
+         Z80_ClearInterruptRequest();
++#ifndef NO_INTHOLD_FIX
++        /* Amiga port (19 Oct 2026): the ASIC holds the Z80's INT line while
++         * any of its interrupts is still pending, so after one is acknowledged
++         * the next is taken as soon as the Z80 enables interrupts again (CPCEC
++         * keeps the other bits of z80_irq). Arnold dropped the request and only
++         * raised it again at the next HSYNC: a DMA 0 interrupt that arrived with
++         * a DMA 1 one waited a whole line. Sonic GX restarts its DMA lists from
++         * the DMA 0 handler, so the whole frame slipped a line each time (the
++         * Green Hill split-screen glitch). NO_INTHOLD_FIX: the old code. */
++        if (CPC_GetHardware()==CPC_HW_CPCPLUS)
++        {
++                ASIC_ReassertInterrupt();
++        }
++#endif
+ 
+ 		KCC_AcknowledgeInterrupt();
+ }
+diff --git a/src/cpc/crtc.c b/src/cpc/crtc.c
+index 3c2783b..aa692c1 100644
+--- a/src/cpc/crtc.c
++++ b/src/cpc/crtc.c
+@@ -4249,6 +4249,10 @@ int CRTC_CyclesToEvent(void)
+ #ifdef NO_E
+ 	return 1;
+ #else
++#ifndef NO_DMA_STAGGER
++	/* a staggered DMA interrupt is due within a cycle or two */
++	if (ASIC_DMA_IntPending) return 1;
++#endif
+ 	if (!CRTC_Run.valid) CRTC_PrepareRun();
+ 	return CRTC_Run.left + 1;
+ #endif
+@@ -4256,13 +4260,28 @@ int CRTC_CyclesToEvent(void)
+ 
+ void CRTC_DoCycles(int Cycles)
+ {
++/* Amiga port (19 Oct 2026): count down staggered DMA interrupts (asic.c
++ * ASIC_DMA_Tick) over the cycles run after the HSYNC that set them, so one
++ * due within this Z80 instruction is pending at its end, as on the CPC+. */
++#ifndef NO_DMA_STAGGER
++#define ASIC_DMA_IntPending_Now() ASIC_DMA_IntPending
++#define DMA_TICK(n) do { if (ASIC_DMA_IntPending) ASIC_DMA_Tick(n); } while (0)
++#else
++#define ASIC_DMA_IntPending_Now() 0
++#define DMA_TICK(n) do { } while (0)
++#endif
+ #ifdef NO_E
+ 	while (Cycles-- > 0)
++	{
++		int Pending = ASIC_DMA_IntPending_Now();
+ 		CRTC_DoOneCycle();
++		if (Pending) DMA_TICK(1);
++	}
+ #else
+ 	STATS(StatsE_Calls++);
+ 	while (Cycles > 0)
+ 	{
++		int Pending;
+ 		if (!CRTC_Run.valid) CRTC_PrepareRun();
+ 		if (CRTC_Run.left > 0)
+ 		{
+@@ -4271,14 +4290,19 @@ void CRTC_DoCycles(int Cycles)
+ 			STATS((StatsE_Runs++, StatsE_RunCycles += m));
+ 			CRTC_Run.left -= m;
+ 			Cycles -= m;
++			DMA_TICK(m);
+ 			if (Cycles == 0) break;
+ 		}
++		Pending = ASIC_DMA_IntPending_Now();
+ 		CRTC_DoOneCycle();      /* the event cycle */
++		if (Pending) DMA_TICK(1);   /* not those this cycle's HSYNC set */
+ 		STATS(StatsE_Events++);
+ 		CRTC_Run.valid = 0;
+ 		Cycles--;
+ 	}
+ #endif
++#undef DMA_TICK
++#undef ASIC_DMA_IntPending_Now
+ }
+ 
+ 
+-- 
+2.50.0.windows.2
+

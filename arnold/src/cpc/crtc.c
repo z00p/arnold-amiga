@@ -4249,6 +4249,10 @@ int CRTC_CyclesToEvent(void)
 #ifdef NO_E
 	return 1;
 #else
+#ifndef NO_DMA_STAGGER
+	/* a staggered DMA interrupt is due within a cycle or two */
+	if (ASIC_DMA_IntPending) return 1;
+#endif
 	if (!CRTC_Run.valid) CRTC_PrepareRun();
 	return CRTC_Run.left + 1;
 #endif
@@ -4256,13 +4260,28 @@ int CRTC_CyclesToEvent(void)
 
 void CRTC_DoCycles(int Cycles)
 {
+/* Amiga port (19 Oct 2026): count down staggered DMA interrupts (asic.c
+ * ASIC_DMA_Tick) over the cycles run after the HSYNC that set them, so one
+ * due within this Z80 instruction is pending at its end, as on the CPC+. */
+#ifndef NO_DMA_STAGGER
+#define ASIC_DMA_IntPending_Now() ASIC_DMA_IntPending
+#define DMA_TICK(n) do { if (ASIC_DMA_IntPending) ASIC_DMA_Tick(n); } while (0)
+#else
+#define ASIC_DMA_IntPending_Now() 0
+#define DMA_TICK(n) do { } while (0)
+#endif
 #ifdef NO_E
 	while (Cycles-- > 0)
+	{
+		int Pending = ASIC_DMA_IntPending_Now();
 		CRTC_DoOneCycle();
+		if (Pending) DMA_TICK(1);
+	}
 #else
 	STATS(StatsE_Calls++);
 	while (Cycles > 0)
 	{
+		int Pending;
 		if (!CRTC_Run.valid) CRTC_PrepareRun();
 		if (CRTC_Run.left > 0)
 		{
@@ -4271,14 +4290,19 @@ void CRTC_DoCycles(int Cycles)
 			STATS((StatsE_Runs++, StatsE_RunCycles += m));
 			CRTC_Run.left -= m;
 			Cycles -= m;
+			DMA_TICK(m);
 			if (Cycles == 0) break;
 		}
+		Pending = ASIC_DMA_IntPending_Now();
 		CRTC_DoOneCycle();      /* the event cycle */
+		if (Pending) DMA_TICK(1);   /* not those this cycle's HSYNC set */
 		STATS(StatsE_Events++);
 		CRTC_Run.valid = 0;
 		Cycles--;
 	}
 #endif
+#undef DMA_TICK
+#undef ASIC_DMA_IntPending_Now
 }
 
 

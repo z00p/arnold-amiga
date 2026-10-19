@@ -3135,6 +3135,20 @@ void    Z80_AcknowledgeInterrupt(void)
 #endif
 
         Z80_ClearInterruptRequest();
+#ifndef NO_INTHOLD_FIX
+        /* Amiga port (19 Oct 2026): the ASIC holds the Z80's INT line while
+         * any of its interrupts is still pending, so after one is acknowledged
+         * the next is taken as soon as the Z80 enables interrupts again (CPCEC
+         * keeps the other bits of z80_irq). Arnold dropped the request and only
+         * raised it again at the next HSYNC: a DMA 0 interrupt that arrived with
+         * a DMA 1 one waited a whole line. Sonic GX restarts its DMA lists from
+         * the DMA 0 handler, so the whole frame slipped a line each time (the
+         * Green Hill split-screen glitch). NO_INTHOLD_FIX: the old code. */
+        if (CPC_GetHardware()==CPC_HW_CPCPLUS)
+        {
+                ASIC_ReassertInterrupt();
+        }
+#endif
 
 		KCC_AcknowledgeInterrupt();
 }

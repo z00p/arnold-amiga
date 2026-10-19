@@ -20,7 +20,7 @@ and asked for it to keep the Arnold name.
 
 Not yet: writing changed disks back to the .dsk file (SAVE lasts until Power ON or Exit),
 tape, the plain CPC 464/664/6128 (the port is Plus only so far). Known issues are listed in
-the drawer's README.txt (Sonic GX speed and one Green Hill scroll, Pinball Dreams).
+the drawer's README.txt (Sonic GX speed, Pinball Dreams, NTSC speed).
 
 ## Download
 
@@ -44,6 +44,7 @@ upstream, one patch each, so they can be taken independently:
 - The Z80's overflow flag after subtractions (compiled games' signed compares; Puzzle Bobble froze).
 - The paletted renderer's 256 colours, never freed (corruption after a game or two).
 - The Plus interrupt vector for the Gate Array's 52-line interrupt (Sonic GX's title and demo levels).
+- Plus DMA interrupt handling (Sonic GX's Green Hill split glitch and frozen special stage).
 
 Plus pixel-exact speed-ups for slow hosts, each with a `NO_x` define to switch it off.
 `patches/README.txt` has the details.

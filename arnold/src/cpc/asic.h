@@ -52,6 +52,14 @@ unsigned char *ASIC_GetRamPtr(void);
 unsigned long ASIC_BuildDisplayReturnMaskWithPixels(int Line, int HCount, /*int MonitorHorizontalCount, int ActualY,*/ int *pPixels);
 
 void    ASIC_DoDMA(void);
+#ifndef NO_DMA_STAGGER
+/* Amiga port: DMA interrupts raised a microsecond per lower channel later */
+extern int ASIC_DMA_IntPending;
+void    ASIC_DMA_Tick(int Cycles);
+#endif
+#ifndef NO_INTHOLD_FIX
+void    ASIC_ReassertInterrupt(void);
+#endif
 
 void    ASIC_HSync(int,int);
 

@@ -5,12 +5,12 @@ Arnold for Amiga 0.5 - patch set and Amiga build
 This package holds the changes made to Arnold while porting it to 68k AmigaOS 3.x (AGA),
 as patches against the upstream source, plus a ready-to-run Amiga build.
 
-  patches/   20 patches (git format-patch) against rofl0r's GitHub mirror of Arnold,
+  patches/   21 patches (git format-patch) against rofl0r's GitHub mirror of Arnold,
              https://github.com/rofl0r/arnold, master at e5dce08
              ("fix prototype of LoadFile()", 4 Sep 2026)
   amiga/     the Amiga build: drawer Arnold with the program, icons, presets, the Plus
              system cartridge and a user README
-  source/    the complete source of this build (the upstream tree with all 20 patches
+  source/    the complete source of this build (the upstream tree with all 21 patches
              applied), for the GPL
 
 
@@ -20,8 +20,8 @@ Applying the patches
   git checkout e5dce08
   git am /path/to/patches/*.patch
 
-Each patch stands on its own and builds. Patches 1-18 touch only src/cpc (the core);
-19 adds src/amiga and 20 adds src/headless. The core changes are all marked "Amiga port"
+Each patch stands on its own and builds. Patches 1-19 touch only src/cpc (the core);
+20 adds src/amiga and 21 adds src/headless. The core changes are all marked "Amiga port"
 in comments, and every behaviour change can be switched off with a define (below).
 
 
@@ -94,12 +94,17 @@ Fixes:
        title and demo levels (one DMA interrupt per row re-aiming the split) were
        scrambled. Now matches CPCEC; no other homebrew cart changes.
  0018  Z80: NO_Z80V_FIX builds again
+ 0019  Plus: hold the interrupt request while ASIC interrupts are pending, and
+       raise DMA channel INTs in channel order                NO_INTHOLD_FIX, NO_DMA_STAGGER
+       A pending DMA 0 interrupt was taken a line late after DMA 1's, and all channels
+       ran at once. Sonic GX's split screen slipped in Green Hill and its special stage
+       froze. Now matches CPCEC; no other homebrew cart changes.
 
 Tools:
 
  0010  Diagnostics for hardware tracing (TRACE_HW, PAL_COUNT; off by default)
- 0019  AmigaOS host: Arnold for Amiga (src/amiga, built with bebbo's amiga-gcc)
- 0020  Headless test host (src/headless: frame checksums, PPM, key scripts, WAV,
+ 0020  AmigaOS host: Arnold for Amiga (src/amiga, built with bebbo's amiga-gcc)
+ 0021  Headless test host (src/headless: frame checksums, PPM, key scripts, WAV,
        disk insert / write-back / sector dumps)
 
 

@@ -1,7 +1,7 @@
-From b7e113bb4928980992ba81e5c7ae65f4ce76f647 Mon Sep 17 00:00:00 2001
+From dc52106597c50458fc2c73f91f934898dd3aecf3 Mon Sep 17 00:00:00 2001
 From: John Stringer <jcec_1@yahoo.co.uk>
-Date: Sun, 18 Oct 2026 22:20:17 +0100
-Subject: [PATCH 19/20] AmigaOS host (68k AGA): Arnold for Amiga
+Date: Mon, 19 Oct 2026 07:46:01 +0100
+Subject: [PATCH 20/21] AmigaOS host (68k AGA): Arnold for Amiga
 
 src/amiga: the AmigaOS 3.x host (AGA screen with chunky-to-planar and triple
 buffering, Paula sound, rawkey keyboard matrix, joystick/CD32 pads and keys as
@@ -15,7 +15,7 @@ Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
  src/amiga/amiga_iff.c  | 100 +++++
  src/amiga/amiga_logo.c | 153 +++++++
  src/amiga/amiga_logo.h |   6 +
- src/amiga/amiga_menu.c | 452 +++++++++++++++++++++
+ src/amiga/amiga_menu.c | 456 +++++++++++++++++++++
  src/amiga/amiga_sys.c  | 883 +++++++++++++++++++++++++++++++++++++++++
  src/amiga/amiga_sys.h  |  95 +++++
  src/amiga/amiga_wb.c   |  85 ++++
@@ -26,7 +26,7 @@ Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
  src/amiga/padtest.c    | 125 ++++++
  src/amiga/screenshot.c | 115 ++++++
  src/amiga/screenshot.h |   7 +
- 15 files changed, 2854 insertions(+)
+ 15 files changed, 2858 insertions(+)
  create mode 100644 src/amiga/Makefile
  create mode 100644 src/amiga/amiga_iff.c
  create mode 100644 src/amiga/amiga_logo.c
@@ -366,10 +366,10 @@ index 0000000..b22b3c7
 +#endif
 diff --git a/src/amiga/amiga_menu.c b/src/amiga/amiga_menu.c
 new file mode 100644
-index 0000000..545c6e5
+index 0000000..054226a
 --- /dev/null
 +++ b/src/amiga/amiga_menu.c
-@@ -0,0 +1,452 @@
+@@ -0,0 +1,456 @@
 +/* Arnold on AmigaOS: the menu screen (GadTools), styled after the OS 3.2 prefs
 + * editors. 17 Oct 2026 (John): the settings live in pull-down menus (Options,
 + * Controls) and the window keeps what changes from game to game: the media,
@@ -654,7 +654,11 @@ index 0000000..545c6e5
 +	mscr = OpenScreenTags(NULL, SA_Width, 640, SA_Height, 256, SA_Depth, 4,
 +		SA_DisplayID, PAL_MONITOR_ID | HIRES_KEY, SA_Font, (ULONG)&topaz8,
 +		SA_Title, (ULONG)"Arnold - Amstrad CPC Plus emulator.  (c) Kevin Thacker, GPL-2.0", SA_Pens, (ULONG)menupens,
-+		SA_ShowTitle, TRUE, SA_Colors32, (ULONG)menupal, TAG_DONE);
++		SA_ShowTitle, TRUE, SA_Colors32, (ULONG)menupal,
++		/* NTSC (19 Oct 2026, John's A1200): without pal.monitor the 256-line menu
++		 * shows only 200 lines; autoscroll lets the mouse slide the screen up to
++		 * the bottom rows (the menu shortcuts work as well) */
++		SA_AutoScroll, TRUE, TAG_DONE);
 +	if (!mscr) return 0;
 +	vi = GetVisualInfo(mscr, TAG_DONE);
 +	if (!vi) { close_menu(); return 0; }
@@ -680,7 +684,7 @@ index 0000000..545c6e5
 +	if (!menustrip || !LayoutMenus(menustrip, vi, GTMN_NewLookMenus, TRUE, TAG_DONE)) { close_menu(); return 0; }
 +	mwin = OpenWindowTags(NULL, WA_CustomScreen, (ULONG)mscr, WA_Left, 0, WA_Top, mscr->BarHeight + 1,
 +		WA_Width, 640, WA_Height, 256 - mscr->BarHeight - 1,
-+		WA_Title, (ULONG)"Arnold for Amiga v0.5.1  (Amstrad CPC Plus / GX4000)  built " __DATE__ " " __TIME__,
++		WA_Title, (ULONG)"Arnold for Amiga v0.5.2  (Amstrad CPC Plus / GX4000)  built " __DATE__ " " __TIME__,
 +		WA_DepthGadget, TRUE, WA_CloseGadget, TRUE, WA_DragBar, FALSE,
 +		WA_Activate, TRUE, WA_NewLookMenus, TRUE,
 +		WA_Gadgets, (ULONG)glist, WA_SimpleRefresh, TRUE,
@@ -824,7 +828,7 @@ index 0000000..545c6e5
 +}
 diff --git a/src/amiga/amiga_sys.c b/src/amiga/amiga_sys.c
 new file mode 100644
-index 0000000..cf0a3bf
+index 0000000..7f95de9
 --- /dev/null
 +++ b/src/amiga/amiga_sys.c
 @@ -0,0 +1,883 @@
@@ -855,7 +859,7 @@ index 0000000..cf0a3bf
 +#include <stdarg.h>
 +
 +unsigned long __stack = 256 * 1024;   /* libnix: enlarge the stack at start */
-+static const char ver[] __attribute__((used)) = "$VER: Arnold 0.5.1 (19.10.2026) Amiga port, GPL-2.0";
++static const char ver[] __attribute__((used)) = "$VER: Arnold 0.5.2 (19.10.2026) Amiga port, GPL-2.0";
 +
 +/* ---- diagnostic log ---- */
 +static FILE *logf;

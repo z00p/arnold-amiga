@@ -282,7 +282,11 @@ static int open_menu(struct SysMenu *m)
 	mscr = OpenScreenTags(NULL, SA_Width, 640, SA_Height, 256, SA_Depth, 4,
 		SA_DisplayID, PAL_MONITOR_ID | HIRES_KEY, SA_Font, (ULONG)&topaz8,
 		SA_Title, (ULONG)"Arnold - Amstrad CPC Plus emulator.  (c) Kevin Thacker, GPL-2.0", SA_Pens, (ULONG)menupens,
-		SA_ShowTitle, TRUE, SA_Colors32, (ULONG)menupal, TAG_DONE);
+		SA_ShowTitle, TRUE, SA_Colors32, (ULONG)menupal,
+		/* NTSC (19 Oct 2026, John's A1200): without pal.monitor the 256-line menu
+		 * shows only 200 lines; autoscroll lets the mouse slide the screen up to
+		 * the bottom rows (the menu shortcuts work as well) */
+		SA_AutoScroll, TRUE, TAG_DONE);
 	if (!mscr) return 0;
 	vi = GetVisualInfo(mscr, TAG_DONE);
 	if (!vi) { close_menu(); return 0; }
@@ -308,7 +312,7 @@ static int open_menu(struct SysMenu *m)
 	if (!menustrip || !LayoutMenus(menustrip, vi, GTMN_NewLookMenus, TRUE, TAG_DONE)) { close_menu(); return 0; }
 	mwin = OpenWindowTags(NULL, WA_CustomScreen, (ULONG)mscr, WA_Left, 0, WA_Top, mscr->BarHeight + 1,
 		WA_Width, 640, WA_Height, 256 - mscr->BarHeight - 1,
-		WA_Title, (ULONG)"Arnold for Amiga v0.5.1  (Amstrad CPC Plus / GX4000)  built " __DATE__ " " __TIME__,
+		WA_Title, (ULONG)"Arnold for Amiga v0.5.2  (Amstrad CPC Plus / GX4000)  built " __DATE__ " " __TIME__,
 		WA_DepthGadget, TRUE, WA_CloseGadget, TRUE, WA_DragBar, FALSE,
 		WA_Activate, TRUE, WA_NewLookMenus, TRUE,
 		WA_Gadgets, (ULONG)glist, WA_SimpleRefresh, TRUE,
