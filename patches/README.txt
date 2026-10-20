@@ -1,16 +1,16 @@
 Arnold for Amiga 0.5 - patch set and Amiga build
 =================================================
-19 October 2026.  Arnold (c) Kevin Thacker, GPL-2.0.  Amiga port by John Stringer.
+20 October 2026.  Arnold (c) Kevin Thacker, GPL-2.0.  Amiga port by John Stringer.
 
 This package holds the changes made to Arnold while porting it to 68k AmigaOS 3.x (AGA),
 as patches against the upstream source, plus a ready-to-run Amiga build.
 
-  patches/   21 patches (git format-patch) against rofl0r's GitHub mirror of Arnold,
+  patches/   25 patches (git format-patch) against rofl0r's GitHub mirror of Arnold,
              https://github.com/rofl0r/arnold, master at e5dce08
              ("fix prototype of LoadFile()", 4 Sep 2026)
   amiga/     the Amiga build: drawer Arnold with the program, icons, presets, the Plus
              system cartridge and a user README
-  source/    the complete source of this build (the upstream tree with all 21 patches
+  source/    the complete source of this build (the upstream tree with all 25 patches
              applied), for the GPL
 
 
@@ -20,8 +20,8 @@ Applying the patches
   git checkout e5dce08
   git am /path/to/patches/*.patch
 
-Each patch stands on its own and builds. Patches 1-19 touch only src/cpc (the core);
-20 adds src/amiga and 21 adds src/headless. The core changes are all marked "Amiga port"
+Each patch stands on its own and builds. Patches 1-23 touch only src/cpc (the core);
+24 adds src/amiga and 25 adds src/headless. The core changes are all marked "Amiga port"
 in comments, and every behaviour change can be switched off with a define (below).
 
 
@@ -100,11 +100,25 @@ Fixes:
        ran at once. Sonic GX's split screen slipped in Green Hill and its special stage
        froze. Now matches CPCEC; no other homebrew cart changes.
 
+More speed for slow hosts (pixel-exact; RGB output identical on every test cart):
+
+ 0020  Paletted renderer: keep the palette below 64 entries              NO_PALGC_LOW
+       The palette is compacted at a frame's end as soon as an entry of 64 or above
+       is in use, keeping each pen's exact colour, so a Plus game fits in 5 or 6
+       Amiga bitplanes instead of 8. Palette numbering changes only.
+ 0021  Plus: table-driven horizontal soft scroll                       NO_SCROLL_TABLE
+       The per-pixel shift is a fixed bit permutation: now four byte lookups.
+ 0022  CRTC: defer quiet cycles and draw them in one run                    NO_DEFER
+       Cycles short of the next CRTC event are counted and drawn later in one run,
+       before anything that could change what they draw. Sonic GX's core time on a
+       68040 fell from 14.9 to 12.9 ms a frame (with 0021).
+ 0023  Plus: skip transparent sprite rows                                  NO_SPRROW
+
 Tools:
 
  0010  Diagnostics for hardware tracing (TRACE_HW, PAL_COUNT; off by default)
- 0020  AmigaOS host: Arnold for Amiga (src/amiga, built with bebbo's amiga-gcc)
- 0021  Headless test host (src/headless: frame checksums, PPM, key scripts, WAV,
+ 0024  AmigaOS host: Arnold for Amiga (src/amiga, built with bebbo's amiga-gcc)
+ 0025  Headless test host (src/headless: frame checksums, PPM, key scripts, WAV,
        disk insert / write-back / sector dumps)
 
 
@@ -128,8 +142,8 @@ How it was tested
 - Sonic GX and Ghosts'n Goblins GX were compared frame by frame with CPCEC (cngsoft).
   Caprice32 and MAME show the same Sonic GX corruption the old code had.
 - Amiga: WinUAE regression runs, and real hardware. An A1200 with a PiStorm32 (Emu68)
-  runs at full speed using 39-58% of the frame budget with sound. BigMig (MiSTer,
-  68060) was also tested.
+  runs at full speed using 39-58% of the frame budget with sound. Sonic GX runs at 49 fps
+  without frame skip (78% of the frame time). BigMig (MiSTer) was also tested.
 
 
 Amiga build
@@ -140,7 +154,8 @@ AGA Amiga with a 68040 or better (PiStorm/Emu68, 68060, BigMig), with sound thro
 Help opens the menu.
 
 Builds: Arnold (68040, -O2), Arnold-040-Max (-O3), Arnold-060 and Arnold-060-Max
-(68060). All are soft-float, with no FPU needed.
+(68060), Arnold-030 (68030; runs, but too slow for games). All are soft-float, with
+no FPU needed.
 
 Built with: bebbo's amiga-gcc (codeberg.org/bebbo/amiga-gcc), -noixemul;
   cd src/amiga && make TARGET=Arnold CPU=68040 OPT=-O2

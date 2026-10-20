@@ -591,6 +591,42 @@ static int HorizontalPixelScroll = 0;
  * shift mixed bits of neighbouring pixels (outlines right, colours scrambled:
  * Sonic GX throughout, Ghosts'n Goblins at times). This is the per-pixel shift
  * Arnold's true-colour renderer already uses. NO_HSCROLL_FIX: the old shift. */
+/* Sonic speed (20 Oct 2026): the per-pixel loop in Render_ScrollGraphicsData
+ * moves each input bit to a fixed place (masks and shifts distribute over OR),
+ * so its result is the OR of what each input byte gives alone: four lookups in
+ * a table built on first use per mode (0, 1) and scroll (1-7). Only the low 16
+ * bits are kept; all callers use only those (the two graphics bytes). Checked
+ * against the loop on the PC (build/sonic-speed/scroll_test.c). NULL when the
+ * table doesn't apply (mode 2, no scroll). crtc.c's run loop uses it directly.
+ * NO_SCROLL_TABLE: the loop only. */
+const unsigned short *Render_ScrollTable(void)
+{
+#ifndef NO_SCROLL_TABLE
+	static unsigned short Tab[2][8][4 * 256];
+	static int TabMask[2][8], TabTop[2][8];
+	const int m = CurrentMode, sc = ModeHorizontalPixelScroll;
+	unsigned short *t;
+	if (m < 0 || m > 1 || sc <= 0 || sc > 7) return NULL;
+	t = Tab[m][sc];
+	if (TabMask[m][sc] != CurrentModeMask || TabTop[m][sc] != CurrentTopShift || !TabMask[m][sc])
+	{
+		int k, b, j;
+		for (k = 0; k < 4; k++)
+			for (b = 0; b < 256; b++)
+			{
+				unsigned int d = (unsigned int)b << (8 * k);
+				for (j = 0; j < sc; j++)
+					d = ((d & (unsigned int)CurrentModeMask) >> 1) | ((d & ~(unsigned int)CurrentModeMask) >> CurrentTopShift);
+				t[k * 256 + b] = (unsigned short)d;
+			}
+		TabMask[m][sc] = CurrentModeMask; TabTop[m][sc] = CurrentTopShift;
+	}
+	return t;
+#else
+	return NULL;
+#endif
+}
+
 unsigned int Render_ScrollGraphicsData(unsigned int Data)
 {
 	int i;
@@ -599,6 +635,12 @@ unsigned int Render_ScrollGraphicsData(unsigned int Data)
 #else
 	if (CurrentMode == 2)
 		return Data >> ModeHorizontalPixelScroll;
+#ifndef NO_SCROLL_TABLE
+	{
+		const unsigned short *t = Render_ScrollTable();
+		if (t) return (unsigned int)t[Data & 0x0ff] | t[256 + ((Data >> 8) & 0x0ff)] | t[512 + ((Data >> 16) & 0x0ff)] | t[768 + (Data >> 24)];
+	}
+#endif
 	for (i = 0; i < ModeHorizontalPixelScroll; i++)
 		Data = ((Data & (unsigned int)CurrentModeMask) >> 1) | ((Data & ~(unsigned int)CurrentModeMask) >> CurrentTopShift);
 	return Data;
@@ -1617,15 +1659,75 @@ int Render_PaletteUsedCount(void)
  * and the next frame takes entries for the colours it actually uses.
  * NO_PALGC_FIX: never freed, as before. */
 #define PALGC_LIMIT 224
+#ifndef PALGC_TOP
+#define PALGC_TOP 64
+#endif
+#ifndef NO_PALGC_LOW
+/* Free every entry and give the 32 pens entries again, in pen order, with the
+ * exact colours they have now (Palette_Reset would recompute them from the
+ * pens' hardware colours, and on a Plus a pen last set through the Gate Array
+ * has a slightly different RGB from its ASIC colour, so the picture changed). */
+static void Palette_Compact(void)
+{
+	unsigned char rgb[32][3];
+	int i, have[32];
+	for (i = 0; i < 32; i++)
+	{
+		int p = PaletteRemap[i];
+		have[i] = (p >= 0 && p < 256);
+		if (have[i]) { rgb[i][0] = CPCPalette[p].Red; rgb[i][1] = CPCPalette[p].Green; rgb[i][2] = CPCPalette[p].Blue; }
+	}
+	for (i = 0; i < 256; i++)
+		if (!(CPCPalette[i].Flags & PALETTE_ENTRY_DO_NOT_REMOVE)) CPCPalette[i].Flags = 0;
+	Render_ReserveBlack();
+	for (i = 0; i < 32; i++)
+	{
+		int p = -1;
+		if (have[i])
+		{
+			p = Palette_MatchColour(rgb[i][0], rgb[i][1], rgb[i][2]);
+			if (p == -1) p = Palette_StoreColour(rgb[i][0], rgb[i][1], rgb[i][2]);
+		}
+		PaletteRemap[i] = p;
+		if (i == 16) Render_PaletteIndexBorder = p >= 0 ? p : Render_PaletteIndexBlack;
+	}
+	Render_RemapStamp++;
+	{ extern void CRTC_InvalidateRun(void); CRTC_InvalidateRun(); }   /* cached border index and pixels */
+}
+#endif
 void    Render_DumpDisplay(void)
 {
         pRender_DumpScreen();
 #ifndef NO_PALGC_FIX
 	if (Renderer_Active && BytesPerPixel == 1)   /* the paletted (8-bit) renderer */
 	{
+#ifndef NO_PALGC_LOW
+		/* Sonic speed (20 Oct 2026): also freed as soon as an entry at or
+		 * above PALGC_TOP (64) is taken, so a frame drawn with up to 64
+		 * colours keeps indices below 64 and the Amiga c2p writes only
+		 * bitplanes 0-5 (0-4 for lines whose colours are all below 32).
+		 * Sonic GX uses about 57 colours a frame (mid-frame palette
+		 * changes); 32 freed it every frame and reloaded the Amiga palette
+		 * each time, 64 measured better on the A1200.
+		 * After the free, the pens get entries again in pen order with the
+		 * colours they have now (Palette_Compact), so a steady screen keeps
+		 * the same indices.
+		 * Only host entries (DO_NOT_REMOVE, e.g. the OSD pen 255) may sit
+		 * above. Colours on screen are unchanged; only index numbers differ.
+		 * NO_PALGC_LOW: freed only when 224 entries are in use, as before. */
+		int i;
+		for (i = PALGC_TOP; i < 256; i++)
+			if ((CPCPalette[i].Flags & (PALETTE_ENTRY_USED | PALETTE_ENTRY_DO_NOT_REMOVE)) == PALETTE_ENTRY_USED)
+				break;
+#ifdef PAL_COUNT
+		{ static int f, c; f++; if (i < 256) { c++; fprintf(stderr, "compact frame %d entry %d used %d\n", f, i, Render_PaletteUsedCount()); } }
+#endif
+		if (i < 256) Palette_Compact();
+#else
 		int i, n = 0;
 		for (i = 0; i < 256; i++) if (CPCPalette[i].Flags & PALETTE_ENTRY_USED) n++;
 		if (n >= PALGC_LIMIT) Palette_Reset();
+#endif
 	}
 #endif
 #ifdef PAL_COUNT

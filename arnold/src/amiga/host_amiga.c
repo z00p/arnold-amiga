@@ -84,6 +84,9 @@ static void perf_report(FILE *f)
 	fprintf(f, "perf late_frames=%lu palette_us_per_frame=%lu palette_loads=%lu\n", Sys_Perf.late_frames, Sys_Perf.pal_us / n, Sys_Perf.palette_loads);
 	fprintf(f, "perf skipped_frames=%lu skip_max=%d refresh=%d shown_fps_x10=%lu\n", Sys_Perf.skipped_frames, skip_max, refresh, Sys_Perf.c2p_frames * 10000UL / (total / 1000 ? total / 1000 : 1));
 	fprintf(f, "perf sound=%d audio_underruns=%lu audio_drops=%lu\n", audio_open, Sys_Perf.aud_underruns, Sys_Perf.aud_drops);
+	fprintf(f, "perf c2p_lines5=%lu c2p_lines6=%lu c2p_clear_planes=%lu chip_bytes_per_shown_frame_est=%lu\n", Sys_Perf.c2p_lines5, Sys_Perf.c2p_lines6, Sys_Perf.c2p_clear_planes,
+		((Sys_Perf.c2p_lines - Sys_Perf.c2p_lines5 - Sys_Perf.c2p_lines6) * 8 + Sys_Perf.c2p_lines5 * 5 + Sys_Perf.c2p_lines6 * 6 + Sys_Perf.c2p_clear_planes) * (Sys_Perf.line_bytes / 8) / cf);
+	if (Sys_Perf.c2p_chip_longs) fprintf(f, "perf chip_bytes_written_per_shown_frame=%lu\n", Sys_Perf.c2p_chip_longs * 4 / cf);
 }
 
 static void script_setkey(int key, int down) { if (down) CPC_SetKey(key); else CPC_ClearKey(key); }

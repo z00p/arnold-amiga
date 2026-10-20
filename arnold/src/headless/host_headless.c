@@ -165,7 +165,9 @@ static unsigned long dump_to(const char *name)
 		if (depth == 8) {
 			unsigned char c = chunky[i];
 			fwrite(pal[c], 1, 3, f);
-			sum = sum * 31 + c;
+			/* RGB, not the palette index (20 Oct 2026): index numbers may change
+			 * (palette freeing, PALGC_TOP) while the picture stays the same */
+			sum = ((sum * 31 + pal[c][0]) * 31 + pal[c][1]) * 31 + pal[c][2];
 		} else {
 			unsigned short v = ((unsigned short *)chunky)[i]; unsigned char rgb[3];
 			rgb[0] = (v >> 11) << 3; rgb[1] = ((v >> 5) & 63) << 2; rgb[2] = (v & 31) << 3;

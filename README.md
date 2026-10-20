@@ -17,20 +17,33 @@ and asked for it to keep the Arnold name.
 - PAL and NTSC: Video mode Auto/PAL/NTSC; on a 60 Hz NTSC display the CPC still runs at its
   own 50 Hz (frames timed from the E-clock, Paula at the matching rate), or follows the display
   if you prefer. The menu fits a 200-line NTSC screen.
-- Full speed with sound on a PiStorm A1200: 39-58% of the frame budget in the games measured.
-  Paula sound, 8-bit stereo. Frame skip for slower machines, with every drawn frame exact.
+- Full speed with sound on a PiStorm A1200, including Sonic GX without frame skip (see
+  What to expect). Paula sound, 8-bit stereo. Frame skip for slower machines, with every
+  drawn frame exact.
 - Menu on Help: media, sound, screen mode, frame skip, joystick-from-keyboard, per-game
   settings, keyboard map, IFF and PNG screenshots. Workbench presets with ToolTypes.
 - Joystick in port 2, two-button and CD32 pads, keyboard as joystick.
 
 Not yet: writing changed disks back to the .dsk file (SAVE lasts until Power ON or Exit),
 tape (so the CPC 464 runs BASIC only). Known issues are listed in the drawer's README.txt
-(Sonic GX speed, Pinball Dreams, NTSC cropping of edge-drawn games).
+(Sonic GX slowdown in very fast vertical scrolls, Pinball Dreams, NTSC cropping of
+edge-drawn games).
+
+## What to expect
+
+Arnold for Amiga targets PiStorm/Emu68-class machines.
+
+- **A1200 with a PiStorm32 CM4:** the games tested run at full speed (Sonic GX at 49 fps without
+  frame skip, measured). On a real A1200 Sonic GX uses 78% of the frame time, with a slight
+  slowdown only in very fast vertical scrolls. Use `Arnold` or the PiStorm preset.
+- **BigMig (MiSTer):** games currently run below full speed; use `Arnold-060` with frame skip.
+- **Real 68060 accelerator cards** have not been tested; expect games below full speed.
+- **68030 machines** are too slow for games (`Arnold-030` is for trying BASIC).
 
 ## Download
 
-The release zip holds the Amiga drawer (four builds: 68040 and 68060, each at -O2 and -O3,
-all soft-float), icons, presets, the Plus system cartridge, the CPC 464/664/6128 system ROMs
+The release zip holds the Amiga drawer (five builds: 68040 and 68060, each at -O2 and -O3,
+and a 68030 build; all soft-float), icons, presets, the Plus system cartridge, the CPC 464/664/6128 system ROMs
 and a user README. See the
 Releases page.
 
@@ -52,7 +65,9 @@ upstream, one patch each, so they can be taken independently:
 - The Plus interrupt vector for the Gate Array's 52-line interrupt (Sonic GX's title and demo levels).
 - Plus DMA interrupt handling (Sonic GX's Green Hill split glitch and frozen special stage).
 
-Plus pixel-exact speed-ups for slow hosts, each with a `NO_x` define to switch it off.
+Plus pixel-exact speed-ups for slow hosts (cell caching, run-based and deferred CRTC stepping,
+HALT fast-forward, a compact palette, table-driven Plus soft scroll, transparent sprite rows
+skipped), each with a `NO_x` define to switch it off.
 `patches/README.txt` has the details.
 
 ## Layout
@@ -73,7 +88,7 @@ Amiga: bebbo's amiga-gcc (https://codeberg.org/bebbo/amiga-gcc) in `/opt/amiga`,
 
     cd arnold/src/amiga && make TARGET=Arnold CPU=68040 OPT=-O2
 
-or `bash tools/build_variants.sh` for all four builds.
+or `bash tools/build_variants.sh` for all five builds.
 
 PC checks need Linux with gcc (WSL works). `tools/headless_check.sh` compares pixel-exact
 frame checksums of the working tree against a reference commit for every cartridge in

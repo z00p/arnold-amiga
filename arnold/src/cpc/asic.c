@@ -999,6 +999,38 @@ unsigned long ASIC_BuildDisplayReturnMaskWithPixels(int Line, int HCount, /*int 
 
                     SprY = SpriteY>>ASIC_Data.SpriteInfo[i].YMagShift;
 
+#ifndef NO_SPRROW
+					/* Sonic speed (20 Oct 2026): a fully transparent sprite row
+					 * (16 pixels of pen 0, only the low nibble counts) draws
+					 * nothing; and the pixel loop stops at the sprite's right
+					 * edge (SprX only grows with j). Same result.
+					 * NO_SPRROW: the original loop only. */
+					{
+						const unsigned char *r = pSpriteGraphics + (SprY << 4);
+						if (((r[0]|r[1]|r[2]|r[3]|r[4]|r[5]|r[6]|r[7]|r[8]|r[9]|r[10]|r[11]|r[12]|r[13]|r[14]|r[15]) & 0x0f) == 0)
+						{
+							pRenderInfo++;
+							continue;
+						}
+						{
+							const int sh = ASIC_Data.SpriteInfo[i].XMagShift;
+							int sx = SpriteX;
+							for (j = XStart; j < 16 && (sx >> sh) < 16; j++, sx++)
+							{
+								int Colour = r[sx >> sh] & 0x0f;
+								if (Colour != 0 && (GraphicsMask & (1 << j)) == 0)
+								{
+									pPixels[j] = Colour + 16;
+									GraphicsMask |= (1 << j);
+								}
+							}
+							if (GraphicsMask == 0x00000ffff)
+								break;
+							pRenderInfo++;
+							continue;
+						}
+					}
+#endif
                     /* rendering 16 pixels in one go = 1 CRTC char width */
                     for (j=XStart; j<16; j++)
                     {

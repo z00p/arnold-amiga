@@ -417,6 +417,7 @@ void	CPCEmulation_Run(void)
 			/* update CRTC for NopCount cycles */
 			if (NopsToFrameEnd!=0)
 				CRTC_DoCycles(NopsToFrameEnd);	
+			{ extern void CRTC_Flush(void); CRTC_Flush(); }   /* Amiga port: deferred cells (crtc.c) */
 		
 			/* execute functions when a frame has been completed */
 			/* Frame Skip Control code */
@@ -528,6 +529,17 @@ void	CPCEmulation_Run(void)
 		else //if (bWin) this doesn't work :(
 		{
 			/* update CRTC for NopCount cycles */
+#if !defined(NO_DEFER) && !defined(NO_E)
+			/* Amiga port: quiet cycles short of the next CRTC event are only
+			 * counted here and drawn later (crtc.c CRTC_Pending) */
+			extern int CRTC_RunLeft, CRTC_Pending, ASIC_DMA_IntPending;
+			if (NopCount < CRTC_RunLeft && !ASIC_DMA_IntPending)
+			{
+				CRTC_RunLeft -= NopCount;
+				CRTC_Pending += NopCount;
+			}
+			else
+#endif
 			CRTC_DoCycles(NopCount);
 		}
 

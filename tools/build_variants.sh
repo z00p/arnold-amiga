@@ -1,4 +1,4 @@
-# Build the four Amiga speed-test variants into run/ (WSL root shell).
+# Build the Amiga variants into run/ (WSL root shell): 040, 040-Max, 060, 060-Max, 030.
 # Build the speed-test variants of Arnold (Arnold core) and copy them to run/.
 export PATH=/opt/amiga/bin:/usr/local/bin:/usr/bin:/bin
 rm -rf /opt/src/arnold-build && mkdir -p /opt/src/arnold-build && rsync -a --exclude 'obj-*' --exclude "Arnold*" ${A:-$(cd "$(dirname "$0")/.." && pwd)}/arnold/src/ /opt/src/arnold-build/src/
@@ -11,3 +11,4 @@ b Arnold         68040 "-O2"
 b Arnold-040-Max 68040 "-O3"
 b Arnold-060     68060 "-O2"
 b Arnold-060-Max 68060 "-O3"
+b Arnold-030     68030 "-O2"

@@ -37,8 +37,11 @@ static __inline__ Z80_BYTE Z80_RD_MEM_Inline(Z80_WORD Addr)
 {
 	return pReadRamPtr[Addr >> 13][Addr];
 }
+extern int CRTC_Pending;
+void CRTC_Flush(void);
 static __inline__ void Z80_WR_MEM_Inline(Z80_WORD Addr, Z80_BYTE Data)
 {
+	if (CRTC_Pending) CRTC_Flush();   /* deferred cells see memory as before this write */
 	if (pWriteMemory == CPC_WriteMemory)
 		pWriteRamPtr[(Addr >> 13) & 0x07][Addr] = Data;
 	else

@@ -1,0 +1,5 @@
+# Sonic GX frame dumps for the A1200 (exact CPC frames, compared with the PC)
+4s   FIRE1 10
+7s   FIRE1 10
+10s  FIRE1 10
+13s  JOYRIGHT 200 every 250 until 40s

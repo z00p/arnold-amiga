@@ -86,7 +86,8 @@ unsigned long Sys_Millis(void);
 typedef struct { unsigned long c2p_us, wait_us, c2p_lines, c2p_frames, line_bytes,
                  wait_safe_us, wait_disp_us, wait_throttle_us, throttle_calls, late_frames,
                  pal_us, palette_loads, skipped_frames,
-                 aud_underruns, aud_drops; } SysPerf;
+                 aud_underruns, aud_drops,
+                 c2p_lines5, c2p_lines6, c2p_clear_planes, c2p_chip_longs; } SysPerf;
 extern SysPerf Sys_Perf;
 unsigned long Sys_Micros(void);
 #include <stdio.h>

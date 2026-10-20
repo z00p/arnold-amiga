@@ -25,7 +25,7 @@
 #include <stdarg.h>
 
 unsigned long __stack = 256 * 1024;   /* libnix: enlarge the stack at start */
-static const char ver[] __attribute__((used)) = "$VER: Arnold 0.6 (19.10.2026) Amiga port, GPL-2.0";
+static const char ver[] __attribute__((used)) = "$VER: Arnold 0.7 (20.10.2026) Amiga port, GPL-2.0";
 
 /* ---- diagnostic log ---- */
 static FILE *logf;
@@ -175,6 +175,115 @@ static void c2p_line(const unsigned char *src, struct BitMap *bm, int y)
 	}
 }
 
+/* Sonic speed (20 Oct 2026): chip RAM writes are the c2p's cost on the PiStorm
+ * (about 1 us a long). The core keeps palette indices low (render5.c
+ * PALGC_TOP), so most lines use only pixel values < 32 or < 64: then planes
+ * 5-7 (or 6-7) are all zero and need not be written, as long as that buffer's
+ * row already has them zero. line_lvl[buffer][row] = planes that may be
+ * non-zero there (5, 6 or 8); a conversion writes planes 0..n-1 and clears the
+ * ones from n up to the old level. NO_C2P5 (define): always 8 planes. */
+static unsigned char *line_lvl[NBUF];
+
+static int line_planes(const unsigned char *src)
+{
+	const ULONG *l = (const ULONG *)src;
+	ULONG o = 0;
+	int n;
+	for (n = SW >> 2; n > 0; n -= 4, l += 4) o |= l[0] | l[1] | l[2] | l[3];
+	if (!(o & 0xE0E0E0E0UL)) return 5;
+	if (!(o & 0xC0C0C0C0UL)) return 6;
+	return 8;
+}
+
+/* planes 0..np-1 from the pixels, planes np..nz-1 cleared (np 5 or 6) */
+static void c2p_line_n(const unsigned char *src, struct BitMap *bm, int y, int np, int nz)
+{
+	int p, g;
+	UBYTE *plane[8];
+	for (p = 0; p < 8; p++) plane[p] = bm->Planes[p] + (LONG)y * bm->BytesPerRow;
+	for (g = 0; g < SW; g += 32) {
+		ULONG o0 = 0, o1 = 0, o2 = 0, o3 = 0, o4 = 0, o5 = 0;
+		int k;
+		for (k = 0; k < 4; k++) {
+			ULONG lo, hi;
+			lo  = c2p_lo[src[0]] << 7; hi  = c2p_hi[src[0]] << 7;
+			lo |= c2p_lo[src[1]] << 6; hi |= c2p_hi[src[1]] << 6;
+			lo |= c2p_lo[src[2]] << 5; hi |= c2p_hi[src[2]] << 5;
+			lo |= c2p_lo[src[3]] << 4; hi |= c2p_hi[src[3]] << 4;
+			lo |= c2p_lo[src[4]] << 3; hi |= c2p_hi[src[4]] << 3;
+			lo |= c2p_lo[src[5]] << 2; hi |= c2p_hi[src[5]] << 2;
+			lo |= c2p_lo[src[6]] << 1; hi |= c2p_hi[src[6]] << 1;
+			lo |= c2p_lo[src[7]];      hi |= c2p_hi[src[7]];
+			src += 8;
+			o0 = (o0 << 8) | ( lo        & 0xff);
+			o1 = (o1 << 8) | ((lo >>  8) & 0xff);
+			o2 = (o2 << 8) | ((lo >> 16) & 0xff);
+			o3 = (o3 << 8) | ((lo >> 24) & 0xff);
+			o4 = (o4 << 8) | ( hi        & 0xff);
+			o5 = (o5 << 8) | ((hi >>  8) & 0xff);
+		}
+		*(ULONG *)plane[0] = o0; *(ULONG *)plane[1] = o1; *(ULONG *)plane[2] = o2;
+		*(ULONG *)plane[3] = o3; *(ULONG *)plane[4] = o4;
+		if (np > 5) *(ULONG *)plane[5] = o5;
+		for (p = np; p < nz; p++) *(ULONG *)plane[p] = 0;
+		for (p = 0; p < 8; p++) plane[p] += 4;
+	}
+}
+
+/* Shadow (20 Oct 2026, the AmiMSX Space Manbow technique): a fast-RAM copy
+ * of every buffer's planes. A converted line is compared with it a long at a
+ * time and only longs that differ are written to chip RAM; sky, flat ground
+ * and lines where only a sprite moved cost a few writes. line_lvl 0 = this
+ * row's shadow is not known (new screen, OSD label): all 8 planes written.
+ * NO_SHADOW (define): every long of the used planes written, as step 1. */
+static ULONG *shadow[NBUF];          /* [row][plane][SW/32] */
+
+static void c2p_line_sh(const unsigned char *src, struct BitMap *bm, int y, int np, ULONG *sh, int known)
+{
+	int p, g, ng = SW >> 5;
+	UBYTE *plane[8];
+	unsigned long w = 0;
+	for (p = 0; p < 8; p++) plane[p] = bm->Planes[p] + (LONG)y * bm->BytesPerRow;
+	for (g = 0; g < ng; g++) {
+		ULONG o[8];
+		int k;
+		o[0] = o[1] = o[2] = o[3] = o[4] = o[5] = o[6] = o[7] = 0;
+		for (k = 0; k < 4; k++) {
+			ULONG lo, hi;
+			lo  = c2p_lo[src[0]] << 7; hi  = c2p_hi[src[0]] << 7;
+			lo |= c2p_lo[src[1]] << 6; hi |= c2p_hi[src[1]] << 6;
+			lo |= c2p_lo[src[2]] << 5; hi |= c2p_hi[src[2]] << 5;
+			lo |= c2p_lo[src[3]] << 4; hi |= c2p_hi[src[3]] << 4;
+			lo |= c2p_lo[src[4]] << 3; hi |= c2p_hi[src[4]] << 3;
+			lo |= c2p_lo[src[5]] << 2; hi |= c2p_hi[src[5]] << 2;
+			lo |= c2p_lo[src[6]] << 1; hi |= c2p_hi[src[6]] << 1;
+			lo |= c2p_lo[src[7]];      hi |= c2p_hi[src[7]];
+			src += 8;
+			o[0] = (o[0] << 8) | ( lo        & 0xff);
+			o[1] = (o[1] << 8) | ((lo >>  8) & 0xff);
+			o[2] = (o[2] << 8) | ((lo >> 16) & 0xff);
+			o[3] = (o[3] << 8) | ((lo >> 24) & 0xff);
+			o[4] = (o[4] << 8) | ( hi        & 0xff);
+			if (np > 5) {
+				o[5] = (o[5] << 8) | ((hi >>  8) & 0xff);
+				if (np > 6) {
+					o[6] = (o[6] << 8) | ((hi >> 16) & 0xff);
+					o[7] = (o[7] << 8) | ((hi >> 24) & 0xff);
+				}
+			}
+		}
+		for (p = 0; p < 8; p++) {
+			ULONG *s = &sh[p * ng + g];
+			if (!known || *s != o[p]) {
+				*s = o[p];
+				*(ULONG *)(plane[p] + (g << 2)) = o[p];
+				w++;
+			}
+		}
+	}
+	Sys_Perf.c2p_chip_longs += w;
+}
+
 /* ---- video mode and display rate (19 Oct 2026, John's A1200 in NTSC) ----
  * Sys_VideoMode: 0 Auto (the default monitor, as Workbench), 1 PAL, 2 NTSC.
  * A forced PAL or NTSC mode that the system can't show (its monitor driver
@@ -317,6 +426,16 @@ int Sys_OpenDisplay(int cw, int ch, int hires)
 	line_dirty = AllocMem(CH, MEMF_ANY);
 	if (!line_dirty) { Sys_CloseDisplay(); return 0; }
 	memset(line_dirty, ALL_BUFFERS, CH);   /* full first conversion into every buffer */
+	for (i = 0; i < NBUF; i++) {
+		line_lvl[i] = AllocMem(SH, MEMF_ANY);
+		if (!line_lvl[i]) { Sys_CloseDisplay(); return 0; }
+		memset(line_lvl[i], 8, SH);        /* unknown: the first narrow conversion clears the rest */
+#ifndef NO_SHADOW
+		memset(line_lvl[i], 0, SH);        /* shadow not known yet */
+		shadow[i] = AllocMem((ULONG)SH * SW, MEMF_ANY);   /* 8 planes x SW/8 bytes a row */
+		if (!shadow[i]) { Sys_CloseDisplay(); return 0; }
+#endif
+	}
 	for (i = 0; i < NBUF; i++) buf_safe[i] = (i != 0);
 	shown = 0; safe_out = disp_out = 0;
 
@@ -376,6 +495,8 @@ void Sys_CloseDisplay(void)
 		if (own_bm[i]) { WaitBlit(); FreeBitMap(own_bm[i]); own_bm[i] = NULL; }
 	}
 	if (line_dirty) { FreeMem(line_dirty, CH); line_dirty = NULL; }
+	for (i = 0; i < NBUF; i++) if (line_lvl[i]) { FreeMem(line_lvl[i], SH); line_lvl[i] = NULL; }
+	for (i = 0; i < NBUF; i++) if (shadow[i]) { FreeMem(shadow[i], (ULONG)SH * SW); shadow[i] = NULL; }
 	if (scr) { CloseScreen(scr); scr = NULL; }
 	if (safeport) { DeleteMsgPort(safeport); safeport = NULL; }
 	if (dispport) { DeleteMsgPort(dispport); dispport = NULL; }
@@ -460,11 +581,37 @@ void Sys_ShowFrame(const unsigned char *chunky, int pitch)
 		const unsigned char *src = chunky + (y + YOFF) * pitch + XOFF;
 		if (Sys_AllLines || (line_dirty[y + YOFF] & bit)) {
 			line_dirty[y + YOFF] &= ~bit;
+#ifndef NO_SHADOW
+			{
+				int np = line_planes(src);
+				c2p_line_sh(src, bm, y, np, shadow[next] + (LONG)y * (SW >> 2), line_lvl[next][y]);
+				line_lvl[next][y] = np;
+				if (np == 5) Sys_Perf.c2p_lines5++; else if (np == 6) Sys_Perf.c2p_lines6++;
+			}
+#elif !defined(NO_C2P5)
+			{
+				int np = line_planes(src), old = line_lvl[next][y];
+				if (np < 8) {
+					c2p_line_n(src, bm, y, np, old);
+					if (np == 5) Sys_Perf.c2p_lines5++; else Sys_Perf.c2p_lines6++;
+					if (old > np) Sys_Perf.c2p_clear_planes += old - np;
+				} else c2p_line(src, bm, y);
+				line_lvl[next][y] = np;
+			}
+#else
 			c2p_line(src, bm, y);
+#endif
 			Sys_Perf.c2p_lines++;
 		}
 	}
-	if (Sys_Osd) draw_osd(bm);
+	if (Sys_Osd) {
+		draw_osd(bm);
+#ifndef NO_SHADOW
+		for (y = 0; y < 12 && y < SH; y++) line_lvl[next][y] = 0;   /* the label is not in the shadow */
+#else
+		for (y = 0; y < 12 && y < SH; y++) line_lvl[next][y] = 8;   /* the label's pen is 255 */
+#endif
+	}
 	t1 = Sys_Micros(); Sys_Perf.c2p_us += t1 - t0; t0 = t1;
 	if (Sys_PalAll) pal_dirty = pal_dirty_all = 1;   /* PALALL: diagnostic, all 256 every frame */
 	if (pal_dirty) load_palette();

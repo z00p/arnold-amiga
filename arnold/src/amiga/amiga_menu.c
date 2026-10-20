@@ -406,7 +406,7 @@ static int open_menu(struct SysMenu *m)
 	if (!g) { close_menu(); return 0; }
 	if (!make_menus(m)) { close_menu(); return 0; }
 	/* version, credit and build time (date and hh:mm) in the title bar */
-	sprintf(wintitle, "Arnold v0.6 for Amiga - core: Kevin Thacker - built %.6s %.4s %.5s", __DATE__, __DATE__ + 7, __TIME__);
+	sprintf(wintitle, "Arnold v0.7 for Amiga - core: Kevin Thacker - built %.6s %.4s %.5s", __DATE__, __DATE__ + 7, __TIME__);
 	mwin = OpenWindowTags(NULL, WA_CustomScreen, (ULONG)mscr, WA_Left, 0, WA_Top, mscr->BarHeight + 1,
 		WA_Width, 640, WA_Height, wh,
 		WA_Title, (ULONG)wintitle,

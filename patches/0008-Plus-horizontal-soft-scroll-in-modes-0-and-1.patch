@@ -1,7 +1,7 @@
-From d8b6d5e797f95fbc6005b48ed6819ed24c175124 Mon Sep 17 00:00:00 2001
+From df93e3dd270c19268a011492e30a305cda57dc41 Mon Sep 17 00:00:00 2001
 From: John Stringer <jcec_1@yahoo.co.uk>
-Date: Mon, 19 Oct 2026 20:35:56 +0100
-Subject: [PATCH 08/21] Plus: horizontal soft scroll in modes 0 and 1
+Date: Tue, 20 Oct 2026 08:49:11 +0100
+Subject: [PATCH 08/25] Plus: horizontal soft scroll in modes 0 and 1
 
 The Plus soft scroll delays the pixel stream by whole pixels of the current
 mode. The paletted renderer shifted the two graphics bytes as plain bits,

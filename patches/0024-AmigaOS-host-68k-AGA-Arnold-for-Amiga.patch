@@ -1,7 +1,7 @@
-From e9a2ae5889148188394101bbd3b01699712320b3 Mon Sep 17 00:00:00 2001
+From b650137ca4d1dd432a61e0da92f52566356ab9f2 Mon Sep 17 00:00:00 2001
 From: John Stringer <jcec_1@yahoo.co.uk>
-Date: Mon, 19 Oct 2026 20:36:01 +0100
-Subject: [PATCH 20/21] AmigaOS host (68k AGA): Arnold for Amiga
+Date: Tue, 20 Oct 2026 08:49:17 +0100
+Subject: [PATCH 24/25] AmigaOS host (68k AGA): Arnold for Amiga
 
 src/amiga: the AmigaOS 3.x host (AGA screen with chunky-to-planar and triple
 buffering, Paula sound, rawkey keyboard matrix, joystick/CD32 pads and keys as
@@ -13,20 +13,20 @@ Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
 ---
  src/amiga/Makefile     |   38 ++
  src/amiga/amiga_iff.c  |  100 ++++
- src/amiga/amiga_logo.c |  153 ++++++
+ src/amiga/amiga_logo.c |  153 +++++
  src/amiga/amiga_logo.h |    6 +
- src/amiga/amiga_menu.c |  576 +++++++++++++++++++++
- src/amiga/amiga_sys.c  | 1075 ++++++++++++++++++++++++++++++++++++++++
- src/amiga/amiga_sys.h  |  112 +++++
+ src/amiga/amiga_menu.c |  576 +++++++++++++++++++
+ src/amiga/amiga_sys.c  | 1222 ++++++++++++++++++++++++++++++++++++++++
+ src/amiga/amiga_sys.h  |  113 ++++
  src/amiga/amiga_wb.c   |  131 +++++
  src/amiga/audio_conv.h |   15 +
- src/amiga/host_amiga.c |  746 ++++++++++++++++++++++++++++
+ src/amiga/host_amiga.c |  749 ++++++++++++++++++++++++
  src/amiga/keyscript.c  |  137 +++++
  src/amiga/keyscript.h  |    9 +
- src/amiga/padtest.c    |  125 +++++
- src/amiga/screenshot.c |  115 +++++
+ src/amiga/padtest.c    |  125 ++++
+ src/amiga/screenshot.c |  115 ++++
  src/amiga/screenshot.h |    7 +
- 15 files changed, 3345 insertions(+)
+ 15 files changed, 3496 insertions(+)
  create mode 100644 src/amiga/Makefile
  create mode 100644 src/amiga/amiga_iff.c
  create mode 100644 src/amiga/amiga_logo.c
@@ -366,7 +366,7 @@ index 0000000..b22b3c7
 +#endif
 diff --git a/src/amiga/amiga_menu.c b/src/amiga/amiga_menu.c
 new file mode 100644
-index 0000000..21a4d95
+index 0000000..bc4cae8
 --- /dev/null
 +++ b/src/amiga/amiga_menu.c
 @@ -0,0 +1,576 @@
@@ -778,7 +778,7 @@ index 0000000..21a4d95
 +	if (!g) { close_menu(); return 0; }
 +	if (!make_menus(m)) { close_menu(); return 0; }
 +	/* version, credit and build time (date and hh:mm) in the title bar */
-+	sprintf(wintitle, "Arnold v0.6 for Amiga - core: Kevin Thacker - built %.6s %.4s %.5s", __DATE__, __DATE__ + 7, __TIME__);
++	sprintf(wintitle, "Arnold v0.7 for Amiga - core: Kevin Thacker - built %.6s %.4s %.5s", __DATE__, __DATE__ + 7, __TIME__);
 +	mwin = OpenWindowTags(NULL, WA_CustomScreen, (ULONG)mscr, WA_Left, 0, WA_Top, mscr->BarHeight + 1,
 +		WA_Width, 640, WA_Height, wh,
 +		WA_Title, (ULONG)wintitle,
@@ -948,10 +948,10 @@ index 0000000..21a4d95
 +}
 diff --git a/src/amiga/amiga_sys.c b/src/amiga/amiga_sys.c
 new file mode 100644
-index 0000000..65eecde
+index 0000000..5cda530
 --- /dev/null
 +++ b/src/amiga/amiga_sys.c
-@@ -0,0 +1,1075 @@
+@@ -0,0 +1,1222 @@
 +/* Arnold on AmigaOS: screen, c2p, palette, keyboard and joystick.
 + * AmigaOS 3.x, AGA. Built with bebbo's m68k-amigaos-gcc, -noixemul. */
 +#include <exec/types.h>
@@ -979,7 +979,7 @@ index 0000000..65eecde
 +#include <stdarg.h>
 +
 +unsigned long __stack = 256 * 1024;   /* libnix: enlarge the stack at start */
-+static const char ver[] __attribute__((used)) = "$VER: Arnold 0.6 (19.10.2026) Amiga port, GPL-2.0";
++static const char ver[] __attribute__((used)) = "$VER: Arnold 0.7 (20.10.2026) Amiga port, GPL-2.0";
 +
 +/* ---- diagnostic log ---- */
 +static FILE *logf;
@@ -1129,6 +1129,115 @@ index 0000000..65eecde
 +	}
 +}
 +
++/* Sonic speed (20 Oct 2026): chip RAM writes are the c2p's cost on the PiStorm
++ * (about 1 us a long). The core keeps palette indices low (render5.c
++ * PALGC_TOP), so most lines use only pixel values < 32 or < 64: then planes
++ * 5-7 (or 6-7) are all zero and need not be written, as long as that buffer's
++ * row already has them zero. line_lvl[buffer][row] = planes that may be
++ * non-zero there (5, 6 or 8); a conversion writes planes 0..n-1 and clears the
++ * ones from n up to the old level. NO_C2P5 (define): always 8 planes. */
++static unsigned char *line_lvl[NBUF];
++
++static int line_planes(const unsigned char *src)
++{
++	const ULONG *l = (const ULONG *)src;
++	ULONG o = 0;
++	int n;
++	for (n = SW >> 2; n > 0; n -= 4, l += 4) o |= l[0] | l[1] | l[2] | l[3];
++	if (!(o & 0xE0E0E0E0UL)) return 5;
++	if (!(o & 0xC0C0C0C0UL)) return 6;
++	return 8;
++}
++
++/* planes 0..np-1 from the pixels, planes np..nz-1 cleared (np 5 or 6) */
++static void c2p_line_n(const unsigned char *src, struct BitMap *bm, int y, int np, int nz)
++{
++	int p, g;
++	UBYTE *plane[8];
++	for (p = 0; p < 8; p++) plane[p] = bm->Planes[p] + (LONG)y * bm->BytesPerRow;
++	for (g = 0; g < SW; g += 32) {
++		ULONG o0 = 0, o1 = 0, o2 = 0, o3 = 0, o4 = 0, o5 = 0;
++		int k;
++		for (k = 0; k < 4; k++) {
++			ULONG lo, hi;
++			lo  = c2p_lo[src[0]] << 7; hi  = c2p_hi[src[0]] << 7;
++			lo |= c2p_lo[src[1]] << 6; hi |= c2p_hi[src[1]] << 6;
++			lo |= c2p_lo[src[2]] << 5; hi |= c2p_hi[src[2]] << 5;
++			lo |= c2p_lo[src[3]] << 4; hi |= c2p_hi[src[3]] << 4;
++			lo |= c2p_lo[src[4]] << 3; hi |= c2p_hi[src[4]] << 3;
++			lo |= c2p_lo[src[5]] << 2; hi |= c2p_hi[src[5]] << 2;
++			lo |= c2p_lo[src[6]] << 1; hi |= c2p_hi[src[6]] << 1;
++			lo |= c2p_lo[src[7]];      hi |= c2p_hi[src[7]];
++			src += 8;
++			o0 = (o0 << 8) | ( lo        & 0xff);
++			o1 = (o1 << 8) | ((lo >>  8) & 0xff);
++			o2 = (o2 << 8) | ((lo >> 16) & 0xff);
++			o3 = (o3 << 8) | ((lo >> 24) & 0xff);
++			o4 = (o4 << 8) | ( hi        & 0xff);
++			o5 = (o5 << 8) | ((hi >>  8) & 0xff);
++		}
++		*(ULONG *)plane[0] = o0; *(ULONG *)plane[1] = o1; *(ULONG *)plane[2] = o2;
++		*(ULONG *)plane[3] = o3; *(ULONG *)plane[4] = o4;
++		if (np > 5) *(ULONG *)plane[5] = o5;
++		for (p = np; p < nz; p++) *(ULONG *)plane[p] = 0;
++		for (p = 0; p < 8; p++) plane[p] += 4;
++	}
++}
++
++/* Shadow (20 Oct 2026, the AmiMSX Space Manbow technique): a fast-RAM copy
++ * of every buffer's planes. A converted line is compared with it a long at a
++ * time and only longs that differ are written to chip RAM; sky, flat ground
++ * and lines where only a sprite moved cost a few writes. line_lvl 0 = this
++ * row's shadow is not known (new screen, OSD label): all 8 planes written.
++ * NO_SHADOW (define): every long of the used planes written, as step 1. */
++static ULONG *shadow[NBUF];          /* [row][plane][SW/32] */
++
++static void c2p_line_sh(const unsigned char *src, struct BitMap *bm, int y, int np, ULONG *sh, int known)
++{
++	int p, g, ng = SW >> 5;
++	UBYTE *plane[8];
++	unsigned long w = 0;
++	for (p = 0; p < 8; p++) plane[p] = bm->Planes[p] + (LONG)y * bm->BytesPerRow;
++	for (g = 0; g < ng; g++) {
++		ULONG o[8];
++		int k;
++		o[0] = o[1] = o[2] = o[3] = o[4] = o[5] = o[6] = o[7] = 0;
++		for (k = 0; k < 4; k++) {
++			ULONG lo, hi;
++			lo  = c2p_lo[src[0]] << 7; hi  = c2p_hi[src[0]] << 7;
++			lo |= c2p_lo[src[1]] << 6; hi |= c2p_hi[src[1]] << 6;
++			lo |= c2p_lo[src[2]] << 5; hi |= c2p_hi[src[2]] << 5;
++			lo |= c2p_lo[src[3]] << 4; hi |= c2p_hi[src[3]] << 4;
++			lo |= c2p_lo[src[4]] << 3; hi |= c2p_hi[src[4]] << 3;
++			lo |= c2p_lo[src[5]] << 2; hi |= c2p_hi[src[5]] << 2;
++			lo |= c2p_lo[src[6]] << 1; hi |= c2p_hi[src[6]] << 1;
++			lo |= c2p_lo[src[7]];      hi |= c2p_hi[src[7]];
++			src += 8;
++			o[0] = (o[0] << 8) | ( lo        & 0xff);
++			o[1] = (o[1] << 8) | ((lo >>  8) & 0xff);
++			o[2] = (o[2] << 8) | ((lo >> 16) & 0xff);
++			o[3] = (o[3] << 8) | ((lo >> 24) & 0xff);
++			o[4] = (o[4] << 8) | ( hi        & 0xff);
++			if (np > 5) {
++				o[5] = (o[5] << 8) | ((hi >>  8) & 0xff);
++				if (np > 6) {
++					o[6] = (o[6] << 8) | ((hi >> 16) & 0xff);
++					o[7] = (o[7] << 8) | ((hi >> 24) & 0xff);
++				}
++			}
++		}
++		for (p = 0; p < 8; p++) {
++			ULONG *s = &sh[p * ng + g];
++			if (!known || *s != o[p]) {
++				*s = o[p];
++				*(ULONG *)(plane[p] + (g << 2)) = o[p];
++				w++;
++			}
++		}
++	}
++	Sys_Perf.c2p_chip_longs += w;
++}
++
 +/* ---- video mode and display rate (19 Oct 2026, John's A1200 in NTSC) ----
 + * Sys_VideoMode: 0 Auto (the default monitor, as Workbench), 1 PAL, 2 NTSC.
 + * A forced PAL or NTSC mode that the system can't show (its monitor driver
@@ -1271,6 +1380,16 @@ index 0000000..65eecde
 +	line_dirty = AllocMem(CH, MEMF_ANY);
 +	if (!line_dirty) { Sys_CloseDisplay(); return 0; }
 +	memset(line_dirty, ALL_BUFFERS, CH);   /* full first conversion into every buffer */
++	for (i = 0; i < NBUF; i++) {
++		line_lvl[i] = AllocMem(SH, MEMF_ANY);
++		if (!line_lvl[i]) { Sys_CloseDisplay(); return 0; }
++		memset(line_lvl[i], 8, SH);        /* unknown: the first narrow conversion clears the rest */
++#ifndef NO_SHADOW
++		memset(line_lvl[i], 0, SH);        /* shadow not known yet */
++		shadow[i] = AllocMem((ULONG)SH * SW, MEMF_ANY);   /* 8 planes x SW/8 bytes a row */
++		if (!shadow[i]) { Sys_CloseDisplay(); return 0; }
++#endif
++	}
 +	for (i = 0; i < NBUF; i++) buf_safe[i] = (i != 0);
 +	shown = 0; safe_out = disp_out = 0;
 +
@@ -1330,6 +1449,8 @@ index 0000000..65eecde
 +		if (own_bm[i]) { WaitBlit(); FreeBitMap(own_bm[i]); own_bm[i] = NULL; }
 +	}
 +	if (line_dirty) { FreeMem(line_dirty, CH); line_dirty = NULL; }
++	for (i = 0; i < NBUF; i++) if (line_lvl[i]) { FreeMem(line_lvl[i], SH); line_lvl[i] = NULL; }
++	for (i = 0; i < NBUF; i++) if (shadow[i]) { FreeMem(shadow[i], (ULONG)SH * SW); shadow[i] = NULL; }
 +	if (scr) { CloseScreen(scr); scr = NULL; }
 +	if (safeport) { DeleteMsgPort(safeport); safeport = NULL; }
 +	if (dispport) { DeleteMsgPort(dispport); dispport = NULL; }
@@ -1414,11 +1535,37 @@ index 0000000..65eecde
 +		const unsigned char *src = chunky + (y + YOFF) * pitch + XOFF;
 +		if (Sys_AllLines || (line_dirty[y + YOFF] & bit)) {
 +			line_dirty[y + YOFF] &= ~bit;
++#ifndef NO_SHADOW
++			{
++				int np = line_planes(src);
++				c2p_line_sh(src, bm, y, np, shadow[next] + (LONG)y * (SW >> 2), line_lvl[next][y]);
++				line_lvl[next][y] = np;
++				if (np == 5) Sys_Perf.c2p_lines5++; else if (np == 6) Sys_Perf.c2p_lines6++;
++			}
++#elif !defined(NO_C2P5)
++			{
++				int np = line_planes(src), old = line_lvl[next][y];
++				if (np < 8) {
++					c2p_line_n(src, bm, y, np, old);
++					if (np == 5) Sys_Perf.c2p_lines5++; else Sys_Perf.c2p_lines6++;
++					if (old > np) Sys_Perf.c2p_clear_planes += old - np;
++				} else c2p_line(src, bm, y);
++				line_lvl[next][y] = np;
++			}
++#else
 +			c2p_line(src, bm, y);
++#endif
 +			Sys_Perf.c2p_lines++;
 +		}
 +	}
-+	if (Sys_Osd) draw_osd(bm);
++	if (Sys_Osd) {
++		draw_osd(bm);
++#ifndef NO_SHADOW
++		for (y = 0; y < 12 && y < SH; y++) line_lvl[next][y] = 0;   /* the label is not in the shadow */
++#else
++		for (y = 0; y < 12 && y < SH; y++) line_lvl[next][y] = 8;   /* the label's pen is 255 */
++#endif
++	}
 +	t1 = Sys_Micros(); Sys_Perf.c2p_us += t1 - t0; t0 = t1;
 +	if (Sys_PalAll) pal_dirty = pal_dirty_all = 1;   /* PALALL: diagnostic, all 256 every frame */
 +	if (pal_dirty) load_palette();
@@ -2029,10 +2176,10 @@ index 0000000..65eecde
 +}
 diff --git a/src/amiga/amiga_sys.h b/src/amiga/amiga_sys.h
 new file mode 100644
-index 0000000..cd0b82a
+index 0000000..3f16ed4
 --- /dev/null
 +++ b/src/amiga/amiga_sys.h
-@@ -0,0 +1,112 @@
+@@ -0,0 +1,113 @@
 +/* Arnold on AmigaOS: the OS-facing half of the host. No Arnold headers here
 + * (cpcglob.h has its own BOOL, which clashes with exec/types.h), so
 + * host_amiga.c talks to the Amiga through this small interface only. */
@@ -2121,7 +2268,8 @@ index 0000000..cd0b82a
 +typedef struct { unsigned long c2p_us, wait_us, c2p_lines, c2p_frames, line_bytes,
 +                 wait_safe_us, wait_disp_us, wait_throttle_us, throttle_calls, late_frames,
 +                 pal_us, palette_loads, skipped_frames,
-+                 aud_underruns, aud_drops; } SysPerf;
++                 aud_underruns, aud_drops,
++                 c2p_lines5, c2p_lines6, c2p_clear_planes, c2p_chip_longs; } SysPerf;
 +extern SysPerf Sys_Perf;
 +unsigned long Sys_Micros(void);
 +#include <stdio.h>
@@ -2305,10 +2453,10 @@ index 0000000..2a7118a
 +#endif
 diff --git a/src/amiga/host_amiga.c b/src/amiga/host_amiga.c
 new file mode 100644
-index 0000000..39ca8af
+index 0000000..7a3cdc2
 --- /dev/null
 +++ b/src/amiga/host_amiga.c
-@@ -0,0 +1,746 @@
+@@ -0,0 +1,749 @@
 +/* Arnold host for AmigaOS: implements src/cpc/host.h on top of amiga_sys.c.
 + * The core renders into an 8-bit chunky buffer (384 x 272, one byte per
 + * pixel, PaletteRemap indices); amiga_sys converts it to AGA bitplanes.
@@ -2395,6 +2543,9 @@ index 0000000..39ca8af
 +	fprintf(f, "perf late_frames=%lu palette_us_per_frame=%lu palette_loads=%lu\n", Sys_Perf.late_frames, Sys_Perf.pal_us / n, Sys_Perf.palette_loads);
 +	fprintf(f, "perf skipped_frames=%lu skip_max=%d refresh=%d shown_fps_x10=%lu\n", Sys_Perf.skipped_frames, skip_max, refresh, Sys_Perf.c2p_frames * 10000UL / (total / 1000 ? total / 1000 : 1));
 +	fprintf(f, "perf sound=%d audio_underruns=%lu audio_drops=%lu\n", audio_open, Sys_Perf.aud_underruns, Sys_Perf.aud_drops);
++	fprintf(f, "perf c2p_lines5=%lu c2p_lines6=%lu c2p_clear_planes=%lu chip_bytes_per_shown_frame_est=%lu\n", Sys_Perf.c2p_lines5, Sys_Perf.c2p_lines6, Sys_Perf.c2p_clear_planes,
++		((Sys_Perf.c2p_lines - Sys_Perf.c2p_lines5 - Sys_Perf.c2p_lines6) * 8 + Sys_Perf.c2p_lines5 * 5 + Sys_Perf.c2p_lines6 * 6 + Sys_Perf.c2p_clear_planes) * (Sys_Perf.line_bytes / 8) / cf);
++	if (Sys_Perf.c2p_chip_longs) fprintf(f, "perf chip_bytes_written_per_shown_frame=%lu\n", Sys_Perf.c2p_chip_longs * 4 / cf);
 +}
 +
 +static void script_setkey(int key, int down) { if (down) CPC_SetKey(key); else CPC_ClearKey(key); }

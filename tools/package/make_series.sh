@@ -199,6 +199,40 @@ DMA 1's interrupt landed on the same line the restart slipped and its split
 screen interrupt came too late (stacked bands in Green Hill), and its special
 stage froze. Both now match CPCEC; no other homebrew cart changes."
 
+post 29464ee arnold/src/cpc/render5.c
+commit "Paletted renderer: keep the palette below 64 entries" "The paletted renderer freed its palette only at 224 entries, so a Plus game's
+colours spread over the whole 0-255 range and a slow host (Amiga chunky-to-
+planar) had to convert all 8 bitplanes. The palette is now compacted at the
+end of a frame as soon as an entry of 64 or above is in use (PALGC_TOP): the
+pens get entries again in pen order, with exactly the colours they have now
+(not recomputed, as a Plus pen last set through the Gate Array has a slightly
+different RGB from its ASIC colour). Sonic GX uses about 57 colours a frame,
+so its pictures fit in 6 bitplanes. Palette numbering changes only: RGB output
+identical. NO_PALGC_LOW restores the 224-entry limit."
+
+post 851f65a arnold/src/cpc/render5.c
+commit "Plus: table-driven horizontal soft scroll" "The per-pixel shift in Render_ScrollGraphicsData moves each input bit to a
+fixed place, so its result is the OR of what each input byte gives alone.
+Render_ScrollTable builds four 256-entry lookups per mode (0, 1) and scroll
+(1-7) on first use; the shift is now four lookups. Checked against the loop on
+280 million random inputs. NO_SCROLL_TABLE restores the loop."
+
+post 851f65a arnold/src/cpc/crtc.c arnold/src/cpc/arnold.c arnold/src/cpc/cpc.c arnold/src/cpc/z80/z80.c
+commit "CRTC: defer quiet cycles and draw them in one run" "The CRTC was stepped after every Z80 instruction, for 1-6 cycles, and setting
+up those tiny runs cost more than drawing them. Cycles that don't reach the
+next CRTC event are now only counted (CRTC_Pending) and drawn later in one run:
+before the next event cycle, before anything that can change what they draw
+(every CRTC_InvalidateRun caller, Z80 memory writes, IN) and at frame end, so
+they see exactly the memory and state they did before. The run loop also uses
+the soft-scroll table directly. Pixel-exact on the test set; with the scroll
+table, Sonic GX's core time on a 68040 (PiStorm) fell from 14.9 to 12.9 ms a
+frame. NO_DEFER restores per-instruction stepping."
+
+post 1b5dc34 arnold/src/cpc/asic.c
+commit "Plus: skip transparent sprite rows" "A hardware sprite row whose 16 pixels are all pen 0 is skipped, and the pixel
+loop stops at the sprite's edge. Pixel-exact; about 11% less sprite time.
+NO_SPRROW restores the full loop."
+
 post HEAD arnold/src/cpc
 commit "Core: remaining changes" "Small changes made after the fixes above."
 

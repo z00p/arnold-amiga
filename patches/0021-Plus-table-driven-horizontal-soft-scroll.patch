@@ -1,0 +1,79 @@
+From a26730a9b3b3f62c344103ba71afcce5e127df2a Mon Sep 17 00:00:00 2001
+From: John Stringer <jcec_1@yahoo.co.uk>
+Date: Tue, 20 Oct 2026 08:49:15 +0100
+Subject: [PATCH 21/25] Plus: table-driven horizontal soft scroll
+
+The per-pixel shift in Render_ScrollGraphicsData moves each input bit to a
+fixed place, so its result is the OR of what each input byte gives alone.
+Render_ScrollTable builds four 256-entry lookups per mode (0, 1) and scroll
+(1-7) on first use; the shift is now four lookups. Checked against the loop on
+280 million random inputs. NO_SCROLL_TABLE restores the loop.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ src/cpc/render5.c | 42 ++++++++++++++++++++++++++++++++++++++++++
+ 1 file changed, 42 insertions(+)
+
+diff --git a/src/cpc/render5.c b/src/cpc/render5.c
+index d808c76..9c03fc0 100644
+--- a/src/cpc/render5.c
++++ b/src/cpc/render5.c
+@@ -591,6 +591,42 @@ static int HorizontalPixelScroll = 0;
+  * shift mixed bits of neighbouring pixels (outlines right, colours scrambled:
+  * Sonic GX throughout, Ghosts'n Goblins at times). This is the per-pixel shift
+  * Arnold's true-colour renderer already uses. NO_HSCROLL_FIX: the old shift. */
++/* Sonic speed (20 Oct 2026): the per-pixel loop in Render_ScrollGraphicsData
++ * moves each input bit to a fixed place (masks and shifts distribute over OR),
++ * so its result is the OR of what each input byte gives alone: four lookups in
++ * a table built on first use per mode (0, 1) and scroll (1-7). Only the low 16
++ * bits are kept; all callers use only those (the two graphics bytes). Checked
++ * against the loop on the PC (build/sonic-speed/scroll_test.c). NULL when the
++ * table doesn't apply (mode 2, no scroll). crtc.c's run loop uses it directly.
++ * NO_SCROLL_TABLE: the loop only. */
++const unsigned short *Render_ScrollTable(void)
++{
++#ifndef NO_SCROLL_TABLE
++	static unsigned short Tab[2][8][4 * 256];
++	static int TabMask[2][8], TabTop[2][8];
++	const int m = CurrentMode, sc = ModeHorizontalPixelScroll;
++	unsigned short *t;
++	if (m < 0 || m > 1 || sc <= 0 || sc > 7) return NULL;
++	t = Tab[m][sc];
++	if (TabMask[m][sc] != CurrentModeMask || TabTop[m][sc] != CurrentTopShift || !TabMask[m][sc])
++	{
++		int k, b, j;
++		for (k = 0; k < 4; k++)
++			for (b = 0; b < 256; b++)
++			{
++				unsigned int d = (unsigned int)b << (8 * k);
++				for (j = 0; j < sc; j++)
++					d = ((d & (unsigned int)CurrentModeMask) >> 1) | ((d & ~(unsigned int)CurrentModeMask) >> CurrentTopShift);
++				t[k * 256 + b] = (unsigned short)d;
++			}
++		TabMask[m][sc] = CurrentModeMask; TabTop[m][sc] = CurrentTopShift;
++	}
++	return t;
++#else
++	return NULL;
++#endif
++}
++
+ unsigned int Render_ScrollGraphicsData(unsigned int Data)
+ {
+ 	int i;
+@@ -599,6 +635,12 @@ unsigned int Render_ScrollGraphicsData(unsigned int Data)
+ #else
+ 	if (CurrentMode == 2)
+ 		return Data >> ModeHorizontalPixelScroll;
++#ifndef NO_SCROLL_TABLE
++	{
++		const unsigned short *t = Render_ScrollTable();
++		if (t) return (unsigned int)t[Data & 0x0ff] | t[256 + ((Data >> 8) & 0x0ff)] | t[512 + ((Data >> 16) & 0x0ff)] | t[768 + (Data >> 24)];
++	}
++#endif
+ 	for (i = 0; i < ModeHorizontalPixelScroll; i++)
+ 		Data = ((Data & (unsigned int)CurrentModeMask) >> 1) | ((Data & ~(unsigned int)CurrentModeMask) >> CurrentTopShift);
+ 	return Data;
+-- 
+2.50.0.windows.2
+

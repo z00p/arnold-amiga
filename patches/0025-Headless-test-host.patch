@@ -1,7 +1,7 @@
-From 0ba61b4759f2c9fc51e65b3bbbb3539a260fc026 Mon Sep 17 00:00:00 2001
+From df1b5ee6d267f84a7b1e3697d9cd3ef6c4ac105a Mon Sep 17 00:00:00 2001
 From: John Stringer <jcec_1@yahoo.co.uk>
-Date: Mon, 19 Oct 2026 20:36:01 +0100
-Subject: [PATCH 21/21] Headless test host
+Date: Tue, 20 Oct 2026 08:49:17 +0100
+Subject: [PATCH 25/25] Headless test host
 
 src/headless: runs the core without a display (renders N frames to a buffer,
 prints a checksum, writes a PPM; optional key script, frame-skip hook test and
@@ -9,16 +9,16 @@ WAV output). Used for the pixel-exact checks of every change above.
 
 Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
 ---
- src/headless/host_headless.c | 315 +++++++++++++++++++++++++++++++++++
- 1 file changed, 315 insertions(+)
+ src/headless/host_headless.c | 317 +++++++++++++++++++++++++++++++++++
+ 1 file changed, 317 insertions(+)
  create mode 100644 src/headless/host_headless.c
 
 diff --git a/src/headless/host_headless.c b/src/headless/host_headless.c
 new file mode 100644
-index 0000000..b0e5805
+index 0000000..f161b99
 --- /dev/null
 +++ b/src/headless/host_headless.c
-@@ -0,0 +1,315 @@
+@@ -0,0 +1,317 @@
 +/* Headless host for Arnold: renders N frames to an 8-bit chunky buffer and
 + * dumps a PPM. Used to validate the core on big-endian m68k before writing
 + * the AmigaOS (AGA) host. Same shape an Amiga backend will have. */
@@ -186,7 +186,9 @@ index 0000000..b0e5805
 +		if (depth == 8) {
 +			unsigned char c = chunky[i];
 +			fwrite(pal[c], 1, 3, f);
-+			sum = sum * 31 + c;
++			/* RGB, not the palette index (20 Oct 2026): index numbers may change
++			 * (palette freeing, PALGC_TOP) while the picture stays the same */
++			sum = ((sum * 31 + pal[c][0]) * 31 + pal[c][1]) * 31 + pal[c][2];
 +		} else {
 +			unsigned short v = ((unsigned short *)chunky)[i]; unsigned char rgb[3];
 +			rgb[0] = (v >> 11) << 3; rgb[1] = ((v >> 5) & 63) << 2; rgb[2] = (v & 31) << 3;

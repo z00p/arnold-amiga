@@ -3976,9 +3976,9 @@ static __inline__ void CRTC_DoOneCycle(void)
 static struct
 {
 	int valid;                 /* 0: CRTC_PrepareRun before the next run */
-	int left;                  /* quiet cycles before the next event cycle */
 	int draw;                  /* 0 nothing (DontRender/retrace), 1 graphics, 2 border, 3 sync */
 	int plus, step1, cb, visible, x0, x1, scroll, hs;
+	const unsigned short *stab;    /* soft scroll table (render5.c), NULL: Render_ScrollGraphicsData */
 	unsigned char *pRow;
 	const RENDER_PIXCACHE *cache;
 	unsigned long stamp;
@@ -3994,10 +3994,38 @@ unsigned long StatsE_Prepare, StatsE_Invalidate, StatsE_Runs, StatsE_RunCycles, 
 #define STATS(x)
 #endif
 
+/* Deferred quiet cycles (Sonic speed, 20 Oct 2026). CRTC_DoCycles is called
+ * after every Z80 instruction with its 1-6 cycles, and setting up a run of so
+ * few cells cost more than drawing them. Quiet cycles that don't reach the next
+ * event are now only counted (CRTC_Pending) and drawn in one run later: before
+ * the next event cycle, before anything that may change what they draw (every
+ * CRTC_InvalidateRun caller: OUT to CRTC/GA, ASIC register writes, render state,
+ * reset), before every Z80 memory write and IN (z80.c, cpc.c), and at the end
+ * of each frame (arnold.c). So they see exactly the memory and state they saw
+ * when drawn after each instruction. Not while a staggered DMA interrupt is
+ * counting down. NO_DEFER (define): drawn after every instruction, as before. */
+int CRTC_Pending;
+/* quiet cycles before the next event cycle (0 while the run is not valid);
+ * global so arnold.c can defer an instruction's cycles without a call */
+int CRTC_RunLeft;
+static void CRTC_RunCells(int Count);
+
+void CRTC_Flush(void)
+{
+	if (CRTC_Pending)
+	{
+		int n = CRTC_Pending;
+		CRTC_Pending = 0;
+		CRTC_RunCells(n);
+	}
+}
+
 void CRTC_InvalidateRun(void)
 {
+	CRTC_Flush();
 	STATS(StatsE_Invalidate += CRTC_Run.valid);
 	CRTC_Run.valid = 0;
+	CRTC_RunLeft = 0;
 }
 
 static __inline__ int CRTC_Distance8(unsigned int Target, unsigned int Now)
@@ -4040,7 +4068,7 @@ static void CRTC_PrepareRun(void)
 			d = CRTC_Distance8(CRTC_InternalState.HorizontalSyncWidth, c);		if (d < best) best = d;
 		}
 	}
-	CRTC_Run.left = best - 1;
+	CRTC_RunLeft = best - 1;
 	CRTC_Run.hs = (CRTC_InternalState.CRTC_Flags & CRTC_HS_FLAG) != 0;
 
 	/* what the quiet cells draw */
@@ -4066,6 +4094,7 @@ static void CRTC_PrepareRun(void)
 			CRTC_Run.cache = pPixCache;
 			CRTC_Run.stamp = Render_RemapStamp;
 			CRTC_Run.scroll = ModeHorizontalPixelScroll;
+			{ extern const unsigned short *Render_ScrollTable(void); CRTC_Run.stab = CRTC_Run.scroll ? Render_ScrollTable() : NULL; }
 			if (CRTC_Run.plus)
 			{
 				CRTC_Run.maline = (unsigned int)ASICCRTC_MALine;
@@ -4104,7 +4133,7 @@ static void CRTC_PrepareRun(void)
 	}
 }
 
-/* Count quiet cycles (Count <= CRTC_Run.left) */
+/* Count quiet cycles (Count <= CRTC_RunLeft) */
 static void CRTC_RunCells(int Count)
 {
 	int k, total = Count;
@@ -4140,6 +4169,7 @@ static void CRTC_RunCells(int Count)
 			const unsigned char *ram = Z80MemoryBase;
 			unsigned long glong = CRTC_InternalState.GraphicsLong;
 			const int scroll = CRTC_Run.scroll, plus = CRTC_Run.plus;
+			const unsigned short *stab = CRTC_Run.stab;
 			const unsigned int maline = CRTC_Run.maline, rasterma = CRTC_Run.rasterma;
 			const unsigned long cm0 = CRTC_Run.cm0, cm1 = CRTC_Run.cm1;
 
@@ -4181,8 +4211,10 @@ static void CRTC_RunCells(int Count)
 						continue;
 					}
 					{
-						unsigned Data = scroll ? Render_ScrollGraphicsData((unsigned)glong) : (unsigned)glong;
+						unsigned Data;
 						unsigned b;
+						if (stab) Data = (unsigned)stab[glong & 0x0ff] | stab[256 + ((glong >> 8) & 0x0ff)] | stab[512 + ((glong >> 16) & 0x0ff)] | stab[768 + ((glong >> 24) & 0x0ff)];
+						else Data = scroll ? Render_ScrollGraphicsData((unsigned)glong) : (unsigned)glong;
 						const RENDER_PIXCACHE *e;
 						b = (Data & 0x0ff00) >> 8;
 						e = &cache[b]; if (e->Stamp != stamp) e = Render_CachedPixels(b);
@@ -4254,7 +4286,7 @@ int CRTC_CyclesToEvent(void)
 	if (ASIC_DMA_IntPending) return 1;
 #endif
 	if (!CRTC_Run.valid) CRTC_PrepareRun();
-	return CRTC_Run.left + 1;
+	return CRTC_RunLeft + 1;
 #endif
 }
 
@@ -4283,16 +4315,28 @@ void CRTC_DoCycles(int Cycles)
 	{
 		int Pending;
 		if (!CRTC_Run.valid) CRTC_PrepareRun();
-		if (CRTC_Run.left > 0)
+		if (CRTC_RunLeft > 0)
 		{
-			int m = CRTC_Run.left < Cycles ? CRTC_Run.left : Cycles;
+			int m = CRTC_RunLeft < Cycles ? CRTC_RunLeft : Cycles;
+#ifndef NO_DEFER
+			if (m == Cycles && m < CRTC_RunLeft && !ASIC_DMA_IntPending_Now())
+			{
+				/* quiet cycles short of the event: draw them later */
+				CRTC_Pending += m;
+				CRTC_RunLeft -= m;
+				break;
+			}
+			if (CRTC_Pending) { int n = CRTC_Pending; CRTC_Pending = 0; CRTC_RunCells(n + m); }
+			else
+#endif
 			CRTC_RunCells(m);
 			STATS((StatsE_Runs++, StatsE_RunCycles += m));
-			CRTC_Run.left -= m;
+			CRTC_RunLeft -= m;
 			Cycles -= m;
 			DMA_TICK(m);
 			if (Cycles == 0) break;
 		}
+		CRTC_Flush();           /* cells before the event (left was 0) */
 		Pending = ASIC_DMA_IntPending_Now();
 		CRTC_DoOneCycle();      /* the event cycle */
 		if (Pending) DMA_TICK(1);   /* not those this cycle's HSYNC set */

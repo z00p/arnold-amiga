@@ -2330,8 +2330,11 @@ void    CPC_EnableASICRamWrites(BOOL Status)
 
 
 /* write a byte to emulator memory with paging */
+extern int CRTC_Pending;
+void CRTC_Flush(void);
 void Z80_WR_MEM(Z80_WORD Addr,Z80_BYTE Data)
 {
+	if (CRTC_Pending) CRTC_Flush();   /* crtc.c deferred cells */
 //	if ((Addr==0x035a5) && (Data==0x0ee))
 	///{
 	//	printf("here");
@@ -3067,6 +3070,7 @@ Z80_BYTE        KCCompact_In(Z80_WORD Port)
 
 Z80_BYTE        Z80_DoIn(Z80_WORD Port)
 {
+	if (CRTC_Pending) CRTC_Flush();   /* crtc.c deferred cells: the CRTC is up to date for reads */
 	switch (CPC_GetHardware())
 	{
 		case CPC_HW_CPC:

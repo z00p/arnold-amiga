@@ -1,0 +1,237 @@
+From a76ef928dc8b08ce81b1c3b74402933a13881a34 Mon Sep 17 00:00:00 2001
+From: John Stringer <jcec_1@yahoo.co.uk>
+Date: Tue, 20 Oct 2026 08:49:16 +0100
+Subject: [PATCH 22/25] CRTC: defer quiet cycles and draw them in one run
+
+The CRTC was stepped after every Z80 instruction, for 1-6 cycles, and setting
+up those tiny runs cost more than drawing them. Cycles that don't reach the
+next CRTC event are now only counted (CRTC_Pending) and drawn later in one run:
+before the next event cycle, before anything that can change what they draw
+(every CRTC_InvalidateRun caller, Z80 memory writes, IN) and at frame end, so
+they see exactly the memory and state they did before. The run loop also uses
+the soft-scroll table directly. Pixel-exact on the test set; with the scroll
+table, Sonic GX's core time on a 68040 (PiStorm) fell from 14.9 to 12.9 ms a
+frame. NO_DEFER restores per-instruction stepping.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ src/cpc/arnold.c  | 12 ++++++++++
+ src/cpc/cpc.c     |  4 ++++
+ src/cpc/crtc.c    | 60 ++++++++++++++++++++++++++++++++++++++++-------
+ src/cpc/z80/z80.c |  3 +++
+ 4 files changed, 71 insertions(+), 8 deletions(-)
+
+diff --git a/src/cpc/arnold.c b/src/cpc/arnold.c
+index e05fd41..5afb114 100644
+--- a/src/cpc/arnold.c
++++ b/src/cpc/arnold.c
+@@ -417,6 +417,7 @@ void	CPCEmulation_Run(void)
+ 			/* update CRTC for NopCount cycles */
+ 			if (NopsToFrameEnd!=0)
+ 				CRTC_DoCycles(NopsToFrameEnd);	
++			{ extern void CRTC_Flush(void); CRTC_Flush(); }   /* Amiga port: deferred cells (crtc.c) */
+ 		
+ 			/* execute functions when a frame has been completed */
+ 			/* Frame Skip Control code */
+@@ -528,6 +529,17 @@ void	CPCEmulation_Run(void)
+ 		else //if (bWin) this doesn't work :(
+ 		{
+ 			/* update CRTC for NopCount cycles */
++#if !defined(NO_DEFER) && !defined(NO_E)
++			/* Amiga port: quiet cycles short of the next CRTC event are only
++			 * counted here and drawn later (crtc.c CRTC_Pending) */
++			extern int CRTC_RunLeft, CRTC_Pending, ASIC_DMA_IntPending;
++			if (NopCount < CRTC_RunLeft && !ASIC_DMA_IntPending)
++			{
++				CRTC_RunLeft -= NopCount;
++				CRTC_Pending += NopCount;
++			}
++			else
++#endif
+ 			CRTC_DoCycles(NopCount);
+ 		}
+ 
+diff --git a/src/cpc/cpc.c b/src/cpc/cpc.c
+index 409c1a3..f088816 100644
+--- a/src/cpc/cpc.c
++++ b/src/cpc/cpc.c
+@@ -2330,8 +2330,11 @@ void    CPC_EnableASICRamWrites(BOOL Status)
+ 
+ 
+ /* write a byte to emulator memory with paging */
++extern int CRTC_Pending;
++void CRTC_Flush(void);
+ void Z80_WR_MEM(Z80_WORD Addr,Z80_BYTE Data)
+ {
++	if (CRTC_Pending) CRTC_Flush();   /* crtc.c deferred cells */
+ //	if ((Addr==0x035a5) && (Data==0x0ee))
+ 	///{
+ 	//	printf("here");
+@@ -3067,6 +3070,7 @@ Z80_BYTE        KCCompact_In(Z80_WORD Port)
+ 
+ Z80_BYTE        Z80_DoIn(Z80_WORD Port)
+ {
++	if (CRTC_Pending) CRTC_Flush();   /* crtc.c deferred cells: the CRTC is up to date for reads */
+ 	switch (CPC_GetHardware())
+ 	{
+ 		case CPC_HW_CPC:
+diff --git a/src/cpc/crtc.c b/src/cpc/crtc.c
+index aa692c1..097b512 100644
+--- a/src/cpc/crtc.c
++++ b/src/cpc/crtc.c
+@@ -3976,9 +3976,9 @@ static __inline__ void CRTC_DoOneCycle(void)
+ static struct
+ {
+ 	int valid;                 /* 0: CRTC_PrepareRun before the next run */
+-	int left;                  /* quiet cycles before the next event cycle */
+ 	int draw;                  /* 0 nothing (DontRender/retrace), 1 graphics, 2 border, 3 sync */
+ 	int plus, step1, cb, visible, x0, x1, scroll, hs;
++	const unsigned short *stab;    /* soft scroll table (render5.c), NULL: Render_ScrollGraphicsData */
+ 	unsigned char *pRow;
+ 	const RENDER_PIXCACHE *cache;
+ 	unsigned long stamp;
+@@ -3994,10 +3994,38 @@ unsigned long StatsE_Prepare, StatsE_Invalidate, StatsE_Runs, StatsE_RunCycles,
+ #define STATS(x)
+ #endif
+ 
++/* Deferred quiet cycles (Sonic speed, 20 Oct 2026). CRTC_DoCycles is called
++ * after every Z80 instruction with its 1-6 cycles, and setting up a run of so
++ * few cells cost more than drawing them. Quiet cycles that don't reach the next
++ * event are now only counted (CRTC_Pending) and drawn in one run later: before
++ * the next event cycle, before anything that may change what they draw (every
++ * CRTC_InvalidateRun caller: OUT to CRTC/GA, ASIC register writes, render state,
++ * reset), before every Z80 memory write and IN (z80.c, cpc.c), and at the end
++ * of each frame (arnold.c). So they see exactly the memory and state they saw
++ * when drawn after each instruction. Not while a staggered DMA interrupt is
++ * counting down. NO_DEFER (define): drawn after every instruction, as before. */
++int CRTC_Pending;
++/* quiet cycles before the next event cycle (0 while the run is not valid);
++ * global so arnold.c can defer an instruction's cycles without a call */
++int CRTC_RunLeft;
++static void CRTC_RunCells(int Count);
++
++void CRTC_Flush(void)
++{
++	if (CRTC_Pending)
++	{
++		int n = CRTC_Pending;
++		CRTC_Pending = 0;
++		CRTC_RunCells(n);
++	}
++}
++
+ void CRTC_InvalidateRun(void)
+ {
++	CRTC_Flush();
+ 	STATS(StatsE_Invalidate += CRTC_Run.valid);
+ 	CRTC_Run.valid = 0;
++	CRTC_RunLeft = 0;
+ }
+ 
+ static __inline__ int CRTC_Distance8(unsigned int Target, unsigned int Now)
+@@ -4040,7 +4068,7 @@ static void CRTC_PrepareRun(void)
+ 			d = CRTC_Distance8(CRTC_InternalState.HorizontalSyncWidth, c);		if (d < best) best = d;
+ 		}
+ 	}
+-	CRTC_Run.left = best - 1;
++	CRTC_RunLeft = best - 1;
+ 	CRTC_Run.hs = (CRTC_InternalState.CRTC_Flags & CRTC_HS_FLAG) != 0;
+ 
+ 	/* what the quiet cells draw */
+@@ -4066,6 +4094,7 @@ static void CRTC_PrepareRun(void)
+ 			CRTC_Run.cache = pPixCache;
+ 			CRTC_Run.stamp = Render_RemapStamp;
+ 			CRTC_Run.scroll = ModeHorizontalPixelScroll;
++			{ extern const unsigned short *Render_ScrollTable(void); CRTC_Run.stab = CRTC_Run.scroll ? Render_ScrollTable() : NULL; }
+ 			if (CRTC_Run.plus)
+ 			{
+ 				CRTC_Run.maline = (unsigned int)ASICCRTC_MALine;
+@@ -4104,7 +4133,7 @@ static void CRTC_PrepareRun(void)
+ 	}
+ }
+ 
+-/* Count quiet cycles (Count <= CRTC_Run.left) */
++/* Count quiet cycles (Count <= CRTC_RunLeft) */
+ static void CRTC_RunCells(int Count)
+ {
+ 	int k, total = Count;
+@@ -4140,6 +4169,7 @@ static void CRTC_RunCells(int Count)
+ 			const unsigned char *ram = Z80MemoryBase;
+ 			unsigned long glong = CRTC_InternalState.GraphicsLong;
+ 			const int scroll = CRTC_Run.scroll, plus = CRTC_Run.plus;
++			const unsigned short *stab = CRTC_Run.stab;
+ 			const unsigned int maline = CRTC_Run.maline, rasterma = CRTC_Run.rasterma;
+ 			const unsigned long cm0 = CRTC_Run.cm0, cm1 = CRTC_Run.cm1;
+ 
+@@ -4181,8 +4211,10 @@ static void CRTC_RunCells(int Count)
+ 						continue;
+ 					}
+ 					{
+-						unsigned Data = scroll ? Render_ScrollGraphicsData((unsigned)glong) : (unsigned)glong;
++						unsigned Data;
+ 						unsigned b;
++						if (stab) Data = (unsigned)stab[glong & 0x0ff] | stab[256 + ((glong >> 8) & 0x0ff)] | stab[512 + ((glong >> 16) & 0x0ff)] | stab[768 + ((glong >> 24) & 0x0ff)];
++						else Data = scroll ? Render_ScrollGraphicsData((unsigned)glong) : (unsigned)glong;
+ 						const RENDER_PIXCACHE *e;
+ 						b = (Data & 0x0ff00) >> 8;
+ 						e = &cache[b]; if (e->Stamp != stamp) e = Render_CachedPixels(b);
+@@ -4254,7 +4286,7 @@ int CRTC_CyclesToEvent(void)
+ 	if (ASIC_DMA_IntPending) return 1;
+ #endif
+ 	if (!CRTC_Run.valid) CRTC_PrepareRun();
+-	return CRTC_Run.left + 1;
++	return CRTC_RunLeft + 1;
+ #endif
+ }
+ 
+@@ -4283,16 +4315,28 @@ void CRTC_DoCycles(int Cycles)
+ 	{
+ 		int Pending;
+ 		if (!CRTC_Run.valid) CRTC_PrepareRun();
+-		if (CRTC_Run.left > 0)
++		if (CRTC_RunLeft > 0)
+ 		{
+-			int m = CRTC_Run.left < Cycles ? CRTC_Run.left : Cycles;
++			int m = CRTC_RunLeft < Cycles ? CRTC_RunLeft : Cycles;
++#ifndef NO_DEFER
++			if (m == Cycles && m < CRTC_RunLeft && !ASIC_DMA_IntPending_Now())
++			{
++				/* quiet cycles short of the event: draw them later */
++				CRTC_Pending += m;
++				CRTC_RunLeft -= m;
++				break;
++			}
++			if (CRTC_Pending) { int n = CRTC_Pending; CRTC_Pending = 0; CRTC_RunCells(n + m); }
++			else
++#endif
+ 			CRTC_RunCells(m);
+ 			STATS((StatsE_Runs++, StatsE_RunCycles += m));
+-			CRTC_Run.left -= m;
++			CRTC_RunLeft -= m;
+ 			Cycles -= m;
+ 			DMA_TICK(m);
+ 			if (Cycles == 0) break;
+ 		}
++		CRTC_Flush();           /* cells before the event (left was 0) */
+ 		Pending = ASIC_DMA_IntPending_Now();
+ 		CRTC_DoOneCycle();      /* the event cycle */
+ 		if (Pending) DMA_TICK(1);   /* not those this cycle's HSYNC set */
+diff --git a/src/cpc/z80/z80.c b/src/cpc/z80/z80.c
+index 21edca1..74345f9 100644
+--- a/src/cpc/z80/z80.c
++++ b/src/cpc/z80/z80.c
+@@ -37,8 +37,11 @@ static __inline__ Z80_BYTE Z80_RD_MEM_Inline(Z80_WORD Addr)
+ {
+ 	return pReadRamPtr[Addr >> 13][Addr];
+ }
++extern int CRTC_Pending;
++void CRTC_Flush(void);
+ static __inline__ void Z80_WR_MEM_Inline(Z80_WORD Addr, Z80_BYTE Data)
+ {
++	if (CRTC_Pending) CRTC_Flush();   /* deferred cells see memory as before this write */
+ 	if (pWriteMemory == CPC_WriteMemory)
+ 		pWriteRamPtr[(Addr >> 13) & 0x07][Addr] = Data;
+ 	else
+-- 
+2.50.0.windows.2
+

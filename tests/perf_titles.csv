@@ -1,0 +1,5 @@
+id,file,keys,shots,smoke,notes
+perf_burnin,,burnin,"8s,14s,20s",Y,System cartridge: Burnin' Rubber (as burnin_rubber)
+perf_puzzle,carts/PuzzleBobble.cpr,fire,"8s,14s,20s",Y,Puzzle Bobble title and first round
+perf_gng,carts/GNGGX.cpr,gng_play,"1400,1800",Y,Ghosts'n Goblins GX: runs right and fires (as Keys/gng_play.keys)
+perf_sonic,carts/SonicGX.cpr,sonic_play,"600,1000,1400,1800",Y,Sonic GX Green Hill (as Keys/sonic_play.keys; SonicGX.cpr is in run/carts only)
