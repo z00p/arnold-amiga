@@ -1,7 +1,7 @@
-From 677321627792855ce5bd1acf4487ec745f88f4a1 Mon Sep 17 00:00:00 2001
+From 63f4758e830f2b7b7739994b287833eb738087cd Mon Sep 17 00:00:00 2001
 From: John Stringer <jcec_1@yahoo.co.uk>
-Date: Tue, 20 Oct 2026 08:49:10 +0100
-Subject: [PATCH 06/25] Fix the 16-bit audio output conversion
+Date: Tue, 20 Oct 2026 20:42:09 +0100
+Subject: [PATCH 06/26] Fix the 16-bit audio output conversion
 
 AudioEvent_ConvertToOutputFormat_16BitStereo/Mono read the event buffer as
 16-bit words, but it holds 4 bytes a sample (left, right, 2 unused; see

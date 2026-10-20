@@ -1,0 +1,15 @@
+# Sonic GX vertical scrolling (vscroll, 20 Oct 2026): hold right, jump every 70 frames
+# (build/greenhill/v70.keys); springs at frames ~2040 and ~2195. Exact frames for the A1200 check.
+4s FIRE1 10
+7s FIRE1 10
+10s FIRE1 10
+13s JOYRIGHT 3000
+14s FIRE1 12 every 70 until 80s
+600 SNAP
+1000 SNAP
+1400 SNAP
+1800 SNAP
+2050 SNAP
+2200 SNAP
+2205 SNAP
+2300 QUIT

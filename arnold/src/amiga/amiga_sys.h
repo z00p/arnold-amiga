@@ -87,7 +87,13 @@ typedef struct { unsigned long c2p_us, wait_us, c2p_lines, c2p_frames, line_byte
                  wait_safe_us, wait_disp_us, wait_throttle_us, throttle_calls, late_frames,
                  pal_us, palette_loads, skipped_frames,
                  aud_underruns, aud_drops,
-                 c2p_lines5, c2p_lines6, c2p_clear_planes, c2p_chip_longs; } SysPerf;
+                 c2p_lines5, c2p_lines6, c2p_clear_planes, c2p_chip_longs,
+                 vs_shifts, vs_recentres, vs_searches, vs_us,
+                 audit_frames, audit_bad_frames, audit_bad_groups, audit_cop_checks, audit_cop_bad; } SysPerf;
+extern int Sys_Audit;      /* AUDIT argument: read every converted buffer back from chip RAM and check it, and the copper's plane pointer */
+extern int Sys_VShiftOn;   /* 1 when the display opened with the vertical-shift windows (NO_VSHIFT / NOVSHIFT: 0) */
+extern int Sys_NoVShift;   /* NOVSHIFT argument: don't use them (A/B tests) */
+extern int Sys_VShiftOn_Last;   /* as Sys_VShiftOn for the last display opened (kept after closing, for the perf report) */
 extern SysPerf Sys_Perf;
 unsigned long Sys_Micros(void);
 #include <stdio.h>

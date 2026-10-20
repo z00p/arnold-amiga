@@ -18,7 +18,8 @@ and asked for it to keep the Arnold name.
   own 50 Hz (frames timed from the E-clock, Paula at the matching rate), or follows the display
   if you prefer. The menu fits a 200-line NTSC screen.
 - Full speed with sound on a PiStorm A1200, including Sonic GX without frame skip (see
-  What to expect). Paula sound, 8-bit stereo. Frame skip for slower machines, with every
+  What to expect). Fast vertical scrolling moves the picture in a taller chip RAM buffer
+  (about 0.5 MB more chip RAM; `NOVSHIFT` turns it off). Paula sound, 8-bit stereo. Frame skip for slower machines, with every
   drawn frame exact.
 - Menu on Help: media, sound, screen mode, frame skip, joystick-from-keyboard, per-game
   settings, keyboard map, IFF and PNG screenshots. Workbench presets with ToolTypes.
@@ -26,8 +27,8 @@ and asked for it to keep the Arnold name.
 
 Not yet: writing changed disks back to the .dsk file (SAVE lasts until Power ON or Exit),
 tape (so the CPC 464 runs BASIC only). Known issues are listed in the drawer's README.txt
-(Sonic GX slowdown in very fast vertical scrolls, Pinball Dreams, NTSC cropping of
-edge-drawn games).
+(Sonic GX: a slight slowdown in fast vertical scrolls; Pinball Dreams, still under
+investigation; NTSC cropping of edge-drawn games).
 
 ## What to expect
 
@@ -67,7 +68,7 @@ upstream, one patch each, so they can be taken independently:
 
 Plus pixel-exact speed-ups for slow hosts (cell caching, run-based and deferred CRTC stepping,
 HALT fast-forward, a compact palette, table-driven Plus soft scroll, transparent sprite rows
-skipped), each with a `NO_x` define to switch it off.
+skipped, Plus sprites merged only where they cover the line and only at the pixels drawn), each with a `NO_x` define to switch it off.
 `patches/README.txt` has the details.
 
 ## Layout

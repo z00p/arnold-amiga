@@ -5,12 +5,12 @@ Arnold for Amiga 0.5 - patch set and Amiga build
 This package holds the changes made to Arnold while porting it to 68k AmigaOS 3.x (AGA),
 as patches against the upstream source, plus a ready-to-run Amiga build.
 
-  patches/   25 patches (git format-patch) against rofl0r's GitHub mirror of Arnold,
+  patches/   26 patches (git format-patch) against rofl0r's GitHub mirror of Arnold,
              https://github.com/rofl0r/arnold, master at e5dce08
              ("fix prototype of LoadFile()", 4 Sep 2026)
   amiga/     the Amiga build: drawer Arnold with the program, icons, presets, the Plus
              system cartridge and a user README
-  source/    the complete source of this build (the upstream tree with all 25 patches
+  source/    the complete source of this build (the upstream tree with all 26 patches
              applied), for the GPL
 
 
@@ -20,8 +20,8 @@ Applying the patches
   git checkout e5dce08
   git am /path/to/patches/*.patch
 
-Each patch stands on its own and builds. Patches 1-23 touch only src/cpc (the core);
-24 adds src/amiga and 25 adds src/headless. The core changes are all marked "Amiga port"
+Each patch stands on its own and builds. Patches 1-24 touch only src/cpc (the core);
+25 adds src/amiga and 26 adds src/headless. The core changes are all marked "Amiga port"
 in comments, and every behaviour change can be switched off with a define (below).
 
 
@@ -113,12 +113,16 @@ More speed for slow hosts (pixel-exact; RGB output identical on every test cart)
        before anything that could change what they draw. Sonic GX's core time on a
        68040 fell from 14.9 to 12.9 ms a frame (with 0021).
  0023  Plus: skip transparent sprite rows                                  NO_SPRROW
+ 0024  Plus: merge only the sprite pixels a lores host reads   NO_SPREVEN, NO_SPRCOL
+       At PIXEL_STEP 2 only the 8 even pixels of a column are merged, and only the
+       sprites that cover the column are visited (about 3 instead of 16 tests).
+       SPR_PAD pads the code (Emu68 timing moves with the code layout); NO_SPRPAD.
 
 Tools:
 
  0010  Diagnostics for hardware tracing (TRACE_HW, PAL_COUNT; off by default)
- 0024  AmigaOS host: Arnold for Amiga (src/amiga, built with bebbo's amiga-gcc)
- 0025  Headless test host (src/headless: frame checksums, PPM, key scripts, WAV,
+ 0025  AmigaOS host: Arnold for Amiga (src/amiga, built with bebbo's amiga-gcc)
+ 0026  Headless test host (src/headless: frame checksums, PPM, key scripts, WAV,
        disk insert / write-back / sector dumps)
 
 

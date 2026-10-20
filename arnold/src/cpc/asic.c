@@ -69,6 +69,19 @@ int ASIC_DMA_IntPending;
 unsigned long ASIC_ColMask[2];
 int ASIC_ColMaskValid = 0;
 
+#if defined(NO_C) && !defined(NO_SPRCOL)
+#define NO_SPRCOL	/* needs ASIC_BuildColMask */
+#endif
+#ifndef NO_SPRCOL
+/* Sprites on Emu68 (20 Oct 2026): for each CRTC column, the set of sprites of
+ * this line that cover it (bit s = sprite s), rebuilt with ASIC_ColMask (same
+ * dependencies). ASIC_MergeEven visits only these sprites instead of testing
+ * all 16 bits of SpriteEnableMaskOnLine. NO_SPRCOL: the bit loop. */
+static unsigned short ASIC_ColSprites[64];
+static unsigned char ASIC_ColUsed[64];
+static int ASIC_ColUsedN = 0;
+#endif
+
 /* rebuild ASIC_ColMask from the sprites active on this line (none: all zero) */
 void ASIC_BuildColMask(void)
 {
@@ -79,6 +92,10 @@ void ASIC_BuildColMask(void)
 		ASIC_Data.SpriteEnableMaskOnLine : 0;
 	int s, d;
 	ASIC_ColMask[0] = ASIC_ColMask[1] = 0;
+#ifndef NO_SPRCOL
+	while (ASIC_ColUsedN > 0)
+		ASIC_ColSprites[ASIC_ColUsed[--ASIC_ColUsedN]] = 0;
+#endif
 	for (s = 0; s < 16; s++)
 		if (Active & (1UL << s))
 		{
@@ -88,6 +105,11 @@ void ASIC_BuildColMask(void)
 			{
 				int c = (int)((ASIC_Data.SpriteInfo[s].MinColumn + d) & 0x03f);
 				ASIC_ColMask[c >> 5] |= 1UL << (c & 31);
+#ifndef NO_SPRCOL
+				if (ASIC_ColSprites[c] == 0)
+					ASIC_ColUsed[ASIC_ColUsedN++] = (unsigned char)c;
+				ASIC_ColSprites[c] |= (unsigned short)(1U << s);
+#endif
 			}
 		}
 	ASIC_ColMaskValid = 1;
@@ -936,6 +958,104 @@ static BOOL ASIC_IsSpriteOnLine(ASIC_SPRITE_RENDER_INFO *pRenderInfo, unsigned l
 	return (DeltaLines<pRenderInfo->HeightInLines);
 }
 
+#if !defined(SPR_PAD) && !defined(NO_SPRPAD)
+#define SPR_PAD 72	/* best of 0/32/72/120/160 in an A1200 scan, 040 -O2 build (20 Oct 2026) */
+#endif
+#if defined(SPR_PAD) && SPR_PAD > 0 && !defined(NO_SPRPAD)
+/* Emu68 layout (20 Oct 2026): SPR_PAD bytes of padding in the code here shift
+ * everything after it. The A1200 timing moves with the code layout by up to
+ * ~0.9 ms a frame; see Docs/agent_notes/sprites.md. NO_SPRPAD: no padding. */
+#define SPR_STR2(x) #x
+#define SPR_STR(x) SPR_STR2(x)
+void ASIC_LayoutPad(void) { __asm__ volatile (".space " SPR_STR(SPR_PAD) ", 0x4e"); }
+#endif
+#ifndef NO_SPREVEN
+/* Sprites on Emu68 (20 Oct 2026): at PIXEL_STEP 2 (the Amiga's lores output)
+ * Render_Paletted_PutDataWordPLUS reads only the even pixels and even mask
+ * bits, so only those are merged here. Each even bit gets the same pixel as in
+ * the full loop (first opaque sprite in priority order); odd bits come back
+ * as 1 (= no sprite), which nothing reads at PIXEL_STEP 2. Loop over the
+ * line's sprites by shifting the mask, row-empty test with 4 long reads.
+ * NO_SPREVEN: the full 16-pixel loop. */
+extern int PIXEL_STEP;
+#ifndef SPREVEN_STEP
+#define SPREVEN_STEP 2	/* layout test: -DSPREVEN_STEP=99 keeps the code but never calls it */
+#endif
+static unsigned long ASIC_MergeEven(int Line, int HCount, int *pPixels)
+{
+	unsigned long GM = 0;
+	unsigned long OnLine = ASIC_Data.SpriteEnableMaskOnLine & 0x0ffff;
+	const ASIC_SPRITE_RENDER_INFO *ri = &ASIC_Data.SpriteInfo[0];
+	const unsigned char *spr = ASIC_Data.ASIC_Ram;
+
+#ifndef NO_SPRCOL
+	/* only the sprites covering this column (BuildColMask ran: the caller
+	 * checked ASIC_ColMask first); lowest index = highest priority first */
+	unsigned long Cov = ASIC_ColSprites[HCount & 0x03f];
+	(void)OnLine;
+	while (Cov != 0)
+	{
+		const unsigned char *r;
+		unsigned long base;
+		int sh, j, i;
+		i = 31 - __builtin_clz((unsigned int)(Cov & (0UL - Cov)));
+		Cov &= Cov - 1;
+		ri = &ASIC_Data.SpriteInfo[i];
+		spr = ASIC_Data.ASIC_Ram + (i << 8);
+#else
+	for (; OnLine != 0; OnLine >>= 1, ri++, spr += 256)
+	{
+		const unsigned char *r;
+		unsigned long base;
+		int sh, j;
+		if ((OnLine & 1) == 0)
+			continue;
+		if (((unsigned long)(HCount - ri->MinColumn) & 0x03f) >= ri->WidthInColumns)
+			continue;
+#endif
+		r = spr + (((((unsigned long)Line - ri->y) & 0x01ff) >> ri->YMagShift) << 4);
+		{
+			const unsigned int *l = (const unsigned int *)r;
+			if (((l[0] | l[1] | l[2] | l[3]) & 0x0f0f0f0fU) == 0)
+				continue;
+		}
+		sh = ri->XMagShift;
+		/* sprite pixel (before magnification) under screen pixel j is
+		 * ((base + j) & 0x3ff) >> sh when that is below 16 (the full loop's
+		 * DeltaColumns==0 / XStart cases fold into the wrap) */
+		base = ((unsigned long)(HCount << 4) - ri->x) & 0x3ff;
+		for (j = 0; j < 16; j += 2)
+		{
+			unsigned long idx = ((base + j) & 0x3ff) >> sh;
+			if (idx < 16)
+			{
+				int Colour = r[idx] & 0x0f;
+				if (Colour != 0 && (GM & (1UL << j)) == 0)
+				{
+					pPixels[j] = Colour + 16;
+					GM |= 1UL << j;
+				}
+			}
+		}
+		if (GM == 0x5555)
+			break;
+	}
+	return GM ^ 0x0ffff;
+}
+#endif
+
+#ifdef SPREVEN_CHECK
+static int chk_t[16], chk_on, chk_n; static unsigned long chk_m1;
+static unsigned long chk(int Line, int HCount, int *pPixels, unsigned long m2)
+{
+	int k;
+	if (chk_on) { chk_on = 0;
+	for (k = 0; k < 16; k += 2)
+		if (((chk_m1 ^ m2) & (1UL << k)) || (!(m2 & (1UL << k)) && chk_t[k] != pPixels[k]))
+		{ if (chk_n++ < 20) printf("SPREVEN line %d hc %d k %d m1 %04lx m2 %04lx t %d p %d onl %lx\n", Line, HCount, k, chk_m1, m2, chk_t[k], pPixels[k], (unsigned long)ASIC_Data.SpriteEnableMaskOnLine); break; } }
+	return m2;
+}
+#endif
 unsigned long ASIC_BuildDisplayReturnMaskWithPixels(int Line, int HCount, /*int MonitorHorizontalCount,*/ /*int ActualY,*/ int *pPixels)
 {
 	/* based on line we can find which HW sprites are here */
@@ -952,6 +1072,19 @@ unsigned long ASIC_BuildDisplayReturnMaskWithPixels(int Line, int HCount, /*int 
 			if ((ASIC_ColMask[c >> 5] & (1UL << (c & 31))) == 0)
 				return 0x0ffff;
 		}
+#endif
+#ifndef NO_SPREVEN
+#ifndef SPREVEN_CHECK
+		if (PIXEL_STEP == SPREVEN_STEP)
+			return ASIC_MergeEven(Line, HCount, pPixels);
+#else
+		if (PIXEL_STEP == 2)
+		{
+			int k;
+			for (k = 0; k < 16; k++) chk_t[k] = pPixels[k];
+			chk_m1 = ASIC_MergeEven(Line, HCount, chk_t); chk_on = 1;
+		}
+#endif
 #endif
 	}
 
@@ -1067,6 +1200,9 @@ unsigned long ASIC_BuildDisplayReturnMaskWithPixels(int Line, int HCount, /*int 
 			pRenderInfo++;
 		}
 	}
+#ifdef SPREVEN_CHECK
+    return chk(Line, HCount, pPixels, GraphicsMask ^ 0x0ffff);
+#endif
     return (GraphicsMask ^ 0x0ffff);
 }
 

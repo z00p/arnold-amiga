@@ -233,6 +233,19 @@ commit "Plus: skip transparent sprite rows" "A hardware sprite row whose 16 pixe
 loop stops at the sprite's edge. Pixel-exact; about 11% less sprite time.
 NO_SPRROW restores the full loop."
 
+post 72894cd arnold/src/cpc/asic.c
+commit "Plus: merge only the sprite pixels a lores host reads" "Two exact speed-ups of the Plus sprite merge for a host that renders every
+other pixel (PIXEL_STEP 2, e.g. an Amiga lores screen). (1) Only the 8 even
+pixels of a column are merged; each gets the same pixel as before (the first
+opaque sprite in priority order), and the odd mask bits, which nothing reads
+at PIXEL_STEP 2, come back as no sprite. NO_SPREVEN restores the full loop.
+(2) ASIC_BuildColMask also records which sprites cover each column, so the
+merge visits only those (about 3) instead of testing all 16. NO_SPRCOL.
+SPR_PAD (default 72 bytes, NO_SPRPAD: none) pads the code here: the Emu68 JIT
+on a PiStorm runs the core up to 7% faster or slower with the code layout.
+Pixel-exact (headless checksums of the test set and whole-run frame
+checksums); on an A1200 PiStorm Sonic GX's spring frames lose about 2.4 ms."
+
 post HEAD arnold/src/cpc
 commit "Core: remaining changes" "Small changes made after the fixes above."
 

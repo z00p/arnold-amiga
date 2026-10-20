@@ -63,6 +63,52 @@ extern int (*CPC_SkipNextFrameHook)(void);
 #define PERF_SKIP 50
 static unsigned long perf_t0, perf_t1, perf_snap_us;
 
+/* Per-frame figures (vscroll, 20 Oct 2026; reassembler N4): for each measured
+ * frame the work (wall time minus waits and snaps), the c2p time and the chip
+ * longs written, so heavy moments (Sonic's springs) can be found by frame
+ * number. Written to <snapdir>/frames.txt at the script's QUIT; the done file
+ * gets the maximum and a histogram. */
+#define FL_MAX 4000
+static unsigned short fl_work[FL_MAX], fl_c2p[FL_MAX], fl_longs[FL_MAX];
+static unsigned char fl_shown[FL_MAX];
+static long fl_n;
+static unsigned long fl_t, fl_wait, fl_c2pus, fl_lng, fl_snap, fl_frames;
+static void framelog_tick(void)
+{
+	unsigned long t = Sys_Micros(), w, c, l;
+	long i = script_frame - PERF_SKIP - 1;
+	if (i >= 0 && i < FL_MAX) {
+		w = (t - fl_t) - (Sys_Perf.wait_us - fl_wait) - (perf_snap_us - fl_snap);
+		c = Sys_Perf.c2p_us - fl_c2pus; l = Sys_Perf.c2p_chip_longs - fl_lng;
+		fl_work[i] = w > 65535 ? 65535 : w; fl_c2p[i] = c > 65535 ? 65535 : c; fl_longs[i] = l > 65535 ? 65535 : l;
+		fl_shown[i] = Sys_Perf.c2p_frames != fl_frames;
+		fl_n = i + 1;
+	}
+	fl_t = t; fl_wait = Sys_Perf.wait_us; fl_c2pus = Sys_Perf.c2p_us; fl_lng = Sys_Perf.c2p_chip_longs; fl_snap = perf_snap_us; fl_frames = Sys_Perf.c2p_frames;
+}
+static void framelog_report(FILE *f)
+{
+	static const unsigned long edge[] = {16000, 18000, 20000, 22000, 25000, 30000, 40000};
+	unsigned long h[8] = {0,0,0,0,0,0,0,0}, mw = 0, mc = 0, ml = 0, mwf = 0;
+	long i; int k;
+	char name[SYS_PATH + 16]; FILE *o;
+	for (i = 0; i < fl_n; i++) {
+		for (k = 0; k < 7 && fl_work[i] >= edge[k]; k++) ;
+		h[k]++;
+		if (fl_work[i] > mw) { mw = fl_work[i]; mwf = i; }
+		if (fl_c2p[i] > mc) mc = fl_c2p[i];
+		if (fl_longs[i] > ml) ml = fl_longs[i];
+	}
+	fprintf(f, "perf work_max_us=%lu at_frame=%ld c2p_max_us=%lu chip_bytes_max=%lu\n", mw, (long)mwf + PERF_SKIP + 1, mc, ml * 4);
+	fprintf(f, "perf work_hist_ms <16:%lu 16-18:%lu 18-20:%lu 20-22:%lu 22-25:%lu 25-30:%lu 30-40:%lu >=40:%lu\n", h[0], h[1], h[2], h[3], h[4], h[5], h[6], h[7]);
+	if (f == stdout) return;
+	sprintf(name, "%s/frames.txt", snapdir);
+	if (!(o = fopen(name, "w"))) return;
+	fprintf(o, "frame work_us c2p_us chip_longs shown\n");
+	for (i = 0; i < fl_n; i++) fprintf(o, "%ld %u %u %u %u\n", i + PERF_SKIP + 1, fl_work[i], fl_c2p[i], fl_longs[i], fl_shown[i]);
+	fclose(o);
+}
+
 static void perf_report(FILE *f)
 {
 	long n = script_frame - 1 - PERF_SKIP;            /* frames measured */
@@ -87,6 +133,10 @@ static void perf_report(FILE *f)
 	fprintf(f, "perf c2p_lines5=%lu c2p_lines6=%lu c2p_clear_planes=%lu chip_bytes_per_shown_frame_est=%lu\n", Sys_Perf.c2p_lines5, Sys_Perf.c2p_lines6, Sys_Perf.c2p_clear_planes,
 		((Sys_Perf.c2p_lines - Sys_Perf.c2p_lines5 - Sys_Perf.c2p_lines6) * 8 + Sys_Perf.c2p_lines5 * 5 + Sys_Perf.c2p_lines6 * 6 + Sys_Perf.c2p_clear_planes) * (Sys_Perf.line_bytes / 8) / cf);
 	if (Sys_Perf.c2p_chip_longs) fprintf(f, "perf chip_bytes_written_per_shown_frame=%lu\n", Sys_Perf.c2p_chip_longs * 4 / cf);
+	fprintf(f, "perf vshift=%d vs_searches=%lu vs_shifts=%lu vs_recentres=%lu vs_us_per_shown_frame=%lu\n", Sys_VShiftOn_Last, Sys_Perf.vs_searches, Sys_Perf.vs_shifts, Sys_Perf.vs_recentres, Sys_Perf.vs_us / cf);
+	if (Sys_Audit) fprintf(f, "perf audit_frames=%lu audit_bad_frames=%lu audit_bad_groups=%lu audit_copper_checks=%lu audit_copper_bad=%lu\n",
+		Sys_Perf.audit_frames, Sys_Perf.audit_bad_frames, Sys_Perf.audit_bad_groups, Sys_Perf.audit_cop_checks, Sys_Perf.audit_cop_bad);
+	framelog_report(f);
 }
 
 static void script_setkey(int key, int down) { if (down) CPC_SetKey(key); else CPC_ClearKey(key); }
@@ -277,7 +327,8 @@ BOOL Host_ProcessSystemEvents(void)
 
 	if (script_on) {
 		int fl = KeyScript_Frame(script_frame, script_setkey);
-		if (script_frame == PERF_SKIP) { perf_t0 = Sys_Micros(); memset(&Sys_Perf, 0, sizeof Sys_Perf); perf_snap_us = 0; }
+		if (script_frame == PERF_SKIP) { perf_t0 = Sys_Micros(); memset(&Sys_Perf, 0, sizeof Sys_Perf); perf_snap_us = 0; fl_n = 0; }
+		if (script_frame >= PERF_SKIP) framelog_tick();
 		if (fl & KS_SNAP) { unsigned long t = Sys_Micros(); script_snap(); perf_snap_us += Sys_Micros() - t; }
 		if (fl & KS_QUIT) { script_quit = 1; perf_t1 = Sys_Micros(); Sys_RequestQuit(); }
 		script_frame++;
@@ -655,6 +706,8 @@ int main(int argc, char **argv)
 			else if (!kwcmp(argv[i], "TURBO")) turbo = 1;
 			else if (!kwcmp(argv[i], "PALALL")) Sys_PalAll = 1;
 			else if (!kwcmp(argv[i], "ALLLINES")) Sys_AllLines = 1;
+			else if (!kwcmp(argv[i], "NOVSHIFT")) Sys_NoVShift = 1;   /* vscroll A/B: plain buffers */
+			else if (!kwcmp(argv[i], "AUDIT")) Sys_Audit = 1;         /* check chip RAM and the copper after every frame (slow) */
 			else if (!kwcmp(argv[i], "SAFEFLIP")) Sys_SafeFlip = 1;
 			else if (!kwcmp(argv[i], "OSD")) Sys_Osd = 1;
 			else if (!kwcmp(argv[i], "NOCD32")) Sys_NoCD32 = 1;

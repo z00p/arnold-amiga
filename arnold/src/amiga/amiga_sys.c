@@ -10,6 +10,8 @@
 #include <graphics/gfxbase.h>
 #include <graphics/displayinfo.h>
 #include <graphics/modeid.h>
+#include <graphics/view.h>
+#include <graphics/copper.h>
 #include <hardware/custom.h>
 #include <hardware/cia.h>
 #include <devices/timer.h>
@@ -25,7 +27,7 @@
 #include <stdarg.h>
 
 unsigned long __stack = 256 * 1024;   /* libnix: enlarge the stack at start */
-static const char ver[] __attribute__((used)) = "$VER: Arnold 0.7 (20.10.2026) Amiga port, GPL-2.0";
+static const char ver[] __attribute__((used)) = "$VER: Arnold 0.8 (20.10.2026) Amiga port, GPL-2.0";
 
 /* ---- diagnostic log ---- */
 static FILE *logf;
@@ -284,6 +286,168 @@ static void c2p_line_sh(const unsigned char *src, struct BitMap *bm, int y, int 
 	Sys_Perf.c2p_chip_longs += w;
 }
 
+/* Vertical shift (vscroll, 20 Oct 2026). When the picture moves up or down
+ * (Sonic GX's springs), nearly every line differs from what the buffer holds,
+ * and the shadow compare writes almost the whole screen. Instead, each buffer
+ * is a window into a taller chip area (VS_MARGIN spare rows above and below):
+ * the window's bitmap is a copy of the tall bitmap's header whose plane
+ * pointers start win_row[b] rows down. Moving the window by d rows makes the
+ * rows already in chip RAM appear d rows higher or lower, at no cost (the
+ * display just fetches from another address); the shadow, the plane levels and
+ * the row hashes are all kept per tall row, so they move with it, and the
+ * usual compare then writes only what differs (the new edge, sprites, the HUD).
+ * Exact by construction: the shadow always equals chip RAM, and every row of a
+ * moved window is compared, so a wrong guess only costs writes.
+ * Finding d: for every chunky line a hash (recomputed only for lines the core
+ * changed); each tall row keeps the hash of the line it holds. When at least
+ * a quarter of the rows are dirty, the rows to be written vote for an offset
+ * by looking their new line up among the tall rows near the window
+ * (vs_choose), and the window moves if that offset puts at least SH/16 more
+ * whole rows in place. A window near the end of its area returns to the
+ * middle on a frame that rewrites most rows anyway.
+ * NO_VSHIFT (define) or NOVSHIFT (argument): plain buffers, as 0.7. */
+#if !defined(NO_SHADOW) && !defined(NO_VSHIFT)
+#define VSHIFT 1
+#define VS_MARGIN 128
+#define VS_DMAX 96
+#endif
+int Sys_VShiftOn, Sys_NoVShift, Sys_VShiftOn_Last;
+static int TR;                       /* rows in each buffer's chip area (SH without vshift) */
+static int win_row[NBUF];            /* first row of the window shown */
+#ifdef VSHIFT
+static struct BitMap *tall_bm[NBUF];
+static PLANEPTR sb_planes0[NBUF][8];   /* the plane pointers Intuition gave each buffer, put back before freeing */
+static struct ScreenBuffer *sb_scr;  /* the screen's own bitmap, shown again before closing */
+static ULONG *row_hash[NBUF];        /* [TR] hash of the chunky line each tall row holds */
+static ULONG *chash;                 /* [CH] the chunky lines' hashes */
+static unsigned char *chash_stale;   /* [CH] changed since its hash was taken */
+
+/* every other long of the line (a missed difference only costs writes) */
+static ULONG hash_line(const unsigned char *src)
+{
+	const ULONG *l = (const ULONG *)src;
+	ULONG x = 0x9e3779b9UL;
+	int n;
+	for (n = SW >> 3; n > 0; n--, l += 2) x = ((x << 5) | (x >> 27)) ^ l[0];
+	return x;
+}
+
+/* Finding d by votes (A1200, 20 Oct 2026: a search over every offset cost
+ * 0.27 ms a frame, more than it saved): the hashes of the known tall rows
+ * around the window go into a small open-addressing table (a hash seen twice,
+ * e.g. plain sky, is marked ambiguous); each row that has to be written looks
+ * its new line up there, and a hit at tall row t votes for d = t - r - y.
+ * The winner is checked by counting whole rows that would match at d and at
+ * the current position. */
+#define VS_HT 1024
+static ULONG vs_hkey[VS_HT];
+static short vs_hrow[VS_HT];          /* -1 empty, -2 ambiguous, else tall row */
+static int vs_matches(int b, int t0)
+{
+	int y, n = 0;
+	const unsigned char *lv = line_lvl[b] + t0;
+	const ULONG *a = row_hash[b] + t0, *c = chash + YOFF;
+	for (y = 0; y < SH; y++) n += lv[y] && a[y] == c[y];
+	return n;
+}
+static int vs_choose(int b, int ndirty)
+{
+	int r = win_row[b], lo, hi, t, y, d, best = 0, bv = 0, m0, m;
+	unsigned short votes[2 * VS_DMAX + 1];
+	if (ndirty < SH / 4) return r;
+	Sys_Perf.vs_searches++;
+	lo = r - VS_DMAX; if (lo < 0) lo = 0;
+	hi = r + SH + VS_DMAX; if (hi > TR) hi = TR;
+	for (t = 0; t < VS_HT; t++) vs_hrow[t] = -1;
+	for (t = lo; t < hi; t++) {
+		ULONG h = row_hash[b][t];
+		int i = (int)((h ^ (h >> 13)) & (VS_HT - 1));
+		if (!line_lvl[b][t]) continue;
+		while (vs_hrow[i] != -1 && vs_hkey[i] != h) i = (i + 1) & (VS_HT - 1);
+		if (vs_hrow[i] == -1) { vs_hkey[i] = h; vs_hrow[i] = t; }
+		else vs_hrow[i] = -2;
+	}
+	memset(votes, 0, sizeof votes);
+	for (y = 0; y < SH; y++) {
+		ULONG h = chash[y + YOFF];
+		int i = (int)((h ^ (h >> 13)) & (VS_HT - 1));
+		if (line_lvl[b][r + y] && row_hash[b][r + y] == h) continue;   /* already right where it is */
+		while (vs_hrow[i] != -1 && vs_hkey[i] != h) i = (i + 1) & (VS_HT - 1);
+		if (vs_hrow[i] < 0) continue;
+		d = vs_hrow[i] - r - y;
+		if (d && d >= -VS_DMAX && d <= VS_DMAX) votes[d + VS_DMAX]++;
+	}
+	for (d = -VS_DMAX; d <= VS_DMAX; d++)
+		if (votes[d + VS_DMAX] > bv) { bv = votes[d + VS_DMAX]; best = d; }
+	m0 = vs_matches(b, r);
+	if (bv >= 4 && r + best >= 0 && r + best + SH <= TR) {
+		m = vs_matches(b, r + best);
+		if (m >= m0 + SH / 16) { Sys_Perf.vs_shifts++; return r + best; }
+	}
+	if (m0 < SH / 4 && (r < VS_MARGIN / 2 || r > VS_MARGIN + VS_MARGIN / 2)) { Sys_Perf.vs_recentres++; return VS_MARGIN; }
+	return r;
+}
+
+/* AUDIT (vscroll, 20 Oct 2026; reassembler N5): after each conversion the
+ * whole buffer is read back from chip RAM and compared with a plain c2p of
+ * the chunky frame (rows under the OSD label excepted), and the hardware
+ * copper list's BPL1PT is compared with the plane pointer of the buffer the
+ * display should show. Slow (reads chip RAM); counts go into the perf report. */
+int Sys_Audit;
+static void audit_frame(const unsigned char *chunky, int pitch, struct BitMap *bm, int b)
+{
+	int y, g, p, k, bad = 0, y0 = Sys_Osd ? 12 : 0;
+	for (y = y0; y < SH; y++) {
+		const unsigned char *src = chunky + (y + YOFF) * pitch + XOFF;
+		int rowbad = 0;
+		for (g = 0; g < (SW >> 5); g++) {
+			ULONG o[8];
+			for (p = 0; p < 8; p++) o[p] = 0;
+			for (k = 0; k < 32; k++) { int v = src[(g << 5) + k]; for (p = 0; p < 8; p++) o[p] = (o[p] << 1) | ((v >> p) & 1); }
+			for (p = 0; p < 8; p++)
+				if (*(ULONG *)(bm->Planes[p] + (LONG)y * bm->BytesPerRow + (g << 2)) != o[p]) { rowbad++; break; }
+		}
+		if (rowbad && Sys_Perf.audit_bad_groups < 40) Sys_Log("audit: frame %lu buffer %d row %d (tall %d): %d groups differ", frames, b, y, win_row[b] + y, rowbad);
+		bad += rowbad;
+	}
+	Sys_Perf.audit_frames++;
+	if (bad) { Sys_Perf.audit_bad_frames++; Sys_Perf.audit_bad_groups += bad; }
+}
+static void audit_copper(void)
+{
+	struct View *v = GfxBase->ActiView;
+	struct cprlist *c;
+	UWORD *w;
+	ULONG hi = 0, want, want2;
+	int n;
+	/* the display shows the last buffer passed to ChangeScreenBuffer once its
+	 * DispMessage is back, else possibly still the one before it */
+	if (frames < 3 || !v || !(c = v->LOFCprList) || !c->start) return;
+	want = (ULONG)sb[shown]->sb_BitMap->Planes[0];
+	want2 = disp_pend[shown] ? (ULONG)sb[(shown + NBUF - 1) % NBUF]->sb_BitMap->Planes[0] : want;
+	for (w = c->start, n = 0; n < c->MaxCount; n++, w += 2) {
+		if (w[0] == 0x00e0) hi = w[1];
+		else if (w[0] == 0x00e2) {
+			ULONG a = (hi << 16) | w[1];
+			Sys_Perf.audit_cop_checks++;
+			if (a != want && a != want2) {
+				if (Sys_Perf.audit_cop_bad < 20) Sys_Log("audit: copper BPL1PT %08lx, buffer %d planes %08lx (window row %d)", (unsigned long)a, shown, (unsigned long)want, win_row[shown]);
+				Sys_Perf.audit_cop_bad++;
+			}
+			return;
+		}
+	}
+}
+
+static void vs_place(int b, int r)
+{
+	struct BitMap *t = tall_bm[b];
+	int p;
+	win_row[b] = r;
+	for (p = 0; p < 8; p++) sb[b]->sb_BitMap->Planes[p] = t->Planes[p] + (LONG)r * t->BytesPerRow;
+}
+#endif
+
 /* ---- video mode and display rate (19 Oct 2026, John's A1200 in NTSC) ----
  * Sys_VideoMode: 0 Auto (the default monitor, as Workbench), 1 PAL, 2 NTSC.
  * A forced PAL or NTSC mode that the system can't show (its monitor driver
@@ -389,10 +553,64 @@ int Sys_OpenDisplay(int cw, int ch, int hires)
 
 	safeport = CreateMsgPort(); dispport = CreateMsgPort();
 	if (!safeport || !dispport) { Sys_CloseDisplay(); return 0; }
+	Sys_VShiftOn = 0; TR = SH;
+	for (i = 0; i < NBUF; i++) { win_row[i] = 0; sb[i] = NULL; own_bm[i] = NULL; safe_pend[i] = disp_pend[i] = 0; }
+#ifdef VSHIFT
+	/* vertical shift: three tall chip areas and window bitmaps; anything
+	 * missing (chip RAM) falls back to the plain buffers */
+	sb_scr = NULL;
+	for (i = 0; i < NBUF; i++) tall_bm[i] = NULL;
+	if (!Sys_NoVShift) {
+		struct BitMap *sbm = scr->RastPort.BitMap;
+		ULONG fl = BMF_DISPLAYABLE | BMF_CLEAR | (GetBitMapAttr(sbm, BMA_FLAGS) & BMF_INTERLEAVED);
+		int ok = 1;
+		for (i = 0; i < NBUF && ok; i++) {
+			tall_bm[i] = AllocBitMap(GetBitMapAttr(sbm, BMA_WIDTH), SH + 2 * VS_MARGIN, GetBitMapAttr(sbm, BMA_DEPTH), fl, NULL);
+			if (!tall_bm[i] || tall_bm[i]->Depth < 8) ok = 0;
+		}
+		if (ok) {
+			sb_scr = AllocScreenBuffer(scr, NULL, SB_SCREEN_BITMAP);
+			if (!sb_scr) ok = 0;
+		}
+		/* OS 3.2 refuses a bitmap of our own (see below), so Intuition allocates
+		 * the buffers and their plane pointers are aimed into the tall areas;
+		 * the originals are put back before FreeScreenBuffer */
+		for (i = 0; i < NBUF && ok; i++) {
+			struct BitMap *b;
+			int p;
+			sb[i] = AllocScreenBuffer(scr, NULL, 0);
+			if (!sb[i]) { ok = 0; break; }
+			b = sb[i]->sb_BitMap;
+			for (p = 0; p < 8; p++) sb_planes0[i][p] = b->Planes[p];
+			if (b->Depth < 8 || b->BytesPerRow != tall_bm[i]->BytesPerRow
+			 || b->Planes[1] - b->Planes[0] != tall_bm[i]->Planes[1] - tall_bm[i]->Planes[0]) {
+				Sys_Log("display: buffer %d layout bpr %d +%ld differs from the tall area's bpr %d +%ld", i, (int)b->BytesPerRow,
+					(long)(b->Planes[1] - b->Planes[0]), (int)tall_bm[i]->BytesPerRow, (long)(tall_bm[i]->Planes[1] - tall_bm[i]->Planes[0]));
+				ok = 0; break;
+			}
+			vs_place(i, VS_MARGIN);
+		}
+		if (ok) {
+			Sys_VShiftOn = 1; TR = SH + 2 * VS_MARGIN;
+			sb_scr->sb_DBufInfo->dbi_SafeMessage.mn_ReplyPort = safeport;
+			sb_scr->sb_DBufInfo->dbi_DispMessage.mn_ReplyPort = dispport;
+			Sys_Log("display: vertical shift on, %d rows a buffer, bpr %d, chip free %lu", TR, (int)tall_bm[0]->BytesPerRow, (unsigned long)AvailMem(MEMF_CHIP));
+		} else {
+			Sys_Log("display: vertical shift off (chip RAM or screen buffers), chip free %lu", (unsigned long)AvailMem(MEMF_CHIP));
+			for (i = 0; i < NBUF; i++) {
+				if (sb[i]) { int p; for (p = 0; p < 8; p++) sb[i]->sb_BitMap->Planes[p] = sb_planes0[i][p]; FreeScreenBuffer(scr, sb[i]); sb[i] = NULL; }
+				win_row[i] = 0;
+			}
+			if (sb_scr) { FreeScreenBuffer(scr, sb_scr); sb_scr = NULL; }
+			WaitBlit();
+			for (i = 0; i < NBUF; i++) if (tall_bm[i]) { FreeBitMap(tall_bm[i]); tall_bm[i] = NULL; }
+		}
+	}
+#endif
+	Sys_VShiftOn_Last = Sys_VShiftOn;
 	for (i = 0; i < NBUF; i++) {
 		struct BitMap *sbm = scr->RastPort.BitMap;
-		safe_pend[i] = disp_pend[i] = 0;
-		own_bm[i] = NULL;
+		if (Sys_VShiftOn) goto have_sb;
 		if (i > 0) {
 			/* 15 Oct 2026: on the A1200 with P96 installed, the system's buffers may
 			 * not match the screen bitmap's layout (interleaved or not), which shows
@@ -414,9 +632,10 @@ int Sys_OpenDisplay(int cw, int ch, int hires)
 			sb[i] = AllocScreenBuffer(scr, NULL, 0);
 		}
 		if (!sb[i]) { Sys_Log("display: AllocScreenBuffer %d failed", i); Sys_CloseDisplay(); return 0; }
+	have_sb:
 		{
 			struct BitMap *b = sb[i]->sb_BitMap;
-			Sys_Log("display: buffer %d %s bpr %d planes %08lx %08lx (+%ld) flags %08lx", i, own_bm[i] ? "own" : "system",
+			Sys_Log("display: buffer %d %s bpr %d planes %08lx %08lx (+%ld) flags %08lx", i, Sys_VShiftOn ? "window" : own_bm[i] ? "own" : "system",
 				(int)b->BytesPerRow, (unsigned long)b->Planes[0], (unsigned long)b->Planes[1],
 				(long)(b->Planes[1] - b->Planes[0]), (unsigned long)GetBitMapAttr(b, BMA_FLAGS));
 		}
@@ -427,16 +646,28 @@ int Sys_OpenDisplay(int cw, int ch, int hires)
 	if (!line_dirty) { Sys_CloseDisplay(); return 0; }
 	memset(line_dirty, ALL_BUFFERS, CH);   /* full first conversion into every buffer */
 	for (i = 0; i < NBUF; i++) {
-		line_lvl[i] = AllocMem(SH, MEMF_ANY);
+		line_lvl[i] = AllocVec(TR, MEMF_ANY);
 		if (!line_lvl[i]) { Sys_CloseDisplay(); return 0; }
-		memset(line_lvl[i], 8, SH);        /* unknown: the first narrow conversion clears the rest */
+		memset(line_lvl[i], 8, TR);        /* unknown: the first narrow conversion clears the rest */
 #ifndef NO_SHADOW
-		memset(line_lvl[i], 0, SH);        /* shadow not known yet */
-		shadow[i] = AllocMem((ULONG)SH * SW, MEMF_ANY);   /* 8 planes x SW/8 bytes a row */
+		memset(line_lvl[i], 0, TR);        /* shadow not known yet */
+		shadow[i] = AllocVec((ULONG)TR * SW, MEMF_ANY);   /* 8 planes x SW/8 bytes a row */
 		if (!shadow[i]) { Sys_CloseDisplay(); return 0; }
 #endif
 	}
-	for (i = 0; i < NBUF; i++) buf_safe[i] = (i != 0);
+#ifdef VSHIFT
+	if (Sys_VShiftOn) {
+		chash = AllocVec((ULONG)CH * 4, MEMF_ANY);
+		chash_stale = AllocVec(CH, MEMF_ANY);
+		if (!chash || !chash_stale) { Sys_CloseDisplay(); return 0; }
+		memset(chash_stale, 1, CH);
+		for (i = 0; i < NBUF; i++) {
+			row_hash[i] = AllocVec((ULONG)TR * 4, MEMF_ANY | MEMF_CLEAR);
+			if (!row_hash[i]) { Sys_CloseDisplay(); return 0; }
+		}
+	}
+#endif
+	for (i = 0; i < NBUF; i++) buf_safe[i] = Sys_VShiftOn || (i != 0);   /* vshift: the screen's own bitmap is on show, not buffer 0 */
 	shown = 0; safe_out = disp_out = 0;
 
 	win = OpenWindowTags(NULL,
@@ -488,15 +719,36 @@ void Sys_CloseDisplay(void)
 	int i;
 	while (safe_out > 0) { WaitPort(safeport); collect_safe(); }
 	while (disp_out > 0) { WaitPort(dispport); collect_disp(); }
+#ifdef VSHIFT
+	/* the screen's own bitmap back on show before the windows go */
+	if (sb_scr && scr && ChangeScreenBuffer(scr, sb_scr)) {
+		safe_out++; disp_out++;
+		while (safe_out > 0) { WaitPort(safeport); collect_safe(); }
+		while (disp_out > 0) { WaitPort(dispport); collect_disp(); }
+	}
+#endif
 	if (win) { ClearPointer(win); CloseWindow(win); win = NULL; }
 	if (blankptr) { FreeVec(blankptr); blankptr = NULL; }
 	for (i = 0; i < NBUF; i++) {
+#ifdef VSHIFT
+		if (sb[i] && Sys_VShiftOn) { int p; for (p = 0; p < 8; p++) sb[i]->sb_BitMap->Planes[p] = sb_planes0[i][p]; }
+#endif
 		if (sb[i] && scr) { FreeScreenBuffer(scr, sb[i]); sb[i] = NULL; }
 		if (own_bm[i]) { WaitBlit(); FreeBitMap(own_bm[i]); own_bm[i] = NULL; }
 	}
+#ifdef VSHIFT
+	if (sb_scr && scr) { FreeScreenBuffer(scr, sb_scr); sb_scr = NULL; }
+	for (i = 0; i < NBUF; i++) {
+		if (tall_bm[i]) { WaitBlit(); FreeBitMap(tall_bm[i]); tall_bm[i] = NULL; }
+		if (row_hash[i]) { FreeVec(row_hash[i]); row_hash[i] = NULL; }
+	}
+	if (chash) { FreeVec(chash); chash = NULL; }
+	if (chash_stale) { FreeVec(chash_stale); chash_stale = NULL; }
+	Sys_VShiftOn = 0;
+#endif
 	if (line_dirty) { FreeMem(line_dirty, CH); line_dirty = NULL; }
-	for (i = 0; i < NBUF; i++) if (line_lvl[i]) { FreeMem(line_lvl[i], SH); line_lvl[i] = NULL; }
-	for (i = 0; i < NBUF; i++) if (shadow[i]) { FreeMem(shadow[i], (ULONG)SH * SW); shadow[i] = NULL; }
+	for (i = 0; i < NBUF; i++) if (line_lvl[i]) { FreeVec(line_lvl[i]); line_lvl[i] = NULL; }
+	for (i = 0; i < NBUF; i++) if (shadow[i]) { FreeVec(shadow[i]); shadow[i] = NULL; }
 	if (scr) { CloseScreen(scr); scr = NULL; }
 	if (safeport) { DeleteMsgPort(safeport); safeport = NULL; }
 	if (dispport) { DeleteMsgPort(dispport); dispport = NULL; }
@@ -555,19 +807,25 @@ unsigned long Sys_Micros(void)
 
 void Sys_MarkLineDirty(int y)
 {
-	if (line_dirty && y >= 0 && y < CH) line_dirty[y] = ALL_BUFFERS;
+	if (line_dirty && y >= 0 && y < CH) {
+		line_dirty[y] = ALL_BUFFERS;
+#ifdef VSHIFT
+		if (chash_stale) chash_stale[y] = 1;
+#endif
+	}
 }
 
 void Sys_ShowFrame(const unsigned char *chunky, int pitch)
 {
 	unsigned long t0, t1;
 	struct BitMap *bm;
-	int y, next, bit;
+	int y, next, bit, wr, moved;
 
 	if (!scr) return;
 	t0 = Sys_Micros();
 	next = (shown + 1) % NBUF;
 	collect_safe();
+	if (Sys_Audit) { collect_disp(); audit_copper(); }
 	if (!buf_safe[next]) {
 		hb_safe_waits++;
 		if (hb_log_waits) Sys_Log("wait: buffer %d not safe yet (shown %d, safe_out %d, disp_out %d)", next, shown, safe_out, disp_out);
@@ -575,17 +833,34 @@ void Sys_ShowFrame(const unsigned char *chunky, int pitch)
 	while (!buf_safe[next]) { WaitPort(safeport); collect_safe(); }
 	t1 = Sys_Micros(); Sys_Perf.wait_us += t1 - t0; Sys_Perf.wait_safe_us += t1 - t0; t0 = t1;
 
-	bm = sb[next]->sb_BitMap;
 	bit = 1 << next;
+	wr = win_row[next];
+	moved = 0;
+#ifdef VSHIFT
+	if (Sys_VShiftOn) {
+		int nd = 0, r;
+		for (y = 0; y < SH; y++) {
+			if (chash_stale[y + YOFF]) { chash[y + YOFF] = hash_line(chunky + (y + YOFF) * pitch + XOFF); chash_stale[y + YOFF] = 0; }
+			nd += (line_dirty[y + YOFF] & bit) != 0;
+		}
+		r = vs_choose(next, Sys_AllLines ? SH : nd);
+		if (r != wr) { vs_place(next, r); wr = r; moved = 1; }
+		t1 = Sys_Micros(); Sys_Perf.vs_us += t1 - t0; t0 = t1;
+	}
+#endif
+	bm = sb[next]->sb_BitMap;
 	for (y = 0; y < SH; y++) {
 		const unsigned char *src = chunky + (y + YOFF) * pitch + XOFF;
-		if (Sys_AllLines || (line_dirty[y + YOFF] & bit)) {
+		if (moved || Sys_AllLines || (line_dirty[y + YOFF] & bit)) {
 			line_dirty[y + YOFF] &= ~bit;
 #ifndef NO_SHADOW
 			{
-				int np = line_planes(src);
-				c2p_line_sh(src, bm, y, np, shadow[next] + (LONG)y * (SW >> 2), line_lvl[next][y]);
-				line_lvl[next][y] = np;
+				int np = line_planes(src), t = wr + y;
+				c2p_line_sh(src, bm, y, np, shadow[next] + (LONG)t * (SW >> 2), line_lvl[next][t]);
+				line_lvl[next][t] = np;
+#ifdef VSHIFT
+				if (Sys_VShiftOn) row_hash[next][t] = chash[y + YOFF];
+#endif
 				if (np == 5) Sys_Perf.c2p_lines5++; else if (np == 6) Sys_Perf.c2p_lines6++;
 			}
 #elif !defined(NO_C2P5)
@@ -604,10 +879,11 @@ void Sys_ShowFrame(const unsigned char *chunky, int pitch)
 			Sys_Perf.c2p_lines++;
 		}
 	}
+	if (Sys_Audit) audit_frame(chunky, pitch, bm, next);
 	if (Sys_Osd) {
 		draw_osd(bm);
 #ifndef NO_SHADOW
-		for (y = 0; y < 12 && y < SH; y++) line_lvl[next][y] = 0;   /* the label is not in the shadow */
+		for (y = 0; y < 12 && y < SH; y++) line_lvl[next][wr + y] = 0;   /* the label is not in the shadow */
 #else
 		for (y = 0; y < 12 && y < SH; y++) line_lvl[next][y] = 8;   /* the label's pen is 255 */
 #endif
