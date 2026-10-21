@@ -70,6 +70,33 @@ static int CurrentFrameIndex = 0;
 static int FrameSkip = FRAME_SKIP_MIN;
 /* number of nops executed in this frame so far */
 static int NopCountToDate = NOPS_PER_MONITOR_SCREEN;
+#ifndef NO_IOTIME_FIX
+/* Amiga port (Pinball Dreams, 20 Oct 2026): I/O at its own NOP within the
+ * instruction (z80.h Z80_IO_AT). CPC_IOPre: NOPs of the current instruction
+ * before its I/O cycle; CPC_IOAhead: NOPs of it the CRTC has already been run
+ * (the main loop then runs only the rest). Never past the frame end, so the
+ * frame-end path below is unchanged. */
+int CPC_IOPre, CPC_IOAhead;
+void CPC_IOCatchUp(void)
+{
+	int k = CPC_IOPre - CPC_IOAhead;
+	if (k > NopCountToDate - CPC_IOAhead) k = NopCountToDate - CPC_IOAhead;
+	CPC_IOPre = 0;
+	if (k > 0) { CRTC_DoCycles(k); CPC_IOAhead += k; }
+}
+#ifndef NO_IOAHEAD_DEBT
+/* rel09 (21 Oct 2026): a memory write can be timed later than the instruction
+ * is long in Arnold (LD (HL),n: 2 NOPs here, written at NOP 3 as in CPCEC), so
+ * the CRTC may already be past the end of the instruction. Carry that lead into
+ * the next instruction instead of a negative count (which drew nothing but moved
+ * the monitor counters back while HCount stayed ahead). NO_IOAHEAD_DEBT: as before. */
+#define IO_AHEAD_TAKE(n) do { (n) -= CPC_IOAhead; CPC_IOAhead = 0; if (__builtin_expect((n) < 0, 0)) { CPC_IOAhead = -(n); (n) = 0; } } while (0)
+#else
+#define IO_AHEAD_TAKE(n) do { (n) -= CPC_IOAhead; CPC_IOAhead = 0; } while (0)
+#endif
+#else
+#define IO_AHEAD_TAKE(n) do { } while (0)
+#endif
 /* TRUE if audio is enabled, FALSE otherwise */
 static BOOL AudioActiveFlag = FALSE;
 /* TRUE if debugger is enabled, FALSE otherwise */
@@ -350,6 +377,7 @@ extern void Z80_HaltSteps(int Count);
 extern int CRTC_CyclesToEvent(void);
 //extern BOOL ConsoleBreak;
 
+#include "hint.h"
 void	CPCEmulation_Run(void)
 {
 	BOOL doBreak = FALSE;
@@ -363,7 +391,7 @@ void	CPCEmulation_Run(void)
 		/* Amiga port: a halted Z80 only burns cycles until the next CRTC event
 		   (the only place interrupts are raised), so do them as one batch.
 		   Stops one cycle short of the frame end so that path is unchanged. */
-		if (Z80_HaltHit && (Z80_HaltHit = 0, Z80_HaltIdle()))
+		if (ARN_UNLIKELY(Z80_HaltHit) && (Z80_HaltHit = 0, Z80_HaltIdle()))
 		{
 			/* batch to each event cycle in turn; an event that raises no
 			   interrupt leaves the Z80 halting, so carry on to the next one */
@@ -389,19 +417,23 @@ void	CPCEmulation_Run(void)
 		NopCount = Debugger_Execute(); 
 #endif
 		/* update CPC nop count - used for other hardware */
+#ifndef NO_HINTS
+		{ extern unsigned long CPC_NopCount; CPC_NopCount += NopCount; }   /* = CPC_UpdateNopCount, no call */
+#else
 		CPC_UpdateNopCount(NopCount);
+#endif
 
 		LocalNopCountToDate = NopCountToDate - NopCount;
 
 		/* nop counter is used to define when we render the whole display */
-		if (LocalNopCountToDate<=RenderOnEarlyAt)
+		if (ARN_UNLIKELY(LocalNopCountToDate<=RenderOnEarlyAt))
 		{
 			int NopsToFrameEnd;
 
 			if (LocalNopCountToDate > 0)
 			{
 				/* Amiga port: a skipped frame before a drawn one: drawing on now */
-				CRTC_DoCycles(NopCount);
+				{ int n = NopCount; IO_AHEAD_TAKE(n); CRTC_DoCycles(n); }
 				RenderOnEarlyAt = 0;
 				if (Render_IsRendererActive())
 				{
@@ -413,6 +445,7 @@ void	CPCEmulation_Run(void)
 			}
 
 			NopsToFrameEnd = NopCount + LocalNopCountToDate;
+			IO_AHEAD_TAKE(NopsToFrameEnd);   /* CPC_IOCatchUp stops at the frame end */
 
 			/* update CRTC for NopCount cycles */
 			if (NopsToFrameEnd!=0)
@@ -533,7 +566,10 @@ void	CPCEmulation_Run(void)
 			/* Amiga port: quiet cycles short of the next CRTC event are only
 			 * counted here and drawn later (crtc.c CRTC_Pending) */
 			extern int CRTC_RunLeft, CRTC_Pending, ASIC_DMA_IntPending;
-			if (NopCount < CRTC_RunLeft && !ASIC_DMA_IntPending)
+#endif
+			IO_AHEAD_TAKE(NopCount);   /* NopCount is not used again below */
+#if !defined(NO_DEFER) && !defined(NO_E)
+			if (ARN_LIKELY(NopCount < CRTC_RunLeft && !ASIC_DMA_IntPending))
 			{
 				CRTC_RunLeft -= NopCount;
 				CRTC_Pending += NopCount;

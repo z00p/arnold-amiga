@@ -26,6 +26,7 @@ static int read_tooltypes(STRPTR name, struct SysStart *st)
 	if (tt) strncpy(st->prefs, tt, SYS_PATH - 1);
 	if (FindToolType((STRPTR *)dobj->do_ToolTypes, (STRPTR)"MENU")) st->menu = 1;
 	if (FindToolType((STRPTR *)dobj->do_ToolTypes, (STRPTR)"HIRES")) st->hires = 1;
+	if (FindToolType((STRPTR *)dobj->do_ToolTypes, (STRPTR)"TALL")) st->tall = 1;
 	if (FindToolType((STRPTR *)dobj->do_ToolTypes, (STRPTR)"NOSOUND")) st->nosound = 1;
 	tt = (char *)FindToolType((STRPTR *)dobj->do_ToolTypes, (STRPTR)"SKIP");
 	if (tt) st->skip = atoi(tt);
@@ -33,6 +34,8 @@ static int read_tooltypes(STRPTR name, struct SysStart *st)
 	if (tt) st->refresh = atoi(tt);
 	tt = (char *)FindToolType((STRPTR *)dobj->do_ToolTypes, (STRPTR)"JOYKEYS");
 	if (tt) st->joykeys = atoi(tt);
+	tt = (char *)FindToolType((STRPTR *)dobj->do_ToolTypes, (STRPTR)"REMAP");
+	if (tt) strncpy(st->remap, tt, sizeof st->remap - 1);   /* REMAP=RSHIFT:M,... (key remap) */
 	tt = (char *)FindToolType((STRPTR *)dobj->do_ToolTypes, (STRPTR)"PAD");
 	if (tt) st->pad = !strcmp(tt, "CD32") || atoi(tt) == 1;
 	tt = (char *)FindToolType((STRPTR *)dobj->do_ToolTypes, (STRPTR)"SPEED");
@@ -78,10 +81,12 @@ int Sys_WBStart(int argc, char **argv, struct SysStart *st)
 			strcpy(st->prefs, pre.prefs);
 			if (pre.menu) st->menu = 1;
 			if (pre.hires) st->hires = 1;
+			if (pre.tall) st->tall = 1;
 			if (pre.nosound) st->nosound = 1;
 			if (pre.skip >= 0) st->skip = pre.skip;
 			if (pre.refresh > 0) st->refresh = pre.refresh;
 			if (pre.joykeys >= 0) st->joykeys = pre.joykeys;
+			if (pre.remap[0]) strcpy(st->remap, pre.remap);
 			if (pre.pad >= 0) st->pad = pre.pad;
 			if (pre.speed >= 0) st->speed = pre.speed;
 			if (pre.video >= 0) st->video = pre.video;

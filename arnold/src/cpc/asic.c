@@ -62,6 +62,32 @@ static ASIC_DATA ASIC_Data;
 struct { int Done; int Delay[3]; } ASIC_DMA_Stagger;
 int ASIC_DMA_IntPending;
 #endif
+#ifndef NO_DMAPHASE
+/* Amiga port (asictime, 21 Oct 2026): DMA timing. Arnold ran the DMA channels
+ * at the END of HSYNC (12-14 us after its start with the usual HSYNC); the
+ * ASIC (and CPCEC) runs them 2-3 us after HSYNC starts. Code driven by DMA
+ * interrupts (Sonic GX: split, scroll and palette writes) ran up to 10 us later
+ * relative to the beam than in CPCEC. Now the channels run at the HSYNC-start
+ * event (ASIC_HSyncStart) and their INT is raised DMAPHASE_DELAY cycles later
+ * through the stagger countdown (ASIC_DMA_Tick), which matches CPCEC's write
+ * positions in traces. A DCSR write that enables a channel within those
+ * cycles runs it at once (Sonic's special stage enables its channels one cycle
+ * after HSYNC starts; CPCEC reads DCSR at its DMA cycle). An extra CRTC event
+ * at the DMA cycle cost 1 ms a frame on Emu68, so there is none.
+ * NO_DMAPHASE: at the end of HSYNC, as before. */
+void    ASIC_DMA_HandleChannel(int ChannelIndex);
+static int ASIC_DMA_PhaseBase;     /* cycles to add to a DMA INT raised now */
+static void ASIC_DMA_RunChannels(int Mask, int Base)
+{
+	int i;
+	ASIC_DMA_Stagger.Done = 0;
+	ASIC_DMA_PhaseBase = Base;
+	for (i = 0; i < 3; i++)
+		if (Mask & (1 << i))
+			ASIC_DMA_HandleChannel(i);
+	ASIC_DMA_PhaseBase = 0;
+}
+#endif
 /* Amiga port: C. Bit c set = some sprite active on this line covers CRTC column
  * c (0-63). Rebuilt lazily after anything it depends on changes (enable masks,
  * sprite position/size); lets ASIC_BuildDisplayReturnMaskWithPixels skip the
@@ -80,6 +106,25 @@ int ASIC_ColMaskValid = 0;
 static unsigned short ASIC_ColSprites[64];
 static unsigned char ASIC_ColUsed[64];
 static int ASIC_ColUsedN = 0;
+#endif
+
+#ifndef NO_SPRLINE
+/* Sonic 50 fps (perf50, 20 Oct 2026): the sprite pixels of one line, composed
+ * once per line instead of merged per CRTC column. Byte (c << 3) + k is lores
+ * pixel k of column c (even hires pixel 2k of the column): 0 = no sprite, else
+ * pen + 16 of the first opaque sprite in priority order. Sprites are drawn from
+ * lowest priority (15) to highest (0), opaque pixels only, each over exactly
+ * its columns (MinColumn, WidthInColumns), so every byte gets the pixel
+ * ASIC_MergeEven gives. Valid (ASIC_LineBufOK) for ASIC_LineBufLine until the
+ * column mask is rebuilt (anything that changes the line's sprite set or a
+ * sprite's position/size/magnification) or a sprite on this line gets a pixel
+ * written (ASIC_WriteRam). NO_SPRLINE: merged per column (ASIC_SpriteCellEven). */
+unsigned char ASIC_LineBuf[64 * 8] __attribute__((aligned(4)));
+int ASIC_LineBufOK = 0;
+unsigned long ASIC_LineBufLine;
+static unsigned char ASIC_LineBufUsed[64];
+static unsigned long ASIC_LineBufUsedMask[2];
+static int ASIC_LineBufUsedN = 0;
 #endif
 
 /* rebuild ASIC_ColMask from the sprites active on this line (none: all zero) */
@@ -113,7 +158,65 @@ void ASIC_BuildColMask(void)
 			}
 		}
 	ASIC_ColMaskValid = 1;
+#ifndef NO_SPRLINE
+	ASIC_LineBufOK = 0;
+#endif
 }
+
+#ifndef NO_SPRLINE
+void ASIC_ComposeLine(unsigned long Line)
+{
+	unsigned long Active = (ASIC_Data.SpriteEnableMask & ASIC_Data.SpriteEnableMaskOnLine) ?
+		ASIC_Data.SpriteEnableMaskOnLine : 0;
+	unsigned char *lb = ASIC_LineBuf;
+	int i;
+	while (ASIC_LineBufUsedN > 0)
+	{
+		unsigned int *z = (unsigned int *)(lb + (ASIC_LineBufUsed[--ASIC_LineBufUsedN] << 3));
+		z[0] = 0; z[1] = 0;
+	}
+	ASIC_LineBufUsedMask[0] = ASIC_LineBufUsedMask[1] = 0;
+	for (i = 15; i >= 0; i--)
+	{
+		const ASIC_SPRITE_RENDER_INFO *ri;
+		const unsigned char *r;
+		unsigned long x, w;
+		int sh, n, p, d;
+		if ((Active & (1UL << i)) == 0)
+			continue;
+		ri = &ASIC_Data.SpriteInfo[i];
+		r = ASIC_Data.ASIC_Ram + (i << 8) + (((((unsigned long)Line - ri->y) & 0x01ff) >> ri->YMagShift) << 4);
+		{
+			const unsigned int *l = (const unsigned int *)r;
+			if (((l[0] | l[1] | l[2] | l[3]) & 0x0f0f0f0fU) == 0)
+				continue;
+		}
+		w = ri->WidthInColumns;
+		if (w > 64) w = 64;
+		for (d = 0; d < (int)w; d++)
+		{
+			int c = (int)((ri->MinColumn + d) & 0x03f);
+			if ((ASIC_LineBufUsedMask[c >> 5] & (1UL << (c & 31))) == 0)
+			{
+				ASIC_LineBufUsedMask[c >> 5] |= 1UL << (c & 31);
+				ASIC_LineBufUsed[ASIC_LineBufUsedN++] = (unsigned char)c;
+			}
+		}
+		sh = ri->XMagShift;
+		n = 16 << sh;
+		x = ri->x & 0x3ff;
+		/* hires pixel x + p of the line, even ones only */
+		for (p = (int)(x & 1); p < n; p += 2)
+		{
+			int Colour = r[p >> sh] & 0x0f;
+			if (Colour != 0)
+				lb[((x + p) & 0x3ff) >> 1] = (unsigned char)(Colour + 16);
+		}
+	}
+	ASIC_LineBufLine = Line;
+	ASIC_LineBufOK = 1;
+}
+#endif
 
 static void    ASIC_TriggerInterrupt(void);
 void    ASIC_DMA_DisableChannels(unsigned char Data);
@@ -1044,6 +1147,62 @@ static unsigned long ASIC_MergeEven(int Line, int HCount, int *pPixels)
 }
 #endif
 
+#ifndef NO_SPRINL
+/* Sonic 50 fps (perf50, 20 Oct 2026): a sprite cell drawn inline by
+ * CRTC_RunCells at PIXEL_STEP 2. The caller has already written the cell's 8
+ * lores bytes from the pixel cache (= Render_Paletted_PutDataWordPLUS's
+ * pixels where no sprite is); this overwrites the bytes under the first opaque
+ * sprite pixel, in priority order, with that pen's palette index, as the
+ * PutDataWordPLUS mask path does. Same tests as
+ * ASIC_BuildDisplayReturnMaskWithPixels first. One call instead of three and
+ * no round trip through the CRTC globals. NO_SPRINL: the original path. */
+void ASIC_SpriteCellEven(int Line, int HCount, unsigned char *pCell, const signed int *pRemap)
+{
+	unsigned long GM = 0, Cov;
+	int c = HCount & 0x03f;
+
+	if ((ASIC_Data.SpriteEnableMask & ASIC_Data.SpriteEnableMaskOnLine) == 0)
+		return;
+	if (!ASIC_ColMaskValid) ASIC_BuildColMask();
+	if ((ASIC_ColMask[c >> 5] & (1UL << (c & 31))) == 0)
+		return;
+	Cov = ASIC_ColSprites[c];
+	while (Cov != 0)
+	{
+		const ASIC_SPRITE_RENDER_INFO *ri;
+		const unsigned char *r;
+		unsigned long base;
+		int sh, j, i;
+		i = 31 - __builtin_clz((unsigned int)(Cov & (0UL - Cov)));
+		Cov &= Cov - 1;
+		ri = &ASIC_Data.SpriteInfo[i];
+		r = ASIC_Data.ASIC_Ram + (i << 8) + (((((unsigned long)Line - ri->y) & 0x01ff) >> ri->YMagShift) << 4);
+		{
+			const unsigned int *l = (const unsigned int *)r;
+			if (((l[0] | l[1] | l[2] | l[3]) & 0x0f0f0f0fU) == 0)
+				continue;
+		}
+		sh = ri->XMagShift;
+		base = ((unsigned long)(HCount << 4) - ri->x) & 0x3ff;
+		for (j = 0; j < 16; j += 2)
+		{
+			unsigned long idx = ((base + j) & 0x3ff) >> sh;
+			if (idx < 16)
+			{
+				int Colour = r[idx] & 0x0f;
+				if (Colour != 0 && (GM & (1UL << j)) == 0)
+				{
+					pCell[j >> 1] = (unsigned char)pRemap[Colour + 16];
+					GM |= 1UL << j;
+				}
+			}
+		}
+		if (GM == 0x5555)
+			break;
+	}
+}
+#endif
+
 #ifdef SPREVEN_CHECK
 static int chk_t[16], chk_on, chk_n; static unsigned long chk_m1;
 static unsigned long chk(int Line, int HCount, int *pPixels, unsigned long m2)
@@ -1256,9 +1415,15 @@ void    ASIC_HSyncStart(int CRTC_LineCounter, int CRTC_RasterCounter)
 		ASIC_SetRasterInterrupt();
 		ASIC_TriggerInterrupt();
 	}
+#ifndef NO_DMAPHASE
+	if (ASIC_Data.InternalDCSR & 0x07)
+	{
+		ASIC_DMA_RunChannels(ASIC_Data.InternalDCSR & 0x07, DMAPHASE_DELAY);
+		ASIC_TriggerInterrupt();
+	}
+#endif
 }
 #endif
-
 void    ASIC_HSync(int CRTC_LineCounter, int CRTC_RasterCounter)
 {
         /* if ASIC is not enabled, then functions not
@@ -1283,7 +1448,9 @@ void    ASIC_HSync(int CRTC_LineCounter, int CRTC_RasterCounter)
 #endif
 
         /* do a dma cycle and maybe set a dma interrupt */
+#ifdef NO_DMAPHASE
         ASIC_DoDMA();
+#endif
 
         /* trigger int if any sources require an interrupt */
         ASIC_TriggerInterrupt();
@@ -1576,6 +1743,11 @@ void    ASIC_WriteRam(int Addr,int Data)
 
                 /* remove upper nibble from sprite data */
                 ASIC_Data.ASIC_Ram[Addr/* & 0x0fff*/] = (unsigned char)(Data & 0x0f);
+#ifndef NO_SPRLINE
+                /* perf50: a sprite of this line changed: compose the line again */
+                if (ASIC_Data.SpriteEnableMaskOnLine & (1UL << (Addr >> 8)))
+                        ASIC_LineBufOK = 0;
+#endif
                 return;
         }
 
@@ -1825,6 +1997,18 @@ void    ASIC_WriteRam(int Addr,int Data)
                         ASIC_DMA_DisableChannels((unsigned char)Data);
                 }
 
+#ifndef NO_DMAPHASE
+                /* asictime: a channel enabled within DMAPHASE_DELAY cycles of the
+                 * HSYNC start still runs on this line (its INT at the usual cycle) */
+                {
+                        int hc = CRTC_HSyncCount(), New = Data & 0x07 & ~ASIC_Data.InternalDCSR;
+                        if (New && hc >= 0 && hc < DMAPHASE_DELAY)
+                        {
+                                ASIC_Data.InternalDCSR |= New;   /* HandleChannel needs it set */
+                                ASIC_DMA_RunChannels(New, DMAPHASE_DELAY - hc);
+                        }
+                }
+#endif
                 /* keep info about channels enabled and the channels interrupting */
 #ifndef NO_IVEC_FIX
                 /* Amiga port (18 Oct 2026): a DCSR write does not cancel a
@@ -1968,6 +2152,9 @@ void    ASIC_DMA_ExecuteCommand(int ChannelIndex)
         Addr = ASIC_Data.DMA[ChannelIndex].Addr.Addr_W;
 		
         Command = ASIC_DMA_GetOpcode((Z80_WORD)(Addr & 0x0fffe));
+#ifdef TRACE_HW
+	{ extern void Trace_Hw(const char *, int, int); Trace_Hw(ChannelIndex == 0 ? "DMA0 cmd" : ChannelIndex == 1 ? "DMA1 cmd" : "DMA2 cmd", Addr, Command >> 8); }
+#endif
         
         CommandOpcode = (Command & 0x07000)>>12;
 
@@ -1994,7 +2181,11 @@ void    ASIC_DMA_ExecuteCommand(int ChannelIndex)
                 PSG_RegisterSelect(Register);
 
                 /* write data */
+#ifdef SOUNDQ_TRACE
+                { extern int SoundQ_FromDMA; SoundQ_FromDMA = 1; PSG_WriteData(Data); SoundQ_FromDMA = 0; }
+#else
                 PSG_WriteData(Data);
+#endif
 
                 /* select previous register again - not to upset other code */
                 PSG_RegisterSelect(PreviousRegisterSelected);
@@ -2057,10 +2248,17 @@ void    ASIC_DMA_ExecuteCommand(int ChannelIndex)
 
                                 /* set channel interrupt */
 #ifndef NO_DMA_STAGGER
+#ifndef NO_DMAPHASE
+                                if (ASIC_DMA_Stagger.Done + ASIC_DMA_PhaseBase != 0)
+                                {
+                                        /* raised later (see ASIC_DMA_Tick) */
+                                        ASIC_DMA_Stagger.Delay[ChannelIndex] = ASIC_DMA_Stagger.Done + ASIC_DMA_PhaseBase;
+#else
                                 if (ASIC_DMA_Stagger.Done != 0)
                                 {
                                         /* raised later (see ASIC_DMA_Tick) */
                                         ASIC_DMA_Stagger.Delay[ChannelIndex] = ASIC_DMA_Stagger.Done;
+#endif
                                         ASIC_DMA_IntPending = 1;
                                 }
                                 else

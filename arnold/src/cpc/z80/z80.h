@@ -304,6 +304,23 @@ void            Z80_DoOut(Z80_WORD Addr, Z80_BYTE Data);
 /* read a byte from a I/O port */
 Z80_BYTE        Z80_DoIn(Z80_WORD Addr);
 
+/* Amiga port (Pinball Dreams, 20 Oct 2026): the NOP of the instruction at which
+ * its I/O cycle happens. The emulation runs the CRTC after each instruction, so
+ * an OUT or IN used to reach the CRTC/Gate Array/PPI at the start of its
+ * instruction, 2-5 us early. Each I/O instruction now states how many of its
+ * NOPs pass before the I/O cycle (as on the CPC, and as CPCEC times it) and
+ * Z80_DoOut/Z80_DoIn run the CRTC up to that point first (arnold.c
+ * CPC_IOCatchUp). NO_IOTIME_FIX (define): I/O at the start, as before. */
+#ifndef NO_IOTIME_FIX
+extern int CPC_IOPre;
+#define Z80_IO_AT(n) (CPC_IOPre = (n))
+#else
+#define Z80_IO_AT(n) ((void)0)
+#endif
+#if defined(NO_IOTIME_FIX) && !defined(NO_ASICTIME)
+#define NO_ASICTIME   /* asictime (cpc.c) needs the I/O catch-up above */
+#endif
+
 
 /*--------*/
 

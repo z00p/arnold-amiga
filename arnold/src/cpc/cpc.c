@@ -107,7 +107,8 @@ void CPC_InstallWritePort(CPCPortWrite *writePort)
 	NumWritePorts++;
 }
 
-static unsigned long   NopCount = 0;
+unsigned long   CPC_NopCount = 0;   /* perf50: not static (arnold.c adds to it inline) */
+#define NopCount CPC_NopCount
 
 //static unsigned char *pCPCAmsdos;
 
@@ -2285,8 +2286,26 @@ void CPC_WriteMemory(Z80_WORD Addr,Z80_BYTE Data)
 }
 
 /* write a byte to emulator memory with paging */
+#ifndef NO_ASICTIME
+/* Amiga port (asictime, 21 Oct 2026): a write to the ASIC page takes effect at
+ * its memory-write cycle (z80.c Z80_WriteNop, CPCEC's timing), not at the start
+ * of the instruction: the CRTC/ASIC is run up to that NOP first (arnold.c
+ * CPC_IOCatchUp, as for OUT to the CRTC). Registers &6000-&7FFF; sprite pixels
+ * &4000-&4FFF too unless NO_ASICTIME_SPR. NO_ASICTIME: at the start, as before. */
+int Z80_WriteNop(Z80_WORD Addr);
+extern int CPC_IOPre;
+void CPC_IOCatchUp(void);
+#ifdef NO_ASICTIME_SPR
+#define ASICTIME_ADDR(a) (((a) & 0x0e000) == 0x06000)
+#else
+#define ASICTIME_ADDR(a) (((a) & 0x0e000) == 0x06000 || ((a) & 0x0f000) == 0x04000)
+#endif
+#endif
 void CPCPlus_WriteMemoryWithASICRamEnabled(Z80_WORD Addr,Z80_BYTE Data)
 {
+#ifndef NO_ASICTIME
+	if (ASICTIME_ADDR(Addr)) { CPC_IOPre = Z80_WriteNop(Addr); CPC_IOCatchUp(); }
+#endif
 	/* Amiga port: ASIC registers (&6000-&7FFF: sprite position/size, palette,
 	 * split, scroll, DMA) may change what the CRTC draws next; sprite pixel
 	 * data (&4000-&4FFF) is read live by the sprite path. */
@@ -2728,8 +2747,28 @@ void	KCCompact_Out(Z80_WORD Port, Z80_BYTE Data)
 
 /* Write data to a I/O port */
 void CRTC_InvalidateRun(void);   /* Amiga port: crtc.c run-based stepping */
+#ifndef NO_IOTIME_FIX
+void CPC_IOCatchUp(void);   /* arnold.c: run the CRTC to the I/O cycle (z80.h Z80_IO_AT) */
+/* Which accesses are timed. Default: only writes to a CRTC register (A14 = 0,
+ * A9 = 0, A8 = 1: &BDxx), the case Pinball Dreams needs (R0 rewritten just after
+ * a line ends). This keeps Sonic GX frame-identical; other games can change where
+ * a CRTC write fell within 3 us of a CRTC event (e.g. the boot's first R0 write
+ * sets a slightly different CPU/CRTC phase). IOTIME_ALL (define): every OUT and
+ * IN, as on the CPC (CPCEC): also straightens Burnin' Rubber's title bars, but
+ * moves raster lines at the left edge in Sonic GX; not evaluated further yet. */
+#ifdef IOTIME_ALL
+#define IOTIME_PORT_OUT(p) 1
+#define IOTIME_PORT_IN(p) 1
+#else
+#define IOTIME_PORT_OUT(p) (((p) & 0x4300) == 0x0100)
+#define IOTIME_PORT_IN(p) 0
+#endif
+#endif
 void    Z80_DoOut(Z80_WORD Port,Z80_BYTE Data)
 {
+#ifndef NO_IOTIME_FIX
+	if (IOTIME_PORT_OUT(Port)) CPC_IOCatchUp();
+#endif
 	/* Amiga port: an OUT that reaches the CRTC (A14 = 0) or the Gate Array
 	 * (A15 = 0: pens, mode, ROM/RAM and ASIC paging) may change what the CRTC
 	 * draws next; PPI/PSG, FDC and printer writes cannot. */
@@ -3070,6 +3109,9 @@ Z80_BYTE        KCCompact_In(Z80_WORD Port)
 
 Z80_BYTE        Z80_DoIn(Z80_WORD Port)
 {
+#ifndef NO_IOTIME_FIX
+	if (IOTIME_PORT_IN(Port)) CPC_IOCatchUp();
+#endif
 	if (CRTC_Pending) CRTC_Flush();   /* crtc.c deferred cells: the CRTC is up to date for reads */
 	switch (CPC_GetHardware())
 	{
@@ -3138,6 +3180,9 @@ void    Z80_AcknowledgeInterrupt(void)
         }
 #endif
 
+#ifdef TRACE_HW
+        { extern void Trace_Hw(const char *, int, int); Trace_Hw("INT ack, vector", PlusVector, 0); }
+#endif
         Z80_ClearInterruptRequest();
 #ifndef NO_INTHOLD_FIX
         /* Amiga port (19 Oct 2026): the ASIC holds the Z80's INT line while

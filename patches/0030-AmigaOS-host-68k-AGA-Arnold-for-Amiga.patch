@@ -1,7 +1,7 @@
-From 61e76749ba6a5c4468b2f21d6a3fa1fb1bc1a9f0 Mon Sep 17 00:00:00 2001
+From 2ecbdb7517c208639b9a93e138cea1a10b002b84 Mon Sep 17 00:00:00 2001
 From: John Stringer <jcec_1@yahoo.co.uk>
-Date: Tue, 20 Oct 2026 20:42:16 +0100
-Subject: [PATCH 25/26] AmigaOS host (68k AGA): Arnold for Amiga
+Date: Wed, 21 Oct 2026 20:34:33 +0100
+Subject: [PATCH 30/31] AmigaOS host (68k AGA): Arnold for Amiga
 
 src/amiga: the AmigaOS 3.x host (AGA screen with chunky-to-planar and triple
 buffering, Paula sound, rawkey keyboard matrix, joystick/CD32 pads and keys as
@@ -15,18 +15,19 @@ Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
  src/amiga/amiga_iff.c  |  100 +++
  src/amiga/amiga_logo.c |  153 ++++
  src/amiga/amiga_logo.h |    6 +
- src/amiga/amiga_menu.c |  576 +++++++++++++++
- src/amiga/amiga_sys.c  | 1498 ++++++++++++++++++++++++++++++++++++++++
- src/amiga/amiga_sys.h  |  119 ++++
- src/amiga/amiga_wb.c   |  131 ++++
- src/amiga/audio_conv.h |   15 +
- src/amiga/host_amiga.c |  802 +++++++++++++++++++++
- src/amiga/keyscript.c  |  137 ++++
- src/amiga/keyscript.h  |    9 +
+ src/amiga/amiga_menu.c |  579 +++++++++++++++
+ src/amiga/amiga_sys.c  | 1551 ++++++++++++++++++++++++++++++++++++++++
+ src/amiga/amiga_sys.h  |  121 ++++
+ src/amiga/amiga_wb.c   |  136 ++++
+ src/amiga/audio_conv.h |   46 ++
+ src/amiga/c2p_sh.h     |   48 ++
+ src/amiga/host_amiga.c |  878 +++++++++++++++++++++++
+ src/amiga/keyscript.c  |  144 ++++
+ src/amiga/keyscript.h  |   12 +
  src/amiga/padtest.c    |  125 ++++
  src/amiga/screenshot.c |  115 +++
  src/amiga/screenshot.h |    7 +
- 15 files changed, 3831 insertions(+)
+ 16 files changed, 4059 insertions(+)
  create mode 100644 src/amiga/Makefile
  create mode 100644 src/amiga/amiga_iff.c
  create mode 100644 src/amiga/amiga_logo.c
@@ -36,6 +37,7 @@ Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
  create mode 100644 src/amiga/amiga_sys.h
  create mode 100644 src/amiga/amiga_wb.c
  create mode 100644 src/amiga/audio_conv.h
+ create mode 100644 src/amiga/c2p_sh.h
  create mode 100644 src/amiga/host_amiga.c
  create mode 100644 src/amiga/keyscript.c
  create mode 100644 src/amiga/keyscript.h
@@ -366,10 +368,10 @@ index 0000000..b22b3c7
 +#endif
 diff --git a/src/amiga/amiga_menu.c b/src/amiga/amiga_menu.c
 new file mode 100644
-index 0000000..777bfab
+index 0000000..cfa622d
 --- /dev/null
 +++ b/src/amiga/amiga_menu.c
-@@ -0,0 +1,576 @@
+@@ -0,0 +1,579 @@
 +/* Arnold on AmigaOS: the menu screen (GadTools), styled after the OS 3.2 prefs
 + * editors. 17 Oct 2026 (John): the settings live in pull-down menus (Options,
 + * Controls, Display) and the window keeps what changes from game to game.
@@ -414,7 +416,7 @@ index 0000000..777bfab
 +enum { M_NONE, M_LOADCART, M_LOADA, M_LOADB, M_EJECTALL, M_KEYS, M_SHOT, M_SAVE, M_SAVEGAME, M_FORGETGAME, M_QUIT,
 +       M_SOUND, M_HIRES, M_SKIP0, M_SKIP1, M_SKIP2, M_SKIP3, M_SKIP5, M_REF1, M_REF2, M_REF3, M_REF4,
 +       M_JOY0, M_JOY1, M_JOY2, M_PAD0, M_PAD1, M_SPEED50, M_SPEEDDISP,
-+       M_VIDAUTO, M_VIDPAL, M_VIDNTSC, M_MODEL464, M_MODEL664, M_MODEL6128, M_MODELPLUS, M_MODELGX };
++       M_VIDAUTO, M_VIDPAL, M_VIDNTSC, M_TALL, M_MODEL464, M_MODEL664, M_MODEL6128, M_MODELPLUS, M_MODELGX };
 +#define MENU_REOPEN (-2)   /* menu_pick: the video mode changed, open the screen again */
 +
 +/* Pens of the 16-colour menu screen (16 Oct 2026, styled after the OS 3.2
@@ -505,6 +507,7 @@ index 0000000..777bfab
 +	{ NM_SUB, (STRPTR)"Auto (as Workbench)", NULL, CHECKIT, X(0), (APTR)M_VIDAUTO },
 +	{ NM_SUB, (STRPTR)"PAL", NULL, CHECKIT, X(1), (APTR)M_VIDPAL },
 +	{ NM_SUB, (STRPTR)"NTSC", NULL, CHECKIT, X(2), (APTR)M_VIDNTSC },
++	{ NM_ITEM, (STRPTR)"Full height (all 272 lines)", NULL, CHECKIT | MENUTOGGLE, 0, (APTR)M_TALL },
 +	{ NM_ITEM, (STRPTR)"Game speed", NULL, 0, 0, NULL },
 +	{ NM_SUB, (STRPTR)"50 Hz (correct)", NULL, CHECKIT, X(0), (APTR)M_SPEED50 },
 +	{ NM_SUB, (STRPTR)"Follow display (NTSC: 20% fast)", NULL, CHECKIT, X(1), (APTR)M_SPEEDDISP },
@@ -693,6 +696,7 @@ index 0000000..777bfab
 +		for (k = 0; k < (int)(sizeof on / sizeof on[0]); k++) if (on[k] == id) want = 1;
 +		if (id == M_SOUND) want = m->sound ? 1 : 0;
 +		if (id == M_HIRES) want = m->hires ? 1 : 0;
++		if (id == M_TALL) want = m->tall ? 1 : 0;
 +		if (want) nm[i].nm_Flags |= CHECKED; else nm[i].nm_Flags &= ~CHECKED;
 +	}
 +}
@@ -778,7 +782,7 @@ index 0000000..777bfab
 +	if (!g) { close_menu(); return 0; }
 +	if (!make_menus(m)) { close_menu(); return 0; }
 +	/* version, credit and build time (date and hh:mm) in the title bar */
-+	sprintf(wintitle, "Arnold v0.8 for Amiga - core: Kevin Thacker - built %.6s %.4s %.5s", __DATE__, __DATE__ + 7, __TIME__);
++	sprintf(wintitle, "Arnold v0.9 for Amiga - core: Kevin Thacker - built %.6s %.4s %.5s", __DATE__, __DATE__ + 7, __TIME__);
 +	mwin = OpenWindowTags(NULL, WA_CustomScreen, (ULONG)mscr, WA_Left, 0, WA_Top, mscr->BarHeight + 1,
 +		WA_Width, 640, WA_Height, wh,
 +		WA_Title, (ULONG)wintitle,
@@ -842,6 +846,7 @@ index 0000000..777bfab
 +	case M_QUIT: return SYS_MENU_QUIT;
 +	case M_SOUND: m->sound = checked; break;
 +	case M_HIRES: m->hires = checked; break;
++	case M_TALL: m->tall = checked; break;
 +	case M_SKIP0: case M_SKIP1: case M_SKIP2: case M_SKIP3: case M_SKIP5: m->skip = skip_values[id - M_SKIP0]; break;
 +	case M_REF1: case M_REF2: case M_REF3: case M_REF4: m->refresh = id - M_REF1 + 1; break;
 +	case M_JOY0: case M_JOY1: case M_JOY2: m->joykeys = id - M_JOY0; break;
@@ -948,10 +953,10 @@ index 0000000..777bfab
 +}
 diff --git a/src/amiga/amiga_sys.c b/src/amiga/amiga_sys.c
 new file mode 100644
-index 0000000..afffaa5
+index 0000000..9f93366
 --- /dev/null
 +++ b/src/amiga/amiga_sys.c
-@@ -0,0 +1,1498 @@
+@@ -0,0 +1,1551 @@
 +/* Arnold on AmigaOS: screen, c2p, palette, keyboard and joystick.
 + * AmigaOS 3.x, AGA. Built with bebbo's m68k-amigaos-gcc, -noixemul. */
 +#include <exec/types.h>
@@ -981,7 +986,7 @@ index 0000000..afffaa5
 +#include <stdarg.h>
 +
 +unsigned long __stack = 256 * 1024;   /* libnix: enlarge the stack at start */
-+static const char ver[] __attribute__((used)) = "$VER: Arnold 0.8 (20.10.2026) Amiga port, GPL-2.0";
++static const char ver[] __attribute__((used)) = "$VER: Arnold 0.9 (21.10.2026) Amiga port, GPL-2.0";
 +
 +/* ---- diagnostic log ---- */
 +static FILE *logf;
@@ -1194,12 +1199,22 @@ index 0000000..afffaa5
 + * NO_SHADOW (define): every long of the used planes written, as step 1. */
 +static ULONG *shadow[NBUF];          /* [row][plane][SW/32] */
 +
++#ifndef NO_EMUBR
++#include "c2p_sh.h"
++#endif
 +static void c2p_line_sh(const unsigned char *src, struct BitMap *bm, int y, int np, ULONG *sh, int known)
 +{
 +	int p, g, ng = SW >> 5;
 +	UBYTE *plane[8];
 +	unsigned long w = 0;
 +	for (p = 0; p < 8; p++) plane[p] = bm->Planes[p] + (LONG)y * bm->BytesPerRow;
++#ifndef NO_EMUBR
++	if (__builtin_expect(known != 0, 1))
++	{
++		Sys_Perf.c2p_chip_longs += c2p_sh_known(src, plane, ng, sh);
++		return;
++	}
++#endif
 +	for (g = 0; g < ng; g++) {
 +		ULONG o[8];
 +		int k;
@@ -1266,6 +1281,7 @@ index 0000000..afffaa5
 +#define VS_DMAX 96
 +#endif
 +int Sys_VShiftOn, Sys_NoVShift, Sys_VShiftOn_Last;
++int Sys_TallScreen;
 +static int TR;                       /* rows in each buffer's chip area (SH without vshift) */
 +static int win_row[NBUF];            /* first row of the window shown */
 +#ifdef VSHIFT
@@ -1436,6 +1452,27 @@ index 0000000..afffaa5
 +	t1 = Sys_Micros();
 +	if (t1 > t0) Sys_DisplayFrameUs = (t1 - t0) / 6;
 +	measured_mode = modeid;
++#ifndef NO_PALBEAM
++	/* A PAL screen whose beam runs at 60 Hz (21 Oct 2026, John's A1200: 16.86 ms
++	 * VBlank for 0.8 and 0.9 alike, PAL DisplayFlags): another program wrote
++	 * BEAMCON0 = NTSC and left it (AmiMSX does for 60 Hz MSX games), and graphics
++	 * never rewrites it for a PAL view on a PAL machine. The 256-line screen then
++	 * sits in a 263-line frame: its bottom ~38 lines are lost and the picture
++	 * looks low. Put the PAL beam back (what the machine booted with). Not for an
++	 * NTSC mode (VIDEO=NTSC) or an NTSC machine. NO_PALBEAM: leave it. */
++	if (!Sys_Display50Hz() && (GfxBase->DisplayFlags & PAL)
++	 && ((modeid & MONITOR_ID_MASK) == PAL_MONITOR_ID || (modeid & MONITOR_ID_MASK) == DEFAULT_MONITOR_ID)) {
++		unsigned long was = Sys_DisplayFrameUs;
++		custom.beamcon0 = DISPLAYPAL;
++		WaitTOF(); WaitTOF();
++		t0 = Sys_Micros();
++		for (i = 0; i < 6; i++) WaitTOF();
++		t1 = Sys_Micros();
++		if (t1 > t0) Sys_DisplayFrameUs = (t1 - t0) / 6;
++		Sys_Log("display: PAL screen on a 60 Hz beam (VBlank %lu us; BEAMCON0 left NTSC by another program): PAL beam restored, VBlank now %lu us",
++			was, Sys_DisplayFrameUs);
++	}
++#endif
 +	Sys_Log("display: VBlank every %lu us (%s), mode %08lx, viewport mode %08lx, gfx DisplayFlags %04x, E-clock %lu Hz",
 +		Sys_DisplayFrameUs, Sys_Display50Hz() ? "50 Hz" : "not 50 Hz", (unsigned long)modeid,
 +		(unsigned long)GetVPModeID(&scr->ViewPort), (unsigned)GfxBase->DisplayFlags, (unsigned long)SysBase->ex_EClockFrequency);
@@ -1467,6 +1504,10 @@ index 0000000..afffaa5
 +	if (!QueryOverscan(modeid, &rect, OSCAN_STANDARD)) {
 +		rect.MinX = 0; rect.MinY = 0; rect.MaxX = (hires ? 703 : 351); rect.MaxY = 271;
 +	}
++	/* TALL (Pinball Dreams, 20 Oct 2026): PAL standard overscan is 256 lines, so
++	 * rows 8-263 of the 272 are shown; a game drawn from the top of the frame
++	 * (Pinball Dreams' score row starts at row 2) loses its first lines. Full
++	 * height takes the mode's full vertical overscan, up to all 272 rows. */
 +	/* NTSC (19 Oct 2026, John): standard overscan is only about 200 lines, which
 +	 * crops games drawn to the screen edges. Take the mode's full vertical
 +	 * overscan (OSCAN_MAX, about 240 lines; at most 240 here, centred in it)
@@ -1477,10 +1518,10 @@ index 0000000..afffaa5
 +		struct DimensionInfo dims;
 +		struct Rectangle mx;
 +		if (GetDisplayInfoData(NULL, (UBYTE *)&dims, sizeof dims, DTAG_DIMS, modeid) > 0
-+		 && dims.Nominal.MaxY - dims.Nominal.MinY + 1 < 256
++		 && (dims.Nominal.MaxY - dims.Nominal.MinY + 1 < 256 || Sys_TallScreen)
 +		 && QueryOverscan(modeid, &mx, OSCAN_MAX) && mx.MaxY - mx.MinY > rect.MaxY - rect.MinY) {
-+			int h = mx.MaxY - mx.MinY + 1, cut = 0;
-+			if (h > 240) { cut = (h - 240) / 2; h = 240; }
++			int h = mx.MaxY - mx.MinY + 1, cut = 0, hmax = Sys_TallScreen ? ch : 240;
++			if (h > hmax) { cut = (h - hmax) / 2; h = hmax; }
 +			rect.MinY = mx.MinY + cut;
 +			rect.MaxY = rect.MinY + h - 1;
 +			ntsc_max = 1;
@@ -1494,6 +1535,13 @@ index 0000000..afffaa5
 +		(int)rect.MinX, (int)rect.MinY, (int)rect.MaxX, (int)rect.MaxY, SW, SH, cw, ch, (unsigned long)AvailMem(MEMF_CHIP));
 +	XOFF = (cw - SW) / 2;
 +	YOFF = (ch - SH) / 2;
++#ifdef YOFF7   /* opt-in: moves every PAL picture (Sonic too) up one line */
++	/* PAL 256-line screen (21 Oct 2026): the usual full-height Plus picture
++	 * (Sonic GX, Bomb Jack GX, Goldorak, Frogger, Picrocs ...) is drawn on
++	 * chunky rows 7-262, so centring (rows 8-263) lost its top line (Bomb Jack's
++	 * SIDE-ONE text tops) and showed an empty row 263. Rows 7-262 instead. */
++	if (!ntsc_max && ch - SH == 16) YOFF = 7;
++#endif
 +
 +	scr = OpenScreenTags(NULL,
 +		SA_Width, SW, SA_Height, SH, SA_Depth, 8,
@@ -2274,6 +2322,16 @@ index 0000000..afffaa5
 +		memset(aud_buf[0][slot] + samples, samples ? aud_buf[0][slot][samples - 1] : 0, aud_n - samples);
 +		memset(aud_buf[1][slot] + samples, samples ? aud_buf[1][slot][samples - 1] : 0, aud_n - samples);
 +	}
++#ifdef SOUNDQ_DUMP
++	/* soundq verification builds only: every block as Paula gets it (left then
++	   right, 8-bit signed) to PROGDIR:audio.raw, to compare with the headless WAV */
++	{ static BPTR fh; static int tried;
++	  if (!tried) { tried = 1; fh = Open((STRPTR)"PROGDIR:audio.raw", MODE_NEWFILE); }
++	  if (fh) { Write(fh, aud_buf[0][slot], samples); Write(fh, aud_buf[1][slot], samples); Flush(fh); }
++	  { static BPTR f16; static int tried16;   /* and the core's 16-bit block (big-endian) */
++	    if (!tried16) { tried16 = 1; f16 = Open((STRPTR)"PROGDIR:audio16.raw", MODE_NEWFILE); }
++	    if (f16) { Write(f16, (APTR)s16, samples * 4); Flush(f16); } } }
++#endif
 +	Disable();
 +	aud_wr = (aud_wr + 1) % ABUFS;
 +	aud_count++;
@@ -2452,10 +2510,10 @@ index 0000000..afffaa5
 +}
 diff --git a/src/amiga/amiga_sys.h b/src/amiga/amiga_sys.h
 new file mode 100644
-index 0000000..d06f20d
+index 0000000..44f6f33
 --- /dev/null
 +++ b/src/amiga/amiga_sys.h
-@@ -0,0 +1,119 @@
+@@ -0,0 +1,121 @@
 +/* Arnold on AmigaOS: the OS-facing half of the host. No Arnold headers here
 + * (cpcglob.h has its own BOOL, which clashes with exec/types.h), so
 + * host_amiga.c talks to the Amiga through this small interface only. */
@@ -2508,6 +2566,7 @@ index 0000000..d06f20d
 +struct SysMenu {
 +	char cart[SYS_PATH], diska[SYS_PATH], diskb[SYS_PATH];
 +	int sound, hires;
++	int tall;                /* full-height screen: all 272 CPC lines (PAL overscan), for games drawn into the top/bottom border */
 +	int skip, refresh;       /* frame skip (max in a row, 0 off) and fixed refresh (1 = every frame) */
 +	int joykeys;             /* keyboard as joystick: 0 off, 1 cursors, 2 QAOP */
 +	int pad;                 /* port 2 pad: 0 standard 2-button joystick, 1 CD32 pad */
@@ -2530,7 +2589,7 @@ index 0000000..d06f20d
 +
 +/* Workbench start (amiga_wb.c): fills st from the icon's ToolTypes and a
 + * project icon; returns 1 when started from Workbench. */
-+struct SysStart { char prefs[SYS_PATH], media[SYS_PATH]; int menu, hires, nosound, skip, refresh, joykeys, pad, speed, video, model; };   /* skip -1, refresh 0, others -1: not given */
++struct SysStart { char prefs[SYS_PATH], media[SYS_PATH], remap[128]; int menu, hires, tall, nosound, skip, refresh, joykeys, pad, speed, video, model; };   /* skip -1, refresh 0, others -1: not given */
 +int Sys_ParseModel(const char *v);   /* "464" "664" "6128" "PLUS" "GX4000" (any case) -> SYS_MODEL_*, -1 if not one */
 +int Sys_ParseVideo(const char *v);   /* "AUTO" "PAL" "NTSC" or 0-2 -> 0-2, -1 if not one */
 +int Sys_ParseSpeed(const char *v);   /* "50" or 0 -> 0, "DISPLAY" or 1 -> 1, -1 if not one */
@@ -2550,6 +2609,7 @@ index 0000000..d06f20d
 +                 audit_frames, audit_bad_frames, audit_bad_groups, audit_cop_checks, audit_cop_bad; } SysPerf;
 +extern int Sys_Audit;      /* AUDIT argument: read every converted buffer back from chip RAM and check it, and the copper's plane pointer */
 +extern int Sys_VShiftOn;   /* 1 when the display opened with the vertical-shift windows (NO_VSHIFT / NOVSHIFT: 0) */
++extern int Sys_TallScreen;   /* the next Sys_OpenDisplay takes the full height (menu.tall) */
 +extern int Sys_NoVShift;   /* NOVSHIFT argument: don't use them (A/B tests) */
 +extern int Sys_VShiftOn_Last;   /* as Sys_VShiftOn for the last display opened (kept after closing, for the perf report) */
 +extern SysPerf Sys_Perf;
@@ -2577,10 +2637,10 @@ index 0000000..d06f20d
 +#endif
 diff --git a/src/amiga/amiga_wb.c b/src/amiga/amiga_wb.c
 new file mode 100644
-index 0000000..f43c05c
+index 0000000..a242627
 --- /dev/null
 +++ b/src/amiga/amiga_wb.c
-@@ -0,0 +1,131 @@
+@@ -0,0 +1,136 @@
 +/* Arnold on AmigaOS: Workbench start. With libnix, main() gets argc == 0 and
 + * argv == the WBStartup message. We read the PREFS ToolType from the icon we
 + * were started from (Arnold's own, or a preset project icon) and take a project icon
@@ -2609,6 +2669,7 @@ index 0000000..f43c05c
 +	if (tt) strncpy(st->prefs, tt, SYS_PATH - 1);
 +	if (FindToolType((STRPTR *)dobj->do_ToolTypes, (STRPTR)"MENU")) st->menu = 1;
 +	if (FindToolType((STRPTR *)dobj->do_ToolTypes, (STRPTR)"HIRES")) st->hires = 1;
++	if (FindToolType((STRPTR *)dobj->do_ToolTypes, (STRPTR)"TALL")) st->tall = 1;
 +	if (FindToolType((STRPTR *)dobj->do_ToolTypes, (STRPTR)"NOSOUND")) st->nosound = 1;
 +	tt = (char *)FindToolType((STRPTR *)dobj->do_ToolTypes, (STRPTR)"SKIP");
 +	if (tt) st->skip = atoi(tt);
@@ -2616,6 +2677,8 @@ index 0000000..f43c05c
 +	if (tt) st->refresh = atoi(tt);
 +	tt = (char *)FindToolType((STRPTR *)dobj->do_ToolTypes, (STRPTR)"JOYKEYS");
 +	if (tt) st->joykeys = atoi(tt);
++	tt = (char *)FindToolType((STRPTR *)dobj->do_ToolTypes, (STRPTR)"REMAP");
++	if (tt) strncpy(st->remap, tt, sizeof st->remap - 1);   /* REMAP=RSHIFT:M,... (key remap) */
 +	tt = (char *)FindToolType((STRPTR *)dobj->do_ToolTypes, (STRPTR)"PAD");
 +	if (tt) st->pad = !strcmp(tt, "CD32") || atoi(tt) == 1;
 +	tt = (char *)FindToolType((STRPTR *)dobj->do_ToolTypes, (STRPTR)"SPEED");
@@ -2661,10 +2724,12 @@ index 0000000..f43c05c
 +			strcpy(st->prefs, pre.prefs);
 +			if (pre.menu) st->menu = 1;
 +			if (pre.hires) st->hires = 1;
++			if (pre.tall) st->tall = 1;
 +			if (pre.nosound) st->nosound = 1;
 +			if (pre.skip >= 0) st->skip = pre.skip;
 +			if (pre.refresh > 0) st->refresh = pre.refresh;
 +			if (pre.joykeys >= 0) st->joykeys = pre.joykeys;
++			if (pre.remap[0]) strcpy(st->remap, pre.remap);
 +			if (pre.pad >= 0) st->pad = pre.pad;
 +			if (pre.speed >= 0) st->speed = pre.speed;
 +			if (pre.video >= 0) st->video = pre.video;
@@ -2714,31 +2779,116 @@ index 0000000..f43c05c
 +}
 diff --git a/src/amiga/audio_conv.h b/src/amiga/audio_conv.h
 new file mode 100644
-index 0000000..2a7118a
+index 0000000..2dd98f7
 --- /dev/null
 +++ b/src/amiga/audio_conv.h
-@@ -0,0 +1,15 @@
-+/* Arnold core audio (16-bit stereo, VolumeLookup16Bit values 0..31744, native
-+ * byte order) to two signed 8-bit Paula channels. Shared by the Amiga host and
-+ * the headless PC build, so the PC's WAV dump checks the same conversion. */
+@@ -0,0 +1,46 @@
++/* Arnold core audio (16-bit stereo, native byte order) to two signed 8-bit Paula
++ * channels. Shared by the Amiga host and the headless PC build, so the PC's WAV
++ * dump checks the same conversion.
++ * soundq (21 Oct 2026): the core's values are mix byte << 7 plus a 7-bit fraction
++ * (0..32383, audioevent.c, unless NO_SNDLUT_FIX). With the AY's unipolar output
++ * (psgplay.c, unless NO_SNDUNIPOLAR) the DC is removed first, as the CPC's output
++ * capacitor does: a one-pole high-pass at about 14 Hz (y += dx - y / 256). */
 +#ifndef AUDIO_CONV_H
 +#define AUDIO_CONV_H
++#ifndef NO_SNDLUT_FIX
++#ifndef NO_SNDUNIPOLAR
++static long Audio_DcX[2], Audio_DcY[2];   /* last input, output (<< 8) per side */
++static int Audio_DcOn;
++static signed char Audio_DcBlock(int side, long x)
++{
++	long y, o;
++	if (!Audio_DcOn) { Audio_DcOn = 1; Audio_DcX[0] = Audio_DcX[1] = x; Audio_DcY[0] = Audio_DcY[1] = 0; }
++	/* y in 1/256 of the input units (2^15 x 2^8 = 2^23, fits a long) */
++	y = Audio_DcY[side] + ((x - Audio_DcX[side]) << 8) - (Audio_DcY[side] >> 8);
++	Audio_DcX[side] = x; Audio_DcY[side] = y;
++	o = (y + (1L << 14)) >> 15;   /* 1/256 units >> 7 -> 8-bit */
++	if (o > 127) o = 127; else if (o < -128) o = -128;
++	return (signed char)o;
++}
++#endif
++#endif
 +static void Audio_SplitTo8(const unsigned short *s16, signed char *l, signed char *r, int samples)
 +{
 +	int i;
 +	for (i = 0; i < samples; i++) {
++#ifdef NO_SNDLUT_FIX
 +		/* high byte 0..124, centred to -124..124 */
 +		l[i] = (signed char)((int)(s16[2 * i] >> 7) - 124);
 +		r[i] = (signed char)((int)(s16[2 * i + 1] >> 7) - 124);
++#elif !defined(NO_SNDUNIPOLAR)
++		l[i] = Audio_DcBlock(0, (long)s16[2 * i]);
++		r[i] = Audio_DcBlock(1, (long)s16[2 * i + 1]);
++#else
++		/* 0..32383 rounded to 0..253, centred on 128 (silence of the bipolar mix) */
++		int a = ((int)s16[2 * i] + 64) >> 7, b = ((int)s16[2 * i + 1] + 64) >> 7;
++		l[i] = (signed char)((a > 255 ? 255 : a) - 128);
++		r[i] = (signed char)((b > 255 ? 255 : b) - 128);
++#endif
 +	}
 +}
 +#endif
+diff --git a/src/amiga/c2p_sh.h b/src/amiga/c2p_sh.h
+new file mode 100644
+index 0000000..a598fc2
+--- /dev/null
++++ b/src/amiga/c2p_sh.h
+@@ -0,0 +1,48 @@
++/* Shadow c2p shaped for Emu68 (perf50, 20 Oct 2026), included by amiga_sys.c
++ * (and by tools/perf50/c2p_test.c, which checks it against the old loop).
++ * Same chip writes and shadow as c2p_line_sh with known != 0: for each group
++ * of 32 pixels all 8 plane longs are formed (planes the line does not use come
++ * out 0, as there, since its pixels have those bits clear), compared with the
++ * shadow, and only the differing ones written. Emu68 guesses a forward branch
++ * as not taken and leaves the translated code when wrong: the old loop took
++ * the "equal, no write" branch for most planes and tested np inside the pixel
++ * loop. Here the pixel part has no branches and the usual "equal" case falls
++ * through; the rare write is out of line. NO_EMUBR: the old loop. */
++#define C2P_SH_BYTE(lo, hi, s) \
++	lo  = c2p_lo[s[0]] << 7; hi  = c2p_hi[s[0]] << 7; \
++	lo |= c2p_lo[s[1]] << 6; hi |= c2p_hi[s[1]] << 6; \
++	lo |= c2p_lo[s[2]] << 5; hi |= c2p_hi[s[2]] << 5; \
++	lo |= c2p_lo[s[3]] << 4; hi |= c2p_hi[s[3]] << 4; \
++	lo |= c2p_lo[s[4]] << 3; hi |= c2p_hi[s[4]] << 3; \
++	lo |= c2p_lo[s[5]] << 2; hi |= c2p_hi[s[5]] << 2; \
++	lo |= c2p_lo[s[6]] << 1; hi |= c2p_hi[s[6]] << 1; \
++	lo |= c2p_lo[s[7]];      hi |= c2p_hi[s[7]];
++#define C2P_SH_MERGE(lo, hi) \
++	o0 = (o0 << 8) | ( lo        & 0xff); o1 = (o1 << 8) | ((lo >>  8) & 0xff); \
++	o2 = (o2 << 8) | ((lo >> 16) & 0xff); o3 = (o3 << 8) | ((lo >> 24) & 0xff); \
++	o4 = (o4 << 8) | ( hi        & 0xff); o5 = (o5 << 8) | ((hi >>  8) & 0xff); \
++	o6 = (o6 << 8) | ((hi >> 16) & 0xff); o7 = (o7 << 8) | ((hi >> 24) & 0xff);
++#define C2P_SH_PUT(p, o) \
++	if (__builtin_expect(s[(p) * ng] != (o), 0)) { s[(p) * ng] = (o); *(ULONG *)(plane[p] + g4) = (o); w++; }
++
++static unsigned long c2p_sh_known(const unsigned char *src, UBYTE *const *plane, int ng, ULONG *sh)
++{
++	unsigned long w = 0;
++	ULONG *s = sh;
++	int g4 = 0;
++	const unsigned char *end = src + (ng << 5);
++	while (src != end)
++	{
++		ULONG o0 = 0, o1 = 0, o2 = 0, o3 = 0, o4 = 0, o5 = 0, o6 = 0, o7 = 0, lo, hi;
++		C2P_SH_BYTE(lo, hi, src) C2P_SH_MERGE(lo, hi)
++		C2P_SH_BYTE(lo, hi, (src + 8)) C2P_SH_MERGE(lo, hi)
++		C2P_SH_BYTE(lo, hi, (src + 16)) C2P_SH_MERGE(lo, hi)
++		C2P_SH_BYTE(lo, hi, (src + 24)) C2P_SH_MERGE(lo, hi)
++		src += 32;
++		C2P_SH_PUT(0, o0) C2P_SH_PUT(1, o1) C2P_SH_PUT(2, o2) C2P_SH_PUT(3, o3)
++		C2P_SH_PUT(4, o4) C2P_SH_PUT(5, o5) C2P_SH_PUT(6, o6) C2P_SH_PUT(7, o7)
++		s++;
++		g4 += 4;
++	}
++	return w;
++}
 diff --git a/src/amiga/host_amiga.c b/src/amiga/host_amiga.c
 new file mode 100644
-index 0000000..9e4ea1e
+index 0000000..5c34480
 --- /dev/null
 +++ b/src/amiga/host_amiga.c
-@@ -0,0 +1,802 @@
+@@ -0,0 +1,878 @@
 +/* Arnold host for AmigaOS: implements src/cpc/host.h on top of amiga_sys.c.
 + * The core renders into an 8-bit chunky buffer (384 x 272, one byte per
 + * pixel, PaletteRemap indices); amiga_sys converts it to AGA bitplanes.
@@ -2880,7 +3030,12 @@ index 0000000..9e4ea1e
 +	framelog_report(f);
 +}
 +
-+static void script_setkey(int key, int down) { if (down) CPC_SetKey(key); else CPC_ClearKey(key); }
++static void host_key(int code, int down, int qual);
++static void script_setkey(int key, int down)
++{
++	if (key & KS_AMIGA) { host_key(key & 0x7f, down, 0); return; }   /* A:<key>: as if typed on the Amiga */
++	if (down) CPC_SetKey(key); else CPC_ClearKey(key);
++}
 +
 +static void script_snap(void)
 +{
@@ -3056,6 +3211,68 @@ index 0000000..9e4ea1e
 +	return only;
 +}
 +
++/* Key remap (20 Oct 2026, John): Amiga key -> CPC key, from remap= in the prefs
++ * or a game's .prefs, or REMAP= (ToolType or argument), e.g. "RSHIFT:M,RALT:SPACE".
++ * The CPC has one Shift in its matrix, so this is how Right Shift can be a
++ * different key (Pinball Dreams: right flipper = M). A remapped key gives only
++ * its new key (it comes before the joy keys); no cost when nothing is remapped. */
++static char remap_str[128], global_remap[128];
++static short remap_key[128];
++static int remap_on;
++static const struct { const char *name; unsigned char code; } amiga_keys[] = {
++	{"LSHIFT", 0x60}, {"RSHIFT", 0x61}, {"CAPS", 0x62}, {"CTRL", 0x63}, {"LALT", 0x64}, {"RALT", 0x65},
++	{"LAMIGA", 0x66}, {"RAMIGA", 0x67}, {"SPACE", 0x40}, {"BACKSPACE", 0x41}, {"TAB", 0x42},
++	{"ENTER", 0x43}, {"RETURN", 0x44}, {"ESC", 0x45}, {"DEL", 0x46},
++	{"UP", 0x4c}, {"DOWN", 0x4d}, {"RIGHT", 0x4e}, {"LEFT", 0x4f}, {NULL, 0} };
++static int amiga_key_code(const char *s)
++{
++	int i, id;
++	for (i = 0; amiga_keys[i].name; i++) if (!strcmp(amiga_keys[i].name, s)) return amiga_keys[i].code;
++	if (s[0] == 'F' && s[1] >= '1' && s[1] <= '9') { i = atoi(s + 1); if (i >= 1 && i <= 10) return 0x50 + i - 1; }
++	if (strlen(s) == 1 && ((s[0] >= 'A' && s[0] <= 'Z') || (s[0] >= '0' && s[0] <= '9'))) {
++		id = KeyScript_KeyId(s);   /* a letter or digit: where the Amiga has that CPC key */
++		for (i = 1; i < 0x40; i++) if (rawmap[i] == id) return i;
++	}
++	return -1;
++}
++static void remap_parse(const char *str)
++{
++	char buf[128], *p, *c;
++	int i, a, k;
++	for (i = 0; i < 128; i++) remap_key[i] = -1;
++	remap_on = 0;
++	strncpy(remap_str, str, sizeof remap_str - 1); remap_str[sizeof remap_str - 1] = 0;
++	strcpy(buf, remap_str);
++	for (p = buf; *p; p++) if (*p >= 'a' && *p <= 'z') *p -= 32;
++	for (p = strtok(buf, ", "); p; p = strtok(NULL, ", ")) {
++		c = strchr(p, ':'); if (!c) continue; *c++ = 0;
++		a = amiga_key_code(p); k = KeyScript_KeyId(c);
++		if (a < 0 || k < 0) { Sys_Log("remap: can't map '%s:%s'", p, c); continue; }
++		remap_key[a] = k; remap_on = 1;
++	}
++}
++
++static void host_key(int code, int down, int qual)
++{
++	if (keylog) { fprintf(keylog, "%02x %s q=%04x\n", code, down ? "down" : "up", qual); fflush(keylog); }
++	if (code == RAW_HELP) { if (down) Sys_RequestQuit(); return; }
++	if (code >= 128) return;
++	if (remap_on && remap_key[code] >= 0) { if (down) CPC_SetKey(remap_key[code]); else CPC_ClearKey(remap_key[code]); return; }
++	if (joykey(code, down)) return;
++	if (menu.running_model == SYS_MODEL_GX4000) return;   /* the console has no keyboard */
++	if (code == 0x0d) {
++		/* the Amiga's \ key: plain = the CPC's \, with Shift = the CPC's |
++		 * (Shift+@), which RSX commands such as |CPM and Orion Prime's loader
++		 * need (17 Oct 2026). Both cleared on release. */
++		if (down) CPC_SetKey((qual & 3) ? CPC_KEY_AT : CPC_KEY_BACKSLASH);
++		else { CPC_ClearKey(CPC_KEY_AT); CPC_ClearKey(CPC_KEY_BACKSLASH); }
++		return;
++	}
++	if (rawmap[code] >= 0) {
++		if (down) CPC_SetKey(rawmap[code]); else CPC_ClearKey(rawmap[code]);
++	}
++}
++
 +BOOL Host_ProcessSystemEvents(void)
 +{
 +	int code, down, qual;
@@ -3086,23 +3303,7 @@ index 0000000..9e4ea1e
 +	}
 +	if (help_after > 0 && --help_after == 0) Sys_RequestQuit();
 +	if (Sys_Poll()) return TRUE;
-+	while (Sys_GetKey(&code, &down, &qual)) {
-+		if (keylog) { fprintf(keylog, "%02x %s q=%04x\n", code, down ? "down" : "up", qual); fflush(keylog); }
-+		if (code == RAW_HELP) { if (down) Sys_RequestQuit(); continue; }
-+		if (code < 128 && joykey(code, down)) continue;
-+		if (menu.running_model == SYS_MODEL_GX4000) continue;   /* the console has no keyboard */
-+		if (code == 0x0d) {
-+			/* the Amiga's \ key: plain = the CPC's \, with Shift = the CPC's |
-+			 * (Shift+@), which RSX commands such as |CPM and Orion Prime's loader
-+			 * need (17 Oct 2026). Both cleared on release. */
-+			if (down) CPC_SetKey((qual & 3) ? CPC_KEY_AT : CPC_KEY_BACKSLASH);
-+			else { CPC_ClearKey(CPC_KEY_AT); CPC_ClearKey(CPC_KEY_BACKSLASH); }
-+			continue;
-+		}
-+		if (code < 128 && rawmap[code] >= 0) {
-+			if (down) CPC_SetKey(rawmap[code]); else CPC_ClearKey(rawmap[code]);
-+		}
-+	}
++	while (Sys_GetKey(&code, &down, &qual)) host_key(code, down, qual);
 +	joy = Sys_ReadJoystick() | kb_joy;
 +	diff = joy ^ joy_prev;
 +	if (keylog && diff) { fprintf(keylog, "joy %02x raw %08lx\n", joy, Sys_JoyRaw(1)); fflush(keylog); }
@@ -3159,7 +3360,7 @@ index 0000000..9e4ea1e
 +	return 1;
 +}
 +
-+/* Arnold [file ...] [NOSOUND] [HIRES] [MENU] [P=prefs] [SKIP=n] [REFRESH=n] [JOYKEYS=0|1|2]
++/* Arnold [file ...] [NOSOUND] [HIRES] [TALL] [MENU] [P=prefs] [SKIP=n] [REFRESH=n] [JOYKEYS=0|1|2]
 + * [PAD=0|CD32] [SPEED=50|DISPLAY] [VIDEO=AUTO|PAL|NTSC] [MODEL=464|664|6128|PLUS|GX4000]: .cpr cartridge (default
 + * PROGDIR:roms/system.cpr), .dsk disk in drive A (a second one in B), .sna
 + * snapshot. Starts straight into the emulation unless MENU is given or
@@ -3178,9 +3379,11 @@ index 0000000..9e4ea1e
 +		v = strchr(line, '='); if (!v) continue; *v++ = 0;
 +		if (!strcmp(line, "sound")) menu.sound = atoi(v);
 +		else if (!strcmp(line, "hires")) menu.hires = atoi(v);
++		else if (!strcmp(line, "tall")) menu.tall = atoi(v);
 +		else if (!strcmp(line, "skip")) skip_max = atoi(v);
 +		else if (!strcmp(line, "refresh")) refresh = atoi(v);
 +		else if (!strcmp(line, "joykeys")) joykeys = atoi(v);
++		else if (!strcmp(line, "remap")) remap_parse(v);
 +		else if (!strcmp(line, "pad")) Sys_PadType = atoi(v) == 1;
 +		else if (!strcmp(line, "speed")) { int k = Sys_ParseSpeed(v); if (k >= 0) menu.speed = k; }
 +		else if (!strcmp(line, "video")) { int k = Sys_ParseVideo(v); if (k >= 0) menu.video = k; }
@@ -3201,20 +3404,31 @@ index 0000000..9e4ea1e
 +		menu.sound, menu.hires, skip_max, refresh, global_joykeys, Sys_PadType,
 +		Sys_SpeedNames[menu.speed ? 1 : 0], Sys_VideoNames[menu.video >= 0 && menu.video <= 2 ? menu.video : 0],
 +		Sys_ModelNames[menu.model >= 0 && menu.model < SYS_MODELS ? menu.model : SYS_MODEL_PLUS], menu.cart, menu.diska, menu.diskb);
++	fprintf(f, "tall=%d\n", menu.tall);
++	if (global_remap[0]) fprintf(f, "remap=%s\n", global_remap);
 +	fclose(f);
 +}
 +
-+/* Per-game settings: <cartridge>.prefs beside the file (sound, hires), applied
-+ * when that cartridge is powered on; the global prefs come back otherwise. */
-+static int global_sound, global_hires;
-+static void game_prefs_name(char *out) { sprintf(out, "%s.prefs", menu.cart); }
++/* Per-game settings: <cartridge>.prefs beside the file (sound, hires, joy keys,
++ * full height, key remap), applied when that game is powered on; the global
++ * prefs come back otherwise. A disk game (the Plus with the system cartridge,
++ * or a plain CPC, with a disk in drive A) uses <disk A>.prefs (20 Oct 2026). */
++static int global_sound, global_hires, global_tall;
++static void game_prefs_name(char *out)
++{
++	const char *c = menu.cart, *e = c + strlen(c);
++	int plus = menu.model == SYS_MODEL_PLUS || menu.model == SYS_MODEL_GX4000;
++	int system = e - c >= 10 && !kwcmp(e - 10, "SYSTEM.CPR");
++	sprintf(out, "%s.prefs", menu.diska[0] && (!plus || system) ? menu.diska : menu.cart);
++}
 +
 +static void game_prefs_apply(void)
 +{
 +	char name[SYS_PATH + 8], line[64], *v;
 +	FILE *f;
-+	menu.sound = global_sound; menu.hires = global_hires; menu.game_prefs = 0;
++	menu.sound = global_sound; menu.hires = global_hires; menu.game_prefs = 0; menu.tall = global_tall;
 +	joykeys = global_joykeys;
++	if (strcmp(remap_str, global_remap)) remap_parse(global_remap);
 +	game_prefs_name(name);
 +	f = fopen(name, "r");
 +	if (!f) return;
@@ -3224,6 +3438,8 @@ index 0000000..9e4ea1e
 +		if (!strcmp(line, "sound")) menu.sound = atoi(v);
 +		else if (!strcmp(line, "hires")) menu.hires = atoi(v);
 +		else if (!strcmp(line, "joykeys")) joykeys = atoi(v);
++		else if (!strcmp(line, "tall")) menu.tall = atoi(v);
++		else if (!strcmp(line, "remap")) remap_parse(v);
 +	}
 +	fclose(f);
 +	menu.game_prefs = 1;
@@ -3236,7 +3452,8 @@ index 0000000..9e4ea1e
 +	game_prefs_name(name);
 +	f = fopen(name, "w");
 +	if (!f) { sprintf(msg, "Can't write game settings\n%s", name); Sys_MenuError(msg); return; }
-+	fprintf(f, "; Arnold game settings\nsound=%d\nhires=%d\njoykeys=%d\n", menu.sound, menu.hires, joykeys);
++	fprintf(f, "; Arnold game settings\nsound=%d\nhires=%d\njoykeys=%d\ntall=%d\n", menu.sound, menu.hires, joykeys, menu.tall);
++	if (remap_str[0]) fprintf(f, "remap=%s\n", remap_str);
 +	fclose(f);
 +	menu.game_prefs = 1;
 +}
@@ -3247,7 +3464,8 @@ index 0000000..9e4ea1e
 +	game_prefs_name(name);
 +	remove(name);
 +	menu.game_prefs = 0;
-+	menu.sound = global_sound; menu.hires = global_hires; joykeys = global_joykeys;
++	menu.sound = global_sound; menu.hires = global_hires; joykeys = global_joykeys; menu.tall = global_tall;
++	remap_parse(global_remap);
 +}
 +
 +static int load_media(const char *what, const char *name, unsigned char **pp, unsigned long *pl)
@@ -3375,6 +3593,7 @@ index 0000000..9e4ea1e
 +	/* HIRES: 768-pixel lines (CPC mode 2 at full width) on a hires screen; the
 +	 * default halves them to 384 for a lores screen (modes 0 and 1 exact). */
 +	if (display_open) { Sys_CloseDisplay(); display_open = 0; }
++	Sys_TallScreen = menu.tall;   /* TALL: all 272 lines (amiga_sys.c) */
 +	Render_SetRenderingAccuracyForWindowedMode(menu.hires ? RENDERING_ACCURACY_HIGH : RENDERING_ACCURACY_LOW);
 +	if (!Render_SetDisplayWindowed()) { Sys_MenuError("Can't open the AGA screen"); return 0; }
 +	/* Timing (19 Oct 2026). A 50 Hz display: one CPC frame per VBlank and Paula
@@ -3411,9 +3630,10 @@ index 0000000..9e4ea1e
 +{
 +	unsigned char *data; unsigned long len;
 +	const char *sna = NULL;
-+	int i, want_menu = 0, ndisk = 0, action, nosound = 0, hires = 0, media_given = 0;
++	int i, want_menu = 0, ndisk = 0, action, nosound = 0, hires = 0, tall = 0, media_given = 0;
 +	struct SysStart st;
 +
++	KeyScript_AmigaKey = amiga_key_code;   /* before KEYS= loads a script */
 +	strcpy(menu.cart, "PROGDIR:roms/system.cpr");
 +	strcpy(menu.prefs, "PROGDIR:Arnold.prefs");
 +	menu.sound = 1;
@@ -3426,9 +3646,11 @@ index 0000000..9e4ea1e
 +		if (st.prefs[0]) strncpy(menu.prefs, st.prefs, SYS_PATH - 1);
 +		want_menu = st.menu; nosound = st.nosound; hires = st.hires;
 +		prefs_load();
++		if (st.tall) menu.tall = 1;
 +		if (st.skip >= 0) skip_max = st.skip;
 +		if (st.refresh > 0) refresh = st.refresh;
 +		if (st.joykeys >= 0) joykeys = st.joykeys;
++		if (st.remap[0]) remap_parse(st.remap);
 +		if (st.pad >= 0) Sys_PadType = st.pad;
 +		if (st.speed >= 0) menu.speed = st.speed;
 +		if (st.video >= 0) menu.video = st.video;
@@ -3455,6 +3677,7 @@ index 0000000..9e4ea1e
 +			else if (!kwncmp(argv[i], "SKIP=", 5)) skip_max = atoi(argv[i] + 5);
 +			else if (!kwncmp(argv[i], "REFRESH=", 8)) refresh = atoi(argv[i] + 8);
 +			else if (!kwncmp(argv[i], "JOYKEYS=", 8)) joykeys = atoi(argv[i] + 8);
++			else if (!kwncmp(argv[i], "REMAP=", 6)) remap_parse(argv[i] + 6);
 +			else if (!kwcmp(argv[i], "CD32") || !kwcmp(argv[i], "PAD=CD32") || !kwcmp(argv[i], "PAD=1")) Sys_PadType = 1;
 +			else if (!kwcmp(argv[i], "PAD=0") || !kwcmp(argv[i], "PAD=STANDARD")) Sys_PadType = 0;
 +			else if (!kwncmp(argv[i], "SPEED=", 6)) { int k = Sys_ParseSpeed(argv[i] + 6); if (k >= 0) menu.speed = k; }
@@ -3470,6 +3693,7 @@ index 0000000..9e4ea1e
 +			else if (!kwncmp(argv[i], "KEYS=", 5)) { if (KeyScript_Load(argv[i] + 5) >= 0) script_on = 1; }
 +			else if (!kwncmp(argv[i], "SNAPDIR=", 8)) strncpy(snapdir, argv[i] + 8, SYS_PATH - 1);
 +			else if (!kwcmp(argv[i], "HIRES")) hires = 1;
++			else if (!kwcmp(argv[i], "TALL")) tall = 1;
 +			else if (!kwcmp(argv[i], "MENU")) want_menu = 1;
 +			else if (!kwncmp(argv[i], "HELPAFTER=", 10)) help_after = atol(argv[i] + 10);
 +			else if (!kwncmp(argv[i], "P=", 2)) ;
@@ -3484,7 +3708,9 @@ index 0000000..9e4ea1e
 +	if (script_on) Sys_MakeDir(snapdir);
 +	if (nosound) menu.sound = 0;
 +	if (hires) menu.hires = 1;
++	if (tall) menu.tall = 1;
 +	global_sound = menu.sound; global_hires = menu.hires; global_joykeys = joykeys;
++	global_tall = menu.tall; strcpy(global_remap, remap_str);
 +	if (!CPCEmulation_CheckEndianness()) { Sys_MenuError("Endianness check failed"); return 10; }
 +	CPC_Initialise();
 +	/* the test-mode label's colour: an entry the core leaves alone */
@@ -3509,8 +3735,8 @@ index 0000000..9e4ea1e
 +			{ extern unsigned long Sys_AudioIrqs(void); Sys_Log("menu action %d (audio interrupts so far %lu)", action, Sys_AudioIrqs()); }
 +			if (action != SYS_MENU_POWER && action != SYS_MENU_RESET && action != SYS_MENU_CONTINUE) Sys_MenuClose();
 +			if (action == SYS_MENU_QUIT) break;
-+			if (!menu.game_prefs) { global_sound = menu.sound; global_hires = menu.hires; global_joykeys = joykeys; }
-+			if (action == SYS_MENU_SAVE) { int gs = menu.sound, gh = menu.hires; if (menu.game_prefs) { menu.sound = global_sound; menu.hires = global_hires; } else global_joykeys = joykeys; prefs_save(); menu.sound = gs; menu.hires = gh; continue; }
++			if (!menu.game_prefs) { global_sound = menu.sound; global_hires = menu.hires; global_joykeys = joykeys; global_tall = menu.tall; }
++			if (action == SYS_MENU_SAVE) { int gs = menu.sound, gh = menu.hires, gt = menu.tall; if (menu.game_prefs) { menu.sound = global_sound; menu.hires = global_hires; menu.tall = global_tall; } else global_joykeys = joykeys; prefs_save(); menu.sound = gs; menu.hires = gh; menu.tall = gt; continue; }
 +			if (action == SYS_MENU_SAVEGAME) { game_prefs_save(); continue; }
 +			if (action == SYS_MENU_FORGETGAME) { game_prefs_forget(); continue; }
 +			if (action == SYS_MENU_SHOT) { screenshot(); continue; }
@@ -3543,10 +3769,10 @@ index 0000000..9e4ea1e
 +}
 diff --git a/src/amiga/keyscript.c b/src/amiga/keyscript.c
 new file mode 100644
-index 0000000..e4b1338
+index 0000000..af349d5
 --- /dev/null
 +++ b/src/amiga/keyscript.c
-@@ -0,0 +1,137 @@
+@@ -0,0 +1,144 @@
 +/* Key scripts for test runs (same text format as AmiMSX's tools/keyscript.py):
 + *     <time> <KEY>[+KEY...] [hold] [every <period> [until <time>]]
 + *     <time> SNAP                dump the frame (PNG) into the snap directory
@@ -3555,7 +3781,9 @@ index 0000000..e4b1338
 + * counted from power on; hold defaults to 5 frames. '#' starts a comment.
 + * Keys: CPC names (SPACE LEFT RIGHT UP DOWN RETURN ENTER ESC TAB DEL CLR SHIFT
 + * CTRL COPY CAPS F0-F9 FDOT, 0-9, A-Z, - ^ @ [ ] ; : , . / \) and the joystick
-+ * (JOYUP JOYDOWN JOYLEFT JOYRIGHT FIRE1 FIRE2). Plain C, no OS calls. */
++ * (JOYUP JOYDOWN JOYLEFT JOYRIGHT FIRE1 FIRE2). A:<name> is an Amiga key (A:RSHIFT),
++ * passed through the host's keyboard translation (key remap, joy keys) when
++ * the host sets KeyScript_AmigaKey. Plain C, no OS calls. */
 +#include <stdio.h>
 +#include <stdlib.h>
 +#include <string.h>
@@ -3589,9 +3817,12 @@ index 0000000..e4b1338
 +	CPC_KEY_P, CPC_KEY_Q, CPC_KEY_R, CPC_KEY_S, CPC_KEY_T, CPC_KEY_U, CPC_KEY_V, CPC_KEY_W, CPC_KEY_X,
 +	CPC_KEY_Y, CPC_KEY_Z };
 +
++int (*KeyScript_AmigaKey)(const char *name);   /* host: Amiga key name -> rawkey, -1 unknown */
++
 +static int keyid(const char *s)
 +{
 +	int i;
++	if (s[0] == 'A' && s[1] == ':' && KeyScript_AmigaKey) { i = KeyScript_AmigaKey(s + 2); return i < 0 ? -1 : KS_AMIGA | i; }
 +	if (strlen(s) == 1) {
 +		if (isdigit((unsigned char)s[0])) return digits[s[0] - '0'];
 +		if (isalpha((unsigned char)s[0])) return letters[toupper((unsigned char)s[0]) - 'A'];
@@ -3599,6 +3830,8 @@ index 0000000..e4b1338
 +	for (i = 0; names[i].name; i++) if (!strcmp(names[i].name, s)) return names[i].key;
 +	return -1;
 +}
++
++int KeyScript_KeyId(const char *s) { return keyid(s); }
 +
 +static long timeval(const char *s)      /* "30s", "5.2s" or "1500" -> frames; no strtod (libnix) */
 +{
@@ -3686,14 +3919,17 @@ index 0000000..e4b1338
 +}
 diff --git a/src/amiga/keyscript.h b/src/amiga/keyscript.h
 new file mode 100644
-index 0000000..ec3bc92
+index 0000000..5998495
 --- /dev/null
 +++ b/src/amiga/keyscript.h
-@@ -0,0 +1,9 @@
+@@ -0,0 +1,12 @@
 +#ifndef KEYSCRIPT_H
 +#define KEYSCRIPT_H
 +#define KS_SNAP 1
 +#define KS_QUIT 2
++#define KS_AMIGA 0x4000   /* script key = KS_AMIGA | Amiga rawkey */
++int KeyScript_KeyId(const char *name);   /* CPC key name -> CPC_KEY_*, -1 unknown */
++extern int (*KeyScript_AmigaKey)(const char *name);
 +int KeyScript_Load(const char *name);                        /* events loaded, -1 if no file */
 +int KeyScript_Frame(long frame, void (*setkey)(int key, int down));
 +int KeyScript_Active(void);

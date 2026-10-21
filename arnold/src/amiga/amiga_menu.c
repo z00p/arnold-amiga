@@ -42,7 +42,7 @@ enum { G_CART, G_CARTLOAD, G_CARTEJECT, G_DISKA, G_DISKALOAD, G_DISKAEJECT,
 enum { M_NONE, M_LOADCART, M_LOADA, M_LOADB, M_EJECTALL, M_KEYS, M_SHOT, M_SAVE, M_SAVEGAME, M_FORGETGAME, M_QUIT,
        M_SOUND, M_HIRES, M_SKIP0, M_SKIP1, M_SKIP2, M_SKIP3, M_SKIP5, M_REF1, M_REF2, M_REF3, M_REF4,
        M_JOY0, M_JOY1, M_JOY2, M_PAD0, M_PAD1, M_SPEED50, M_SPEEDDISP,
-       M_VIDAUTO, M_VIDPAL, M_VIDNTSC, M_MODEL464, M_MODEL664, M_MODEL6128, M_MODELPLUS, M_MODELGX };
+       M_VIDAUTO, M_VIDPAL, M_VIDNTSC, M_TALL, M_MODEL464, M_MODEL664, M_MODEL6128, M_MODELPLUS, M_MODELGX };
 #define MENU_REOPEN (-2)   /* menu_pick: the video mode changed, open the screen again */
 
 /* Pens of the 16-colour menu screen (16 Oct 2026, styled after the OS 3.2
@@ -133,6 +133,7 @@ static struct NewMenu nm[] = {
 	{ NM_SUB, (STRPTR)"Auto (as Workbench)", NULL, CHECKIT, X(0), (APTR)M_VIDAUTO },
 	{ NM_SUB, (STRPTR)"PAL", NULL, CHECKIT, X(1), (APTR)M_VIDPAL },
 	{ NM_SUB, (STRPTR)"NTSC", NULL, CHECKIT, X(2), (APTR)M_VIDNTSC },
+	{ NM_ITEM, (STRPTR)"Full height (all 272 lines)", NULL, CHECKIT | MENUTOGGLE, 0, (APTR)M_TALL },
 	{ NM_ITEM, (STRPTR)"Game speed", NULL, 0, 0, NULL },
 	{ NM_SUB, (STRPTR)"50 Hz (correct)", NULL, CHECKIT, X(0), (APTR)M_SPEED50 },
 	{ NM_SUB, (STRPTR)"Follow display (NTSC: 20% fast)", NULL, CHECKIT, X(1), (APTR)M_SPEEDDISP },
@@ -321,6 +322,7 @@ static void set_checks(struct SysMenu *m)
 		for (k = 0; k < (int)(sizeof on / sizeof on[0]); k++) if (on[k] == id) want = 1;
 		if (id == M_SOUND) want = m->sound ? 1 : 0;
 		if (id == M_HIRES) want = m->hires ? 1 : 0;
+		if (id == M_TALL) want = m->tall ? 1 : 0;
 		if (want) nm[i].nm_Flags |= CHECKED; else nm[i].nm_Flags &= ~CHECKED;
 	}
 }
@@ -406,7 +408,7 @@ static int open_menu(struct SysMenu *m)
 	if (!g) { close_menu(); return 0; }
 	if (!make_menus(m)) { close_menu(); return 0; }
 	/* version, credit and build time (date and hh:mm) in the title bar */
-	sprintf(wintitle, "Arnold v0.8 for Amiga - core: Kevin Thacker - built %.6s %.4s %.5s", __DATE__, __DATE__ + 7, __TIME__);
+	sprintf(wintitle, "Arnold v0.9 for Amiga - core: Kevin Thacker - built %.6s %.4s %.5s", __DATE__, __DATE__ + 7, __TIME__);
 	mwin = OpenWindowTags(NULL, WA_CustomScreen, (ULONG)mscr, WA_Left, 0, WA_Top, mscr->BarHeight + 1,
 		WA_Width, 640, WA_Height, wh,
 		WA_Title, (ULONG)wintitle,
@@ -470,6 +472,7 @@ static int menu_pick(struct SysMenu *m, struct MenuItem *item)
 	case M_QUIT: return SYS_MENU_QUIT;
 	case M_SOUND: m->sound = checked; break;
 	case M_HIRES: m->hires = checked; break;
+	case M_TALL: m->tall = checked; break;
 	case M_SKIP0: case M_SKIP1: case M_SKIP2: case M_SKIP3: case M_SKIP5: m->skip = skip_values[id - M_SKIP0]; break;
 	case M_REF1: case M_REF2: case M_REF3: case M_REF4: m->refresh = id - M_REF1 + 1; break;
 	case M_JOY0: case M_JOY1: case M_JOY2: m->joykeys = id - M_JOY0; break;

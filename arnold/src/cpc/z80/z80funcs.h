@@ -642,7 +642,7 @@ static int OUTI(void)
 
         R.TempByte = Z80_RD_BYTE(R.HL.W);
 
-        Z80_DoOut(R.BC.W,R.TempByte);                   
+        Z80_IO_AT(5); Z80_DoOut(R.BC.W,R.TempByte);                   
 		R.MemPtr.W = R.BC.W+1;
 
         Z80_FLAGS_REG |= Z80_SUBTRACT_FLAG;
@@ -678,7 +678,7 @@ static int OUTD(void)
 
         R.TempByte = Z80_RD_BYTE(R.HL.W);
 
-        Z80_DoOut(R.BC.W,R.TempByte);
+        Z80_IO_AT(5); Z80_DoOut(R.BC.W,R.TempByte);
 		R.MemPtr.W = R.BC.W-1;
 
         /* as per Zilog docs */
@@ -693,7 +693,7 @@ static int OUTD(void)
 static void INI(void)
 {
         
-        R.TempByte = Z80_DoIn(R.BC.W);
+        Z80_IO_AT(5); R.TempByte = Z80_DoIn(R.BC.W);
 
         Z80_WR_BYTE(R.HL.W,R.TempByte);
 
@@ -711,7 +711,7 @@ static void INI(void)
 static void IND(void)
 {
 
-        R.TempByte = Z80_DoIn(R.BC.W);          
+        Z80_IO_AT(5); R.TempByte = Z80_DoIn(R.BC.W);          
                 
         Z80_WR_BYTE(R.HL.W,R.TempByte);
 

@@ -3978,6 +3978,7 @@ static struct
 	int valid;                 /* 0: CRTC_PrepareRun before the next run */
 	int draw;                  /* 0 nothing (DontRender/retrace), 1 graphics, 2 border, 3 sync */
 	int plus, step1, cb, visible, x0, x1, scroll, hs;
+	int inl;                   /* perf50: sprite cells drawn inline (Plus, PIXEL_STEP 2) */
 	const unsigned short *stab;    /* soft scroll table (render5.c), NULL: Render_ScrollGraphicsData */
 	unsigned char *pRow;
 	const RENDER_PIXCACHE *cache;
@@ -4082,6 +4083,11 @@ static void CRTC_PrepareRun(void)
 	CRTC_SetRenderingFunction();          /* constant until the next event */
 	CRTC_Run.plus = (CRTC_RenderMode == RENDER_MODE_ASIC_FEATURES);
 	CRTC_Run.step1 = (PIXEL_STEP == 1);
+#ifndef NO_SPRINL
+	CRTC_Run.inl = (PIXEL_STEP == 2);
+#else
+	CRTC_Run.inl = 0;
+#endif
 	CRTC_Run.cb = Render_CellBytes;
 	CRTC_Run.visible = RenderRowVisible;
 	CRTC_Run.x0 = Render_VisX0;
@@ -4133,6 +4139,197 @@ static void CRTC_PrepareRun(void)
 	}
 }
 
+#ifndef NO_EMUBR
+/* Sonic 50 fps (perf50, 20 Oct 2026): Plus graphics cells at PIXEL_STEP 2
+ * shaped for Emu68. Emu68 has no block chaining: a conditional branch is
+ * predicted not taken when it goes forward (or backward by more than 128
+ * bytes) and taken when it goes backward by less; a wrong guess leaves the
+ * translated unit and goes through the dispatcher's block lookup (a 4-way,
+ * 128-set cache on the 68k address). The old cell loop took about five such
+ * exits per cell. Here the hidden cells are split off before and after (no
+ * visibility test per cell), the scroll is always a table (identity when 0),
+ * rare paths (stale pixel cache entry, sprite column) are out of line, and
+ * the loop body is small enough for its back branch to stay in the unit.
+ * Same pixels and GraphicsLong as the generic loop. NO_EMUBR: generic loop. */
+static unsigned short CRTC_IdScroll[1024];
+static int CRTC_IdScrollInit;
+
+static void __attribute__((noinline)) CRTC_SpriteCell(unsigned char *d, int c, unsigned int hc)
+{
+	extern const signed int *const Render_PaletteRemap;
+	const signed int *remap = Render_PaletteRemap;
+#ifndef NO_SPRLINE
+	if (ASIC_ColMaskValid)
+	{
+		const unsigned char *s;
+		int k;
+		if (!ASIC_LineBufOK || ASIC_LineBufLine != ASICCRTC_Line)
+			ASIC_ComposeLine(ASICCRTC_Line);
+		s = ASIC_LineBuf + (c << 3);
+		for (k = 0; k < 8; k++)
+		{
+			unsigned int v = s[k];
+			unsigned int m = 0U - (unsigned int)(v != 0);
+			d[k] = (unsigned char)((d[k] & ~m) | ((unsigned int)remap[v] & m));
+		}
+		return;
+	}
+#endif
+#ifndef NO_SPRINL	/* with NO_SPRINL, CRTC_Run.inl is 0 and CRTC_PlusCells is not used */
+	ASIC_SpriteCellEven(ASICCRTC_Line, (int)hc, d, remap);
+#endif
+}
+
+static __inline__ int CRTC_Ceil8(int a, int lim)
+{
+	/* ceil(a / 8) (arithmetic shift = floor), at most lim (no overflow near INT_MAX) */
+	if (a >= (lim << 3)) return lim;
+	return (a + 7) >> 3;
+}
+
+/* returns the new line pointer; draws Count cells from hc + 1 */
+static unsigned char *CRTC_PlusCells(unsigned char *pLine, unsigned int hc, int Count)
+{
+	const RENDER_PIXCACHE *cache = CRTC_Run.cache;
+	const unsigned long stamp = CRTC_Run.stamp;
+	const unsigned char *ram = Z80MemoryBase;
+	unsigned long glong = CRTC_InternalState.GraphicsLong;
+	const unsigned short *t = CRTC_Run.stab;
+	const unsigned int maline = CRTC_Run.maline, rasterma = CRTC_Run.rasterma;
+	unsigned long cm[2];
+	int col0 = (int)(pLine - CRTC_Run.pRow), klo, khi, k;
+
+	cm[0] = CRTC_Run.cm0; cm[1] = CRTC_Run.cm1;
+	if (t == NULL)
+	{
+		if (!CRTC_IdScrollInit)
+		{
+			for (k = 0; k < 256; k++) { CRTC_IdScroll[k] = (unsigned short)k; CRTC_IdScroll[256 + k] = (unsigned short)(k << 8); }
+			CRTC_IdScrollInit = 1;
+		}
+		t = CRTC_IdScroll;
+	}
+	/* visible cells: k with visible && col0 + 8k + 8 >= x0 && col0 + 8k < x1 */
+	if (CRTC_Run.visible)
+	{
+		klo = CRTC_Ceil8(CRTC_Run.x0 - 8 - col0, Count);
+		khi = CRTC_Ceil8(CRTC_Run.x1 - col0, Count);
+		if (klo < 0) klo = 0;
+		if (khi > Count) khi = Count;
+		if (khi < klo) khi = klo;
+	}
+	else
+		klo = khi = Count;
+	if (klo > Count) klo = khi = Count;
+
+	/* hidden cells before: GraphicsLong still shifts */
+	for (k = 0; k < klo; k++)
+	{
+		unsigned short ma, addr;
+		hc = (hc + 1) & 0x0ff;
+		ma = (unsigned short)(maline + hc);
+		addr = (unsigned short)((((ma & 0x03000) << 2) | ((ma & 0x03ff) << 1)) | rasterma);
+		glong = (glong << 16) | ((unsigned long)ram[addr] << 8) | ram[(unsigned long)addr + 1];
+	}
+	pLine += klo << 3;
+	/* visible cells, in segments with no wrap of hc (8 bits) or of the
+	 * address's low 10 MA bits (so the source address just steps by 2),
+	 * and at most 32 cells (one long of the column sprite mask) */
+	while (k < khi)
+	{
+		unsigned int h1 = (hc + 1) & 0x0ff, c0 = h1 & 0x03f, ma, w;
+		int n = khi - k, j;
+		const unsigned char *src;
+		ma = (maline + h1) & 0x0ffff;
+		if (n > (int)(256 - h1)) n = (int)(256 - h1);
+		if (n > (int)(0x400 - (ma & 0x3ff))) n = (int)(0x400 - (ma & 0x3ff));
+		if (n > 32) n = 32;
+		src = ram + ((((ma & 0x03000) << 2) | ((ma & 0x03ff) << 1)) | rasterma);
+		/* bit j = column c0 + j (mod 64) may have a sprite */
+		if (c0 == 0) w = (unsigned int)cm[0];
+		else if (c0 < 32) w = (unsigned int)(cm[0] >> c0) | (unsigned int)(cm[1] << (32 - c0));
+		else if (c0 == 32) w = (unsigned int)cm[1];
+		else w = (unsigned int)(cm[1] >> (c0 - 32)) | (unsigned int)(cm[0] << (64 - c0));
+		{
+		unsigned char *const pStart = pLine, *const pEnd = pLine + (n << 3);
+		do
+		{
+			unsigned int d, b;
+			const RENDER_PIXCACHE *e;
+#ifdef CPC_LSB_FIRST
+			glong = (glong << 16) | ((unsigned long)src[0] << 8) | src[1];
+#else
+			glong = (glong << 16) | *(const unsigned short *)src;
+#endif
+			src += 2;
+			d = (unsigned)t[glong & 0x0ff] | t[256 + ((glong >> 8) & 0x0ff)] | t[512 + ((glong >> 16) & 0x0ff)] | t[768 + ((glong >> 24) & 0x0ff)];
+			b = (d >> 8) & 0x0ff;
+			e = &cache[b];
+			if (__builtin_expect(e->Stamp != stamp, 0)) e = Render_CachedPixels(b);
+			((unsigned int *)pLine)[0] = e->u.l[0];
+			b = d & 0x0ff;
+			e = &cache[b];
+			if (__builtin_expect(e->Stamp != stamp, 0)) e = Render_CachedPixels(b);
+			((unsigned int *)pLine)[1] = e->u.l[0];
+			if (__builtin_expect(w & 1, 0))
+			{
+				j = (int)((pLine - pStart) >> 3);
+				CRTC_SpriteCell(pLine, (int)((c0 + j) & 0x03f), (h1 + j) & 0x0ff);
+			}
+			w >>= 1;
+			pLine += 8;
+		} while (pLine != pEnd);
+		}
+		k += n;
+		hc = (hc + n) & 0x0ff;
+	}
+	/* hidden cells after */
+	for (; k < Count; k++)
+	{
+		unsigned short ma, addr;
+		hc = (hc + 1) & 0x0ff;
+		ma = (unsigned short)(maline + hc);
+		addr = (unsigned short)((((ma & 0x03000) << 2) | ((ma & 0x03ff) << 1)) | rasterma);
+		glong = (glong << 16) | ((unsigned long)ram[addr] << 8) | ram[(unsigned long)addr + 1];
+		pLine += 8;
+	}
+	CRTC_InternalState.GraphicsLong = glong;
+	return pLine;
+}
+#endif
+
+#ifndef NO_EMUBR
+/* border (2) / sync (3) cells at PIXEL_STEP 2, shaped for Emu68 like
+ * CRTC_PlusCells: visible range computed once, no tests per cell. A border
+ * cell also writes o1-o3 into the first 3 bytes of the next cell, which the
+ * next visible cell overwrites, so only the last visible cell's survive. */
+static unsigned char *CRTC_FillCells(unsigned char *pLine, int Count)
+{
+	const unsigned int fill = CRTC_Run.fill;
+	int col0 = (int)(pLine - CRTC_Run.pRow), klo, khi;
+	if (CRTC_Run.visible)
+	{
+		klo = CRTC_Ceil8(CRTC_Run.x0 - 8 - col0, Count);
+		khi = CRTC_Ceil8(CRTC_Run.x1 - col0, Count);
+		if (klo < 0) klo = 0;
+		if (khi > Count) khi = Count;
+	}
+	else
+		klo = khi = Count;
+	if (klo < khi)
+	{
+		unsigned int *d = (unsigned int *)(pLine + (klo << 3)), *end = (unsigned int *)(pLine + (khi << 3));
+		do { d[0] = fill; d[1] = fill; d += 2; } while (d != end);
+		if (CRTC_Run.draw == 2)
+		{
+			unsigned char *x = (unsigned char *)end;
+			x[0] = CRTC_Run.o1; x[1] = CRTC_Run.o2; x[2] = CRTC_Run.o3;
+		}
+	}
+	return pLine + (Count << 3);
+}
+#endif
+
 /* Count quiet cycles (Count <= CRTC_RunLeft) */
 static void CRTC_RunCells(int Count)
 {
@@ -4162,6 +4359,16 @@ static void CRTC_RunCells(int Count)
 		const int visible = CRTC_Run.visible, x0 = CRTC_Run.x0, x1 = CRTC_Run.x1, cb = CRTC_Run.cb;
 		const int step1 = CRTC_Run.step1;
 
+#ifndef NO_EMUBR
+		/* Count > 0: a count of 0 or less (asictime, see arnold.c IO_AHEAD_TAKE) takes
+		 * the generic path, which draws nothing and leaves hc and pLine alone */
+		if (Count > 0 && CRTC_Run.draw == 1 && CRTC_Run.plus && CRTC_Run.inl && cb == 8 && (CRTC_Run.stab || !CRTC_Run.scroll))
+		{
+			pLine = CRTC_PlusCells(pLine, hc, Count);
+			hc = (hc + Count) & 0x0ff;
+		}
+		else
+#endif
 		if (CRTC_Run.draw == 1)
 		{
 			const RENDER_PIXCACHE *cache = CRTC_Run.cache;
@@ -4172,6 +4379,10 @@ static void CRTC_RunCells(int Count)
 			const unsigned short *stab = CRTC_Run.stab;
 			const unsigned int maline = CRTC_Run.maline, rasterma = CRTC_Run.rasterma;
 			const unsigned long cm0 = CRTC_Run.cm0, cm1 = CRTC_Run.cm1;
+#ifndef NO_SPRINL
+			extern const signed int *const Render_PaletteRemap;
+			const int inl = CRTC_Run.inl;
+#endif
 
 			for (k = 0; k < Count; k++)
 			{
@@ -4193,7 +4404,11 @@ static void CRTC_RunCells(int Count)
 				{
 					int c = hc & 0x03f;
 					glong = (glong << 16) | ((unsigned long)ram[Addr] << 8) | ram[(unsigned long)Addr + 1];
+					int spr = 0;
 					if ((c < 32 ? cm0 : cm1) & (1UL << (c & 31)))
+#ifndef NO_SPRINL
+					if (inl) spr = 1; else
+#endif
 					{
 						/* a sprite may be here: the original path, on the globals */
 						unsigned long Mask;
@@ -4227,6 +4442,37 @@ static void CRTC_RunCells(int Count)
 						if (step1) ((unsigned int *)pLine)[1] = e->u.l[1];
 						pLine += cb >> 1;
 					}
+#ifndef NO_SPRINL
+					/* perf50: a sprite may be here; its pixels go over the cell
+					 * just drawn (see asic.c ASIC_SpriteCellEven) */
+					if (spr)
+					{
+#ifndef NO_SPRLINE
+						/* the line's composed sprite pixels (asic.c ASIC_ComposeLine) */
+						if (ASIC_ColMaskValid)
+						{
+							const unsigned char *s;
+							if (!ASIC_LineBufOK || ASIC_LineBufLine != ASICCRTC_Line)
+								ASIC_ComposeLine(ASICCRTC_Line);
+							s = ASIC_LineBuf + (c << 3);
+							if (((const unsigned int *)s)[0] | ((const unsigned int *)s)[1])
+							{
+								unsigned char *d = pLine - cb;
+								if (s[0]) d[0] = (unsigned char)Render_PaletteRemap[s[0]];
+								if (s[1]) d[1] = (unsigned char)Render_PaletteRemap[s[1]];
+								if (s[2]) d[2] = (unsigned char)Render_PaletteRemap[s[2]];
+								if (s[3]) d[3] = (unsigned char)Render_PaletteRemap[s[3]];
+								if (s[4]) d[4] = (unsigned char)Render_PaletteRemap[s[4]];
+								if (s[5]) d[5] = (unsigned char)Render_PaletteRemap[s[5]];
+								if (s[6]) d[6] = (unsigned char)Render_PaletteRemap[s[6]];
+								if (s[7]) d[7] = (unsigned char)Render_PaletteRemap[s[7]];
+							}
+						}
+						else
+#endif
+						ASIC_SpriteCellEven(ASICCRTC_Line, (int)hc, pLine - cb, Render_PaletteRemap);
+					}
+#endif
 				}
 				else
 				{
@@ -4246,6 +4492,13 @@ static void CRTC_RunCells(int Count)
 			}
 			CRTC_InternalState.GraphicsLong = glong;
 		}
+#ifndef NO_EMUBR
+		else if (Count > 0 && cb == 8 && !step1)
+		{
+			pLine = CRTC_FillCells(pLine, Count);
+			hc = (hc + Count) & 0x0ff;
+		}
+#endif
 		else
 		{
 			/* border (2) or sync (3): the same fill each cell */
@@ -4290,6 +4543,13 @@ int CRTC_CyclesToEvent(void)
 #endif
 }
 
+#ifndef NO_DMAPHASE
+/* asictime (asic.c): cycles since HSYNC started, -1 outside HSYNC */
+int CRTC_HSyncCount(void)
+{
+	return (CRTC_InternalState.CRTC_Flags & CRTC_HS_FLAG) ? (int)CRTC_InternalState.HorizontalSyncCount : -1;
+}
+#endif
 void CRTC_DoCycles(int Cycles)
 {
 /* Amiga port (19 Oct 2026): count down staggered DMA interrupts (asic.c

@@ -17,26 +17,26 @@ and asked for it to keep the Arnold name.
 - PAL and NTSC: Video mode Auto/PAL/NTSC; on a 60 Hz NTSC display the CPC still runs at its
   own 50 Hz (frames timed from the E-clock, Paula at the matching rate), or follows the display
   if you prefer. The menu fits a 200-line NTSC screen.
-- Full speed with sound on a PiStorm A1200, including Sonic GX without frame skip (see
-  What to expect). Fast vertical scrolling moves the picture in a taller chip RAM buffer
+- Full speed with sound on a PiStorm A1200, including Sonic GX at 50 fps without frame skip
+  (see What to expect); the hot code is shaped for Emu68 and built with a recorded profile. Fast vertical scrolling moves the picture in a taller chip RAM buffer
   (about 0.5 MB more chip RAM; `NOVSHIFT` turns it off). Paula sound, 8-bit stereo. Frame skip for slower machines, with every
   drawn frame exact.
-- Menu on Help: media, sound, screen mode, frame skip, joystick-from-keyboard, per-game
-  settings, keyboard map, IFF and PNG screenshots. Workbench presets with ToolTypes.
+- Menu on Help: media, sound, screen mode, full height (`TALL`, all 272 lines), frame skip,
+  joystick-from-keyboard, per-game settings (also for disk games), keyboard map, IFF and PNG
+  screenshots. Workbench presets with ToolTypes. Per-game key remap (`REMAP=RSHIFT:M`).
 - Joystick in port 2, two-button and CD32 pads, keyboard as joystick.
 
 Not yet: writing changed disks back to the .dsk file (SAVE lasts until Power ON or Exit),
 tape (so the CPC 464 runs BASIC only). Known issues are listed in the drawer's README.txt
-(Sonic GX: a slight slowdown in fast vertical scrolls; Pinball Dreams, still under
-investigation; NTSC cropping of edge-drawn games).
+(NTSC cropping of edge-drawn games).
 
 ## What to expect
 
 Arnold for Amiga targets PiStorm/Emu68-class machines.
 
-- **A1200 with a PiStorm32 CM4:** the games tested run at full speed (Sonic GX at 49 fps without
-  frame skip, measured). On a real A1200 Sonic GX uses 78% of the frame time, with a slight
-  slowdown only in very fast vertical scrolls. Use `Arnold` or the PiStorm preset.
+- **A1200 with a PiStorm32 CM4:** the games tested run at full speed (Sonic GX at 50 fps without
+  frame skip, measured, springs included). On a real A1200 Sonic GX uses about 60% of the frame
+  time. Use `Arnold` or the PiStorm preset.
 - **BigMig (MiSTer):** games currently run below full speed; use `Arnold-060` with frame skip.
 - **Real 68060 accelerator cards** have not been tested; expect games below full speed.
 - **68030 machines** are too slow for games (`Arnold-030` is for trying BASIC).
@@ -65,6 +65,13 @@ upstream, one patch each, so they can be taken independently:
 - The paletted renderer's 256 colours, never freed (corruption after a game or two).
 - The Plus interrupt vector for the Gate Array's 52-line interrupt (Sonic GX's title and demo levels).
 - Plus DMA interrupt handling (Sonic GX's Green Hill split glitch and frozen special stage).
+- CRTC register writes at their I/O cycle instead of the start of the OUT instruction
+  (Pinball Dreams lost its frame sync and crashed).
+- Sound: the AY rendered with averaging (no aliasing), the envelope rate and hold shapes,
+  the noise rate, the volume levels and unipolar output, the 16-bit lookup (crackle).
+- Plus timing: ASIC register writes at their write cycle, DMA at the start of HSYNC.
+- 80-track disk images: drive A was always a 43-track 3" drive, so 3.5" images stopped at
+  track 42 (Pinball Dreams' Beat Box and Nightmare tables never loaded).
 
 Plus pixel-exact speed-ups for slow hosts (cell caching, run-based and deferred CRTC stepping,
 HALT fast-forward, a compact palette, table-driven Plus soft scroll, transparent sprite rows
@@ -90,6 +97,9 @@ Amiga: bebbo's amiga-gcc (https://codeberg.org/bebbo/amiga-gcc) in `/opt/amiga`,
     cd arnold/src/amiga && make TARGET=Arnold CPU=68040 OPT=-O2
 
 or `bash tools/build_variants.sh` for all five builds.
+The release binaries are also built with `-fno-function-cse -fno-unroll-loops -fno-peel-loops`
+and a profile recorded in WinUAE (gcc `-fprofile-use`); without the profile the code is
+the same, only laid out less well for Emu68 (Sonic GX about 2 ms a frame slower on a PiStorm).
 
 PC checks need Linux with gcc (WSL works). `tools/headless_check.sh` compares pixel-exact
 frame checksums of the working tree against a reference commit for every cartridge in

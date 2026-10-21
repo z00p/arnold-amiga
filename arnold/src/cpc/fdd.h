@@ -71,5 +71,7 @@ unsigned long FDD_GetFlags(int DriveIndex);
 void	FDD_SetMotorState(int DriveIndex, int State);
 
 void	FDD_PerformStep(unsigned long DriveIndex, signed int StepDirection);
+/* NO_DSK80 (define): drive A stays a 43-track 3" drive whatever the image. */
+void	FDD_FitDiskTracks(int DriveIndex, int DiskTracks);
 
 #endif

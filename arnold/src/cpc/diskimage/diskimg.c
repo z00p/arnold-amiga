@@ -91,6 +91,7 @@ int     DiskImage_InsertDisk(int DriveID, const unsigned char *pDiskImage, const
 		DiskImage_ImageRecognised(DriveID,DISK_IMAGE_TYPE_STANDARD);
 
 		ExtDskInternal_Dsk2ExtDskInternal(&Drives[DriveID],pDiskImage, DiskImageLength);
+		FDD_FitDiskTracks(DriveID, pDiskImage[0x30]);   /* tracks in the image header (both formats) */
 
 		FDD_InsertDisk(DriveID, TRUE);
 		return ARNOLD_STATUS_OK;
@@ -104,6 +105,7 @@ int     DiskImage_InsertDisk(int DriveID, const unsigned char *pDiskImage, const
 		DiskImage_ImageRecognised(DriveID,DISK_IMAGE_TYPE_EXTENDED);
 
 		ExtDskInternal_ExtDsk2ExtDskInternal(&Drives[DriveID],pDiskImage, DiskImageLength);
+		FDD_FitDiskTracks(DriveID, pDiskImage[0x30]);   /* tracks in the image header (both formats) */
 
 		FDD_InsertDisk(DriveID, TRUE);
 		return ARNOLD_STATUS_OK;

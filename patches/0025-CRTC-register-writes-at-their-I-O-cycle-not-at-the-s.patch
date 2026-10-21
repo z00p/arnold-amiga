@@ -1,0 +1,358 @@
+From 5edccdf86fb0d4bbf557ba4bdb8e68ea720fa3db Mon Sep 17 00:00:00 2001
+From: John Stringer <jcec_1@yahoo.co.uk>
+Date: Wed, 21 Oct 2026 20:34:30 +0100
+Subject: [PATCH 25/31] CRTC: register writes at their I/O cycle, not at the
+ start of the OUT
+
+The CRTC was run after each whole Z80 instruction, so an OUT reached it at the
+start of the instruction, 2-4 us before its I/O cycle on the CPC. Pinball
+Dreams rewrites R0/R4/R5/R7/R9 several times a frame with 1-line rows; its R0
+write landed before the end of the line it was meant to follow, HCC ran on to
+255 and the frame lost sync (rolling picture, then a crash at ball launch).
+Z80_IO_AT(n) before each OUT/IN: the host's CPC_IOCatchUp runs the CRTC to the
+I/O cycle (CPCEC's NOP positions), the rest of the instruction afterwards.
+Only CRTC register writes are timed by default; IOTIME_ALL times every port.
+NO_IOTIME_FIX restores I/O at the start of the instruction.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ src/cpc/arnold.c       | 24 +++++++++++++++++++++++-
+ src/cpc/cpc.c          | 23 +++++++++++++++++++++++
+ src/cpc/z80/z80.c      | 36 ++++++++++++++++++------------------
+ src/cpc/z80/z80.h      | 14 ++++++++++++++
+ src/cpc/z80/z80funcs.h |  8 ++++----
+ 5 files changed, 82 insertions(+), 23 deletions(-)
+
+diff --git a/src/cpc/arnold.c b/src/cpc/arnold.c
+index 5afb114..13953e3 100644
+--- a/src/cpc/arnold.c
++++ b/src/cpc/arnold.c
+@@ -70,6 +70,24 @@ static int CurrentFrameIndex = 0;
+ static int FrameSkip = FRAME_SKIP_MIN;
+ /* number of nops executed in this frame so far */
+ static int NopCountToDate = NOPS_PER_MONITOR_SCREEN;
++#ifndef NO_IOTIME_FIX
++/* Amiga port (Pinball Dreams, 20 Oct 2026): I/O at its own NOP within the
++ * instruction (z80.h Z80_IO_AT). CPC_IOPre: NOPs of the current instruction
++ * before its I/O cycle; CPC_IOAhead: NOPs of it the CRTC has already been run
++ * (the main loop then runs only the rest). Never past the frame end, so the
++ * frame-end path below is unchanged. */
++int CPC_IOPre, CPC_IOAhead;
++void CPC_IOCatchUp(void)
++{
++	int k = CPC_IOPre - CPC_IOAhead;
++	if (k > NopCountToDate - CPC_IOAhead) k = NopCountToDate - CPC_IOAhead;
++	CPC_IOPre = 0;
++	if (k > 0) { CRTC_DoCycles(k); CPC_IOAhead += k; }
++}
++#define IO_AHEAD_TAKE(n) do { (n) -= CPC_IOAhead; CPC_IOAhead = 0; } while (0)
++#else
++#define IO_AHEAD_TAKE(n) do { } while (0)
++#endif
+ /* TRUE if audio is enabled, FALSE otherwise */
+ static BOOL AudioActiveFlag = FALSE;
+ /* TRUE if debugger is enabled, FALSE otherwise */
+@@ -401,7 +419,7 @@ void	CPCEmulation_Run(void)
+ 			if (LocalNopCountToDate > 0)
+ 			{
+ 				/* Amiga port: a skipped frame before a drawn one: drawing on now */
+-				CRTC_DoCycles(NopCount);
++				{ int n = NopCount; IO_AHEAD_TAKE(n); CRTC_DoCycles(n); }
+ 				RenderOnEarlyAt = 0;
+ 				if (Render_IsRendererActive())
+ 				{
+@@ -413,6 +431,7 @@ void	CPCEmulation_Run(void)
+ 			}
+ 
+ 			NopsToFrameEnd = NopCount + LocalNopCountToDate;
++			IO_AHEAD_TAKE(NopsToFrameEnd);   /* CPC_IOCatchUp stops at the frame end */
+ 
+ 			/* update CRTC for NopCount cycles */
+ 			if (NopsToFrameEnd!=0)
+@@ -533,6 +552,9 @@ void	CPCEmulation_Run(void)
+ 			/* Amiga port: quiet cycles short of the next CRTC event are only
+ 			 * counted here and drawn later (crtc.c CRTC_Pending) */
+ 			extern int CRTC_RunLeft, CRTC_Pending, ASIC_DMA_IntPending;
++#endif
++			IO_AHEAD_TAKE(NopCount);   /* NopCount is not used again below */
++#if !defined(NO_DEFER) && !defined(NO_E)
+ 			if (NopCount < CRTC_RunLeft && !ASIC_DMA_IntPending)
+ 			{
+ 				CRTC_RunLeft -= NopCount;
+diff --git a/src/cpc/cpc.c b/src/cpc/cpc.c
+index f088816..e891f71 100644
+--- a/src/cpc/cpc.c
++++ b/src/cpc/cpc.c
+@@ -2728,8 +2728,28 @@ void	KCCompact_Out(Z80_WORD Port, Z80_BYTE Data)
+ 
+ /* Write data to a I/O port */
+ void CRTC_InvalidateRun(void);   /* Amiga port: crtc.c run-based stepping */
++#ifndef NO_IOTIME_FIX
++void CPC_IOCatchUp(void);   /* arnold.c: run the CRTC to the I/O cycle (z80.h Z80_IO_AT) */
++/* Which accesses are timed. Default: only writes to a CRTC register (A14 = 0,
++ * A9 = 0, A8 = 1: &BDxx), the case Pinball Dreams needs (R0 rewritten just after
++ * a line ends). This keeps Sonic GX frame-identical; other games can change where
++ * a CRTC write fell within 3 us of a CRTC event (e.g. the boot's first R0 write
++ * sets a slightly different CPU/CRTC phase). IOTIME_ALL (define): every OUT and
++ * IN, as on the CPC (CPCEC): also straightens Burnin' Rubber's title bars, but
++ * moves raster lines at the left edge in Sonic GX; not evaluated further yet. */
++#ifdef IOTIME_ALL
++#define IOTIME_PORT_OUT(p) 1
++#define IOTIME_PORT_IN(p) 1
++#else
++#define IOTIME_PORT_OUT(p) (((p) & 0x4300) == 0x0100)
++#define IOTIME_PORT_IN(p) 0
++#endif
++#endif
+ void    Z80_DoOut(Z80_WORD Port,Z80_BYTE Data)
+ {
++#ifndef NO_IOTIME_FIX
++	if (IOTIME_PORT_OUT(Port)) CPC_IOCatchUp();
++#endif
+ 	/* Amiga port: an OUT that reaches the CRTC (A14 = 0) or the Gate Array
+ 	 * (A15 = 0: pens, mode, ROM/RAM and ASIC paging) may change what the CRTC
+ 	 * draws next; PPI/PSG, FDC and printer writes cannot. */
+@@ -3070,6 +3090,9 @@ Z80_BYTE        KCCompact_In(Z80_WORD Port)
+ 
+ Z80_BYTE        Z80_DoIn(Z80_WORD Port)
+ {
++#ifndef NO_IOTIME_FIX
++	if (IOTIME_PORT_IN(Port)) CPC_IOCatchUp();
++#endif
+ 	if (CRTC_Pending) CRTC_Flush();   /* crtc.c deferred cells: the CRTC is up to date for reads */
+ 	switch (CPC_GetHardware())
+ 	{
+diff --git a/src/cpc/z80/z80.c b/src/cpc/z80/z80.c
+index 74345f9..9eda75a 100644
+--- a/src/cpc/z80/z80.c
++++ b/src/cpc/z80/z80.c
+@@ -7127,7 +7127,7 @@ case 0x040:
+ {
+ /* IN B,(C) */
+  		R.MemPtr.W = R.BC.W; 
+-		R.BC.B.h = Z80_DoIn(R.MemPtr.W);            
++		Z80_IO_AT(4); R.BC.B.h = Z80_DoIn(R.MemPtr.W);            
+ 		++R.MemPtr.W; 
+ 		{											
+ 			Z80_BYTE	Flags;						
+@@ -7145,7 +7145,7 @@ case 0x041:
+  /* OUT (C),B */
+  
+ 		R.MemPtr.W = R.BC.W; 
+-		Z80_DoOut(R.MemPtr.W,R.BC.B.h);                     
++		Z80_IO_AT(3); Z80_DoOut(R.MemPtr.W,R.BC.B.h);                     
+         ++R.MemPtr.W;                                       
+ 		Cycles = 4;
+ 		R.PC.W.l+=2; R.Flags |= Z80_CHECK_INTERRUPT_FLAG;
+@@ -7238,7 +7238,7 @@ case 0x048:
+ {
+ /* IN C,(C) */
+  		R.MemPtr.W = R.BC.W; 
+-		R.BC.B.l = Z80_DoIn(R.MemPtr.W);            
++		Z80_IO_AT(4); R.BC.B.l = Z80_DoIn(R.MemPtr.W);            
+ 		++R.MemPtr.W; 
+ 		{											
+ 			Z80_BYTE	Flags;						
+@@ -7256,7 +7256,7 @@ case 0x049:
+  /* OUT (C),C */
+  
+ 		R.MemPtr.W = R.BC.W; 
+-		Z80_DoOut(R.MemPtr.W,R.BC.B.l);                     
++		Z80_IO_AT(3); Z80_DoOut(R.MemPtr.W,R.BC.B.l);                     
+         ++R.MemPtr.W;                                       
+ 		Cycles = 4;
+ 		R.PC.W.l+=2; R.Flags |= Z80_CHECK_INTERRUPT_FLAG;
+@@ -7355,7 +7355,7 @@ case 0x050:
+ {
+ /* IN D,(C) */
+  		R.MemPtr.W = R.BC.W; 
+-		R.DE.B.h = Z80_DoIn(R.MemPtr.W);            
++		Z80_IO_AT(4); R.DE.B.h = Z80_DoIn(R.MemPtr.W);            
+ 		++R.MemPtr.W; 
+ 		{											
+ 			Z80_BYTE	Flags;						
+@@ -7373,7 +7373,7 @@ case 0x051:
+  /* OUT (C),D */
+  
+ 		R.MemPtr.W = R.BC.W; 
+-		Z80_DoOut(R.MemPtr.W,R.DE.B.h);                     
++		Z80_IO_AT(3); Z80_DoOut(R.MemPtr.W,R.DE.B.h);                     
+         ++R.MemPtr.W;                                       
+ 		Cycles = 4;
+ 		R.PC.W.l+=2; R.Flags |= Z80_CHECK_INTERRUPT_FLAG;
+@@ -7477,7 +7477,7 @@ case 0x058:
+ {
+ /* IN E,(C) */
+  		R.MemPtr.W = R.BC.W; 
+-		R.DE.B.l = Z80_DoIn(R.MemPtr.W);            
++		Z80_IO_AT(4); R.DE.B.l = Z80_DoIn(R.MemPtr.W);            
+ 		++R.MemPtr.W; 
+ 		{											
+ 			Z80_BYTE	Flags;						
+@@ -7495,7 +7495,7 @@ case 0x059:
+  /* OUT (C),E */
+  
+ 		R.MemPtr.W = R.BC.W; 
+-		Z80_DoOut(R.MemPtr.W,R.DE.B.l);                     
++		Z80_IO_AT(3); Z80_DoOut(R.MemPtr.W,R.DE.B.l);                     
+         ++R.MemPtr.W;                                       
+ 		Cycles = 4;
+ 		R.PC.W.l+=2; R.Flags |= Z80_CHECK_INTERRUPT_FLAG;
+@@ -7601,7 +7601,7 @@ case 0x060:
+ {
+ /* IN H,(C) */
+  		R.MemPtr.W = R.BC.W; 
+-		R.HL.B.h = Z80_DoIn(R.MemPtr.W);            
++		Z80_IO_AT(4); R.HL.B.h = Z80_DoIn(R.MemPtr.W);            
+ 		++R.MemPtr.W; 
+ 		{											
+ 			Z80_BYTE	Flags;						
+@@ -7619,7 +7619,7 @@ case 0x061:
+  /* OUT (C),H */
+  
+ 		R.MemPtr.W = R.BC.W; 
+-		Z80_DoOut(R.MemPtr.W,R.HL.B.h);                     
++		Z80_IO_AT(3); Z80_DoOut(R.MemPtr.W,R.HL.B.h);                     
+         ++R.MemPtr.W;                                       
+ 		Cycles = 4;
+ 		R.PC.W.l+=2; R.Flags |= Z80_CHECK_INTERRUPT_FLAG;
+@@ -7723,7 +7723,7 @@ case 0x068:
+ {
+ /* IN L,(C) */
+  		R.MemPtr.W = R.BC.W; 
+-		R.HL.B.l = Z80_DoIn(R.MemPtr.W);            
++		Z80_IO_AT(4); R.HL.B.l = Z80_DoIn(R.MemPtr.W);            
+ 		++R.MemPtr.W; 
+ 		{											
+ 			Z80_BYTE	Flags;						
+@@ -7741,7 +7741,7 @@ case 0x069:
+  /* OUT (C),L */
+  
+ 		R.MemPtr.W = R.BC.W; 
+-		Z80_DoOut(R.MemPtr.W,R.HL.B.l);                     
++		Z80_IO_AT(3); Z80_DoOut(R.MemPtr.W,R.HL.B.l);                     
+         ++R.MemPtr.W;                                       
+ 		Cycles = 4;
+ 		R.PC.W.l+=2; R.Flags |= Z80_CHECK_INTERRUPT_FLAG;
+@@ -7846,7 +7846,7 @@ case 0x070:
+ {
+ /* IN X,(C) */
+  		R.MemPtr.W = R.BC.W; 
+-		R.TempByte = Z80_DoIn(R.MemPtr.W);            
++		Z80_IO_AT(4); R.TempByte = Z80_DoIn(R.MemPtr.W);            
+ 		++R.MemPtr.W; 
+ 		{											
+ 			Z80_BYTE	Flags;						
+@@ -7864,7 +7864,7 @@ case 0x071:
+  /* OUT (C),0 */
+  
+ 		R.MemPtr.W = R.BC.W; 
+-		Z80_DoOut(R.MemPtr.W,0);                     
++		Z80_IO_AT(3); Z80_DoOut(R.MemPtr.W,0);                     
+         ++R.MemPtr.W;                                       
+ 		Cycles = 4;
+ 		R.PC.W.l+=2; R.Flags |= Z80_CHECK_INTERRUPT_FLAG;
+@@ -7954,7 +7954,7 @@ case 0x078:
+ {
+ /* IN A,(C) */
+  		R.MemPtr.W = R.BC.W; 
+-		R.AF.B.h = Z80_DoIn(R.MemPtr.W);            
++		Z80_IO_AT(4); R.AF.B.h = Z80_DoIn(R.MemPtr.W);            
+ 		++R.MemPtr.W; 
+ 		{											
+ 			Z80_BYTE	Flags;						
+@@ -7972,7 +7972,7 @@ case 0x079:
+  /* OUT (C),A */
+  
+ 		R.MemPtr.W = R.BC.W; 
+-		Z80_DoOut(R.MemPtr.W,R.AF.B.h);                     
++		Z80_IO_AT(3); Z80_DoOut(R.MemPtr.W,R.AF.B.h);                     
+         ++R.MemPtr.W;                                       
+ 		Cycles = 4;
+ 		R.PC.W.l+=2; R.Flags |= Z80_CHECK_INTERRUPT_FLAG;
+@@ -11872,7 +11872,7 @@ case 0x0d3:
+     R.MemPtr.B.l = Z80_RD_OPCODE_BYTE(1); 
+ 	R.MemPtr.B.h = R.AF.B.h; 
+ 	/* perform out */ 
+-    Z80_DoOut(R.MemPtr.W, R.AF.B.h); 
++    Z80_IO_AT(2); Z80_DoOut(R.MemPtr.W, R.AF.B.h); 
+ 	/* update mem ptr */ 
+ 	R.MemPtr.B.l++; 
+ 	R.MemPtr.B.h = R.AF.B.h; 
+@@ -11981,7 +11981,7 @@ case 0x0db:
+ 	R.MemPtr.B.l = Z80_RD_OPCODE_BYTE(1);
+ 	R.MemPtr.B.h = R.AF.B.h;
+     /* a in upper byte of port, data in lower byte of port */
+-    R.AF.B.h = Z80_DoIn(R.MemPtr.W);
++    Z80_IO_AT(2); R.AF.B.h = Z80_DoIn(R.MemPtr.W);
+ 	/* update mem ptr */
+ 	R.MemPtr.W++;
+ 	/* no flags changed */
+diff --git a/src/cpc/z80/z80.h b/src/cpc/z80/z80.h
+index 6030404..6f18541 100644
+--- a/src/cpc/z80/z80.h
++++ b/src/cpc/z80/z80.h
+@@ -304,6 +304,20 @@ void            Z80_DoOut(Z80_WORD Addr, Z80_BYTE Data);
+ /* read a byte from a I/O port */
+ Z80_BYTE        Z80_DoIn(Z80_WORD Addr);
+ 
++/* Amiga port (Pinball Dreams, 20 Oct 2026): the NOP of the instruction at which
++ * its I/O cycle happens. The emulation runs the CRTC after each instruction, so
++ * an OUT or IN used to reach the CRTC/Gate Array/PPI at the start of its
++ * instruction, 2-5 us early. Each I/O instruction now states how many of its
++ * NOPs pass before the I/O cycle (as on the CPC, and as CPCEC times it) and
++ * Z80_DoOut/Z80_DoIn run the CRTC up to that point first (arnold.c
++ * CPC_IOCatchUp). NO_IOTIME_FIX (define): I/O at the start, as before. */
++#ifndef NO_IOTIME_FIX
++extern int CPC_IOPre;
++#define Z80_IO_AT(n) (CPC_IOPre = (n))
++#else
++#define Z80_IO_AT(n) ((void)0)
++#endif
++
+ 
+ /*--------*/
+ 
+diff --git a/src/cpc/z80/z80funcs.h b/src/cpc/z80/z80funcs.h
+index a3c3b16..8516e46 100644
+--- a/src/cpc/z80/z80funcs.h
++++ b/src/cpc/z80/z80funcs.h
+@@ -642,7 +642,7 @@ static int OUTI(void)
+ 
+         R.TempByte = Z80_RD_BYTE(R.HL.W);
+ 
+-        Z80_DoOut(R.BC.W,R.TempByte);                   
++        Z80_IO_AT(5); Z80_DoOut(R.BC.W,R.TempByte);                   
+ 		R.MemPtr.W = R.BC.W+1;
+ 
+         Z80_FLAGS_REG |= Z80_SUBTRACT_FLAG;
+@@ -678,7 +678,7 @@ static int OUTD(void)
+ 
+         R.TempByte = Z80_RD_BYTE(R.HL.W);
+ 
+-        Z80_DoOut(R.BC.W,R.TempByte);
++        Z80_IO_AT(5); Z80_DoOut(R.BC.W,R.TempByte);
+ 		R.MemPtr.W = R.BC.W-1;
+ 
+         /* as per Zilog docs */
+@@ -693,7 +693,7 @@ static int OUTD(void)
+ static void INI(void)
+ {
+         
+-        R.TempByte = Z80_DoIn(R.BC.W);
++        Z80_IO_AT(5); R.TempByte = Z80_DoIn(R.BC.W);
+ 
+         Z80_WR_BYTE(R.HL.W,R.TempByte);
+ 
+@@ -711,7 +711,7 @@ static void INI(void)
+ static void IND(void)
+ {
+ 
+-        R.TempByte = Z80_DoIn(R.BC.W);          
++        Z80_IO_AT(5); R.TempByte = Z80_DoIn(R.BC.W);          
+                 
+         Z80_WR_BYTE(R.HL.W,R.TempByte);
+ 
+-- 
+2.50.0.windows.2
+

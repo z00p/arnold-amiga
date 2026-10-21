@@ -1,0 +1,2983 @@
+From 75c7a1845d176fc0c46da1c8bd1896f7ffcb3f3d Mon Sep 17 00:00:00 2001
+From: John Stringer <jcec_1@yahoo.co.uk>
+Date: Wed, 21 Oct 2026 20:34:31 +0100
+Subject: [PATCH 28/31] Speed-ups for the Emu68 JIT (pixel-exact); I/O lead
+ carried over
+
+Emu68 (PiStorm) guesses every branch at translation time (forward = not
+taken, backward = taken only within 128 bytes) and a wrong guess leaves the
+translated block. Hot paths are shaped for that: Plus cells and border cells
+with the visible range worked out once and short loops (NO_EMUBR), sprite
+cells inline (NO_SPRINL) and each line's sprite pixels composed once
+(NO_SPRLINE), branch hints in the main loop (NO_HINTS), each Z80 opcode
+ending with its own interrupt check (NO_Z80TAIL). Pixel-exact (headless
+checksums, whole-run frame checksums). Also: when an I/O or ASIC write is
+timed later than Arnold's instruction is long (LD (HL),n), the CRTC's lead is
+carried into the next instruction instead of a negative cycle count
+(NO_IOAHEAD_DEBT restores that).
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ src/cpc/arnold.c  |  20 +-
+ src/cpc/asic.c    | 138 ++++++++++++
+ src/cpc/asic.h    |  17 ++
+ src/cpc/cpc.c     |   3 +-
+ src/cpc/crtc.c    | 253 ++++++++++++++++++++++
+ src/cpc/hint.h    |  15 ++
+ src/cpc/render5.c |   2 +
+ src/cpc/z80/z80.c | 525 +++++++++++++++++++++++-----------------------
+ 8 files changed, 712 insertions(+), 261 deletions(-)
+ create mode 100644 src/cpc/hint.h
+
+diff --git a/src/cpc/arnold.c b/src/cpc/arnold.c
+index 13953e3..fa243e1 100644
+--- a/src/cpc/arnold.c
++++ b/src/cpc/arnold.c
+@@ -84,7 +84,16 @@ void CPC_IOCatchUp(void)
+ 	CPC_IOPre = 0;
+ 	if (k > 0) { CRTC_DoCycles(k); CPC_IOAhead += k; }
+ }
++#ifndef NO_IOAHEAD_DEBT
++/* rel09 (21 Oct 2026): a memory write can be timed later than the instruction
++ * is long in Arnold (LD (HL),n: 2 NOPs here, written at NOP 3 as in CPCEC), so
++ * the CRTC may already be past the end of the instruction. Carry that lead into
++ * the next instruction instead of a negative count (which drew nothing but moved
++ * the monitor counters back while HCount stayed ahead). NO_IOAHEAD_DEBT: as before. */
++#define IO_AHEAD_TAKE(n) do { (n) -= CPC_IOAhead; CPC_IOAhead = 0; if (__builtin_expect((n) < 0, 0)) { CPC_IOAhead = -(n); (n) = 0; } } while (0)
++#else
+ #define IO_AHEAD_TAKE(n) do { (n) -= CPC_IOAhead; CPC_IOAhead = 0; } while (0)
++#endif
+ #else
+ #define IO_AHEAD_TAKE(n) do { } while (0)
+ #endif
+@@ -368,6 +377,7 @@ extern void Z80_HaltSteps(int Count);
+ extern int CRTC_CyclesToEvent(void);
+ //extern BOOL ConsoleBreak;
+ 
++#include "hint.h"
+ void	CPCEmulation_Run(void)
+ {
+ 	BOOL doBreak = FALSE;
+@@ -381,7 +391,7 @@ void	CPCEmulation_Run(void)
+ 		/* Amiga port: a halted Z80 only burns cycles until the next CRTC event
+ 		   (the only place interrupts are raised), so do them as one batch.
+ 		   Stops one cycle short of the frame end so that path is unchanged. */
+-		if (Z80_HaltHit && (Z80_HaltHit = 0, Z80_HaltIdle()))
++		if (ARN_UNLIKELY(Z80_HaltHit) && (Z80_HaltHit = 0, Z80_HaltIdle()))
+ 		{
+ 			/* batch to each event cycle in turn; an event that raises no
+ 			   interrupt leaves the Z80 halting, so carry on to the next one */
+@@ -407,12 +417,16 @@ void	CPCEmulation_Run(void)
+ 		NopCount = Debugger_Execute(); 
+ #endif
+ 		/* update CPC nop count - used for other hardware */
++#ifndef NO_HINTS
++		{ extern unsigned long CPC_NopCount; CPC_NopCount += NopCount; }   /* = CPC_UpdateNopCount, no call */
++#else
+ 		CPC_UpdateNopCount(NopCount);
++#endif
+ 
+ 		LocalNopCountToDate = NopCountToDate - NopCount;
+ 
+ 		/* nop counter is used to define when we render the whole display */
+-		if (LocalNopCountToDate<=RenderOnEarlyAt)
++		if (ARN_UNLIKELY(LocalNopCountToDate<=RenderOnEarlyAt))
+ 		{
+ 			int NopsToFrameEnd;
+ 
+@@ -555,7 +569,7 @@ void	CPCEmulation_Run(void)
+ #endif
+ 			IO_AHEAD_TAKE(NopCount);   /* NopCount is not used again below */
+ #if !defined(NO_DEFER) && !defined(NO_E)
+-			if (NopCount < CRTC_RunLeft && !ASIC_DMA_IntPending)
++			if (ARN_LIKELY(NopCount < CRTC_RunLeft && !ASIC_DMA_IntPending))
+ 			{
+ 				CRTC_RunLeft -= NopCount;
+ 				CRTC_Pending += NopCount;
+diff --git a/src/cpc/asic.c b/src/cpc/asic.c
+index d30322f..848f94c 100644
+--- a/src/cpc/asic.c
++++ b/src/cpc/asic.c
+@@ -108,6 +108,25 @@ static unsigned char ASIC_ColUsed[64];
+ static int ASIC_ColUsedN = 0;
+ #endif
+ 
++#ifndef NO_SPRLINE
++/* Sonic 50 fps (perf50, 20 Oct 2026): the sprite pixels of one line, composed
++ * once per line instead of merged per CRTC column. Byte (c << 3) + k is lores
++ * pixel k of column c (even hires pixel 2k of the column): 0 = no sprite, else
++ * pen + 16 of the first opaque sprite in priority order. Sprites are drawn from
++ * lowest priority (15) to highest (0), opaque pixels only, each over exactly
++ * its columns (MinColumn, WidthInColumns), so every byte gets the pixel
++ * ASIC_MergeEven gives. Valid (ASIC_LineBufOK) for ASIC_LineBufLine until the
++ * column mask is rebuilt (anything that changes the line's sprite set or a
++ * sprite's position/size/magnification) or a sprite on this line gets a pixel
++ * written (ASIC_WriteRam). NO_SPRLINE: merged per column (ASIC_SpriteCellEven). */
++unsigned char ASIC_LineBuf[64 * 8] __attribute__((aligned(4)));
++int ASIC_LineBufOK = 0;
++unsigned long ASIC_LineBufLine;
++static unsigned char ASIC_LineBufUsed[64];
++static unsigned long ASIC_LineBufUsedMask[2];
++static int ASIC_LineBufUsedN = 0;
++#endif
++
+ /* rebuild ASIC_ColMask from the sprites active on this line (none: all zero) */
+ void ASIC_BuildColMask(void)
+ {
+@@ -139,8 +158,66 @@ void ASIC_BuildColMask(void)
+ 			}
+ 		}
+ 	ASIC_ColMaskValid = 1;
++#ifndef NO_SPRLINE
++	ASIC_LineBufOK = 0;
++#endif
+ }
+ 
++#ifndef NO_SPRLINE
++void ASIC_ComposeLine(unsigned long Line)
++{
++	unsigned long Active = (ASIC_Data.SpriteEnableMask & ASIC_Data.SpriteEnableMaskOnLine) ?
++		ASIC_Data.SpriteEnableMaskOnLine : 0;
++	unsigned char *lb = ASIC_LineBuf;
++	int i;
++	while (ASIC_LineBufUsedN > 0)
++	{
++		unsigned int *z = (unsigned int *)(lb + (ASIC_LineBufUsed[--ASIC_LineBufUsedN] << 3));
++		z[0] = 0; z[1] = 0;
++	}
++	ASIC_LineBufUsedMask[0] = ASIC_LineBufUsedMask[1] = 0;
++	for (i = 15; i >= 0; i--)
++	{
++		const ASIC_SPRITE_RENDER_INFO *ri;
++		const unsigned char *r;
++		unsigned long x, w;
++		int sh, n, p, d;
++		if ((Active & (1UL << i)) == 0)
++			continue;
++		ri = &ASIC_Data.SpriteInfo[i];
++		r = ASIC_Data.ASIC_Ram + (i << 8) + (((((unsigned long)Line - ri->y) & 0x01ff) >> ri->YMagShift) << 4);
++		{
++			const unsigned int *l = (const unsigned int *)r;
++			if (((l[0] | l[1] | l[2] | l[3]) & 0x0f0f0f0fU) == 0)
++				continue;
++		}
++		w = ri->WidthInColumns;
++		if (w > 64) w = 64;
++		for (d = 0; d < (int)w; d++)
++		{
++			int c = (int)((ri->MinColumn + d) & 0x03f);
++			if ((ASIC_LineBufUsedMask[c >> 5] & (1UL << (c & 31))) == 0)
++			{
++				ASIC_LineBufUsedMask[c >> 5] |= 1UL << (c & 31);
++				ASIC_LineBufUsed[ASIC_LineBufUsedN++] = (unsigned char)c;
++			}
++		}
++		sh = ri->XMagShift;
++		n = 16 << sh;
++		x = ri->x & 0x3ff;
++		/* hires pixel x + p of the line, even ones only */
++		for (p = (int)(x & 1); p < n; p += 2)
++		{
++			int Colour = r[p >> sh] & 0x0f;
++			if (Colour != 0)
++				lb[((x + p) & 0x3ff) >> 1] = (unsigned char)(Colour + 16);
++		}
++	}
++	ASIC_LineBufLine = Line;
++	ASIC_LineBufOK = 1;
++}
++#endif
++
+ static void    ASIC_TriggerInterrupt(void);
+ void    ASIC_DMA_DisableChannels(unsigned char Data);
+ 
+@@ -1070,6 +1147,62 @@ static unsigned long ASIC_MergeEven(int Line, int HCount, int *pPixels)
+ }
+ #endif
+ 
++#ifndef NO_SPRINL
++/* Sonic 50 fps (perf50, 20 Oct 2026): a sprite cell drawn inline by
++ * CRTC_RunCells at PIXEL_STEP 2. The caller has already written the cell's 8
++ * lores bytes from the pixel cache (= Render_Paletted_PutDataWordPLUS's
++ * pixels where no sprite is); this overwrites the bytes under the first opaque
++ * sprite pixel, in priority order, with that pen's palette index, as the
++ * PutDataWordPLUS mask path does. Same tests as
++ * ASIC_BuildDisplayReturnMaskWithPixels first. One call instead of three and
++ * no round trip through the CRTC globals. NO_SPRINL: the original path. */
++void ASIC_SpriteCellEven(int Line, int HCount, unsigned char *pCell, const signed int *pRemap)
++{
++	unsigned long GM = 0, Cov;
++	int c = HCount & 0x03f;
++
++	if ((ASIC_Data.SpriteEnableMask & ASIC_Data.SpriteEnableMaskOnLine) == 0)
++		return;
++	if (!ASIC_ColMaskValid) ASIC_BuildColMask();
++	if ((ASIC_ColMask[c >> 5] & (1UL << (c & 31))) == 0)
++		return;
++	Cov = ASIC_ColSprites[c];
++	while (Cov != 0)
++	{
++		const ASIC_SPRITE_RENDER_INFO *ri;
++		const unsigned char *r;
++		unsigned long base;
++		int sh, j, i;
++		i = 31 - __builtin_clz((unsigned int)(Cov & (0UL - Cov)));
++		Cov &= Cov - 1;
++		ri = &ASIC_Data.SpriteInfo[i];
++		r = ASIC_Data.ASIC_Ram + (i << 8) + (((((unsigned long)Line - ri->y) & 0x01ff) >> ri->YMagShift) << 4);
++		{
++			const unsigned int *l = (const unsigned int *)r;
++			if (((l[0] | l[1] | l[2] | l[3]) & 0x0f0f0f0fU) == 0)
++				continue;
++		}
++		sh = ri->XMagShift;
++		base = ((unsigned long)(HCount << 4) - ri->x) & 0x3ff;
++		for (j = 0; j < 16; j += 2)
++		{
++			unsigned long idx = ((base + j) & 0x3ff) >> sh;
++			if (idx < 16)
++			{
++				int Colour = r[idx] & 0x0f;
++				if (Colour != 0 && (GM & (1UL << j)) == 0)
++				{
++					pCell[j >> 1] = (unsigned char)pRemap[Colour + 16];
++					GM |= 1UL << j;
++				}
++			}
++		}
++		if (GM == 0x5555)
++			break;
++	}
++}
++#endif
++
+ #ifdef SPREVEN_CHECK
+ static int chk_t[16], chk_on, chk_n; static unsigned long chk_m1;
+ static unsigned long chk(int Line, int HCount, int *pPixels, unsigned long m2)
+@@ -1610,6 +1743,11 @@ void    ASIC_WriteRam(int Addr,int Data)
+ 
+                 /* remove upper nibble from sprite data */
+                 ASIC_Data.ASIC_Ram[Addr/* & 0x0fff*/] = (unsigned char)(Data & 0x0f);
++#ifndef NO_SPRLINE
++                /* perf50: a sprite of this line changed: compose the line again */
++                if (ASIC_Data.SpriteEnableMaskOnLine & (1UL << (Addr >> 8)))
++                        ASIC_LineBufOK = 0;
++#endif
+                 return;
+         }
+ 
+diff --git a/src/cpc/asic.h b/src/cpc/asic.h
+index 7367c69..4ec088f 100644
+--- a/src/cpc/asic.h
++++ b/src/cpc/asic.h
+@@ -50,6 +50,23 @@ unsigned char *ASIC_GetRamPtr(void);
+ 
+ 
+ unsigned long ASIC_BuildDisplayReturnMaskWithPixels(int Line, int HCount, /*int MonitorHorizontalCount, int ActualY,*/ int *pPixels);
++#if defined(NO_SPREVEN) || defined(NO_SPRCOL) || defined(NO_C) || defined(SPREVEN_CHECK)
++#ifndef NO_SPRINL
++#define NO_SPRINL	/* needs the even merge, the column sets and the column mask */
++#endif
++#endif
++#ifndef NO_SPRINL
++void ASIC_SpriteCellEven(int Line, int HCount, unsigned char *pCell, const signed int *pRemap);
++#endif
++#if defined(NO_SPRINL) && !defined(NO_SPRLINE)
++#define NO_SPRLINE	/* builds on the inline sprite cells */
++#endif
++#ifndef NO_SPRLINE
++extern unsigned char ASIC_LineBuf[64 * 8];
++extern int ASIC_LineBufOK;
++extern unsigned long ASIC_LineBufLine;
++void ASIC_ComposeLine(unsigned long Line);
++#endif
+ 
+ void    ASIC_DoDMA(void);
+ #if (defined(NO_PRI_FIX) || defined(NO_DMA_STAGGER)) && !defined(NO_DMAPHASE)
+diff --git a/src/cpc/cpc.c b/src/cpc/cpc.c
+index d2396e7..fb46b91 100644
+--- a/src/cpc/cpc.c
++++ b/src/cpc/cpc.c
+@@ -107,7 +107,8 @@ void CPC_InstallWritePort(CPCPortWrite *writePort)
+ 	NumWritePorts++;
+ }
+ 
+-static unsigned long   NopCount = 0;
++unsigned long   CPC_NopCount = 0;   /* perf50: not static (arnold.c adds to it inline) */
++#define NopCount CPC_NopCount
+ 
+ //static unsigned char *pCPCAmsdos;
+ 
+diff --git a/src/cpc/crtc.c b/src/cpc/crtc.c
+index 47a527b..340d644 100644
+--- a/src/cpc/crtc.c
++++ b/src/cpc/crtc.c
+@@ -3978,6 +3978,7 @@ static struct
+ 	int valid;                 /* 0: CRTC_PrepareRun before the next run */
+ 	int draw;                  /* 0 nothing (DontRender/retrace), 1 graphics, 2 border, 3 sync */
+ 	int plus, step1, cb, visible, x0, x1, scroll, hs;
++	int inl;                   /* perf50: sprite cells drawn inline (Plus, PIXEL_STEP 2) */
+ 	const unsigned short *stab;    /* soft scroll table (render5.c), NULL: Render_ScrollGraphicsData */
+ 	unsigned char *pRow;
+ 	const RENDER_PIXCACHE *cache;
+@@ -4082,6 +4083,11 @@ static void CRTC_PrepareRun(void)
+ 	CRTC_SetRenderingFunction();          /* constant until the next event */
+ 	CRTC_Run.plus = (CRTC_RenderMode == RENDER_MODE_ASIC_FEATURES);
+ 	CRTC_Run.step1 = (PIXEL_STEP == 1);
++#ifndef NO_SPRINL
++	CRTC_Run.inl = (PIXEL_STEP == 2);
++#else
++	CRTC_Run.inl = 0;
++#endif
+ 	CRTC_Run.cb = Render_CellBytes;
+ 	CRTC_Run.visible = RenderRowVisible;
+ 	CRTC_Run.x0 = Render_VisX0;
+@@ -4133,6 +4139,197 @@ static void CRTC_PrepareRun(void)
+ 	}
+ }
+ 
++#ifndef NO_EMUBR
++/* Sonic 50 fps (perf50, 20 Oct 2026): Plus graphics cells at PIXEL_STEP 2
++ * shaped for Emu68. Emu68 has no block chaining: a conditional branch is
++ * predicted not taken when it goes forward (or backward by more than 128
++ * bytes) and taken when it goes backward by less; a wrong guess leaves the
++ * translated unit and goes through the dispatcher's block lookup (a 4-way,
++ * 128-set cache on the 68k address). The old cell loop took about five such
++ * exits per cell. Here the hidden cells are split off before and after (no
++ * visibility test per cell), the scroll is always a table (identity when 0),
++ * rare paths (stale pixel cache entry, sprite column) are out of line, and
++ * the loop body is small enough for its back branch to stay in the unit.
++ * Same pixels and GraphicsLong as the generic loop. NO_EMUBR: generic loop. */
++static unsigned short CRTC_IdScroll[1024];
++static int CRTC_IdScrollInit;
++
++static void __attribute__((noinline)) CRTC_SpriteCell(unsigned char *d, int c, unsigned int hc)
++{
++	extern const signed int *const Render_PaletteRemap;
++	const signed int *remap = Render_PaletteRemap;
++#ifndef NO_SPRLINE
++	if (ASIC_ColMaskValid)
++	{
++		const unsigned char *s;
++		int k;
++		if (!ASIC_LineBufOK || ASIC_LineBufLine != ASICCRTC_Line)
++			ASIC_ComposeLine(ASICCRTC_Line);
++		s = ASIC_LineBuf + (c << 3);
++		for (k = 0; k < 8; k++)
++		{
++			unsigned int v = s[k];
++			unsigned int m = 0U - (unsigned int)(v != 0);
++			d[k] = (unsigned char)((d[k] & ~m) | ((unsigned int)remap[v] & m));
++		}
++		return;
++	}
++#endif
++#ifndef NO_SPRINL	/* with NO_SPRINL, CRTC_Run.inl is 0 and CRTC_PlusCells is not used */
++	ASIC_SpriteCellEven(ASICCRTC_Line, (int)hc, d, remap);
++#endif
++}
++
++static __inline__ int CRTC_Ceil8(int a, int lim)
++{
++	/* ceil(a / 8) (arithmetic shift = floor), at most lim (no overflow near INT_MAX) */
++	if (a >= (lim << 3)) return lim;
++	return (a + 7) >> 3;
++}
++
++/* returns the new line pointer; draws Count cells from hc + 1 */
++static unsigned char *CRTC_PlusCells(unsigned char *pLine, unsigned int hc, int Count)
++{
++	const RENDER_PIXCACHE *cache = CRTC_Run.cache;
++	const unsigned long stamp = CRTC_Run.stamp;
++	const unsigned char *ram = Z80MemoryBase;
++	unsigned long glong = CRTC_InternalState.GraphicsLong;
++	const unsigned short *t = CRTC_Run.stab;
++	const unsigned int maline = CRTC_Run.maline, rasterma = CRTC_Run.rasterma;
++	unsigned long cm[2];
++	int col0 = (int)(pLine - CRTC_Run.pRow), klo, khi, k;
++
++	cm[0] = CRTC_Run.cm0; cm[1] = CRTC_Run.cm1;
++	if (t == NULL)
++	{
++		if (!CRTC_IdScrollInit)
++		{
++			for (k = 0; k < 256; k++) { CRTC_IdScroll[k] = (unsigned short)k; CRTC_IdScroll[256 + k] = (unsigned short)(k << 8); }
++			CRTC_IdScrollInit = 1;
++		}
++		t = CRTC_IdScroll;
++	}
++	/* visible cells: k with visible && col0 + 8k + 8 >= x0 && col0 + 8k < x1 */
++	if (CRTC_Run.visible)
++	{
++		klo = CRTC_Ceil8(CRTC_Run.x0 - 8 - col0, Count);
++		khi = CRTC_Ceil8(CRTC_Run.x1 - col0, Count);
++		if (klo < 0) klo = 0;
++		if (khi > Count) khi = Count;
++		if (khi < klo) khi = klo;
++	}
++	else
++		klo = khi = Count;
++	if (klo > Count) klo = khi = Count;
++
++	/* hidden cells before: GraphicsLong still shifts */
++	for (k = 0; k < klo; k++)
++	{
++		unsigned short ma, addr;
++		hc = (hc + 1) & 0x0ff;
++		ma = (unsigned short)(maline + hc);
++		addr = (unsigned short)((((ma & 0x03000) << 2) | ((ma & 0x03ff) << 1)) | rasterma);
++		glong = (glong << 16) | ((unsigned long)ram[addr] << 8) | ram[(unsigned long)addr + 1];
++	}
++	pLine += klo << 3;
++	/* visible cells, in segments with no wrap of hc (8 bits) or of the
++	 * address's low 10 MA bits (so the source address just steps by 2),
++	 * and at most 32 cells (one long of the column sprite mask) */
++	while (k < khi)
++	{
++		unsigned int h1 = (hc + 1) & 0x0ff, c0 = h1 & 0x03f, ma, w;
++		int n = khi - k, j;
++		const unsigned char *src;
++		ma = (maline + h1) & 0x0ffff;
++		if (n > (int)(256 - h1)) n = (int)(256 - h1);
++		if (n > (int)(0x400 - (ma & 0x3ff))) n = (int)(0x400 - (ma & 0x3ff));
++		if (n > 32) n = 32;
++		src = ram + ((((ma & 0x03000) << 2) | ((ma & 0x03ff) << 1)) | rasterma);
++		/* bit j = column c0 + j (mod 64) may have a sprite */
++		if (c0 == 0) w = (unsigned int)cm[0];
++		else if (c0 < 32) w = (unsigned int)(cm[0] >> c0) | (unsigned int)(cm[1] << (32 - c0));
++		else if (c0 == 32) w = (unsigned int)cm[1];
++		else w = (unsigned int)(cm[1] >> (c0 - 32)) | (unsigned int)(cm[0] << (64 - c0));
++		{
++		unsigned char *const pStart = pLine, *const pEnd = pLine + (n << 3);
++		do
++		{
++			unsigned int d, b;
++			const RENDER_PIXCACHE *e;
++#ifdef CPC_LSB_FIRST
++			glong = (glong << 16) | ((unsigned long)src[0] << 8) | src[1];
++#else
++			glong = (glong << 16) | *(const unsigned short *)src;
++#endif
++			src += 2;
++			d = (unsigned)t[glong & 0x0ff] | t[256 + ((glong >> 8) & 0x0ff)] | t[512 + ((glong >> 16) & 0x0ff)] | t[768 + ((glong >> 24) & 0x0ff)];
++			b = (d >> 8) & 0x0ff;
++			e = &cache[b];
++			if (__builtin_expect(e->Stamp != stamp, 0)) e = Render_CachedPixels(b);
++			((unsigned int *)pLine)[0] = e->u.l[0];
++			b = d & 0x0ff;
++			e = &cache[b];
++			if (__builtin_expect(e->Stamp != stamp, 0)) e = Render_CachedPixels(b);
++			((unsigned int *)pLine)[1] = e->u.l[0];
++			if (__builtin_expect(w & 1, 0))
++			{
++				j = (int)((pLine - pStart) >> 3);
++				CRTC_SpriteCell(pLine, (int)((c0 + j) & 0x03f), (h1 + j) & 0x0ff);
++			}
++			w >>= 1;
++			pLine += 8;
++		} while (pLine != pEnd);
++		}
++		k += n;
++		hc = (hc + n) & 0x0ff;
++	}
++	/* hidden cells after */
++	for (; k < Count; k++)
++	{
++		unsigned short ma, addr;
++		hc = (hc + 1) & 0x0ff;
++		ma = (unsigned short)(maline + hc);
++		addr = (unsigned short)((((ma & 0x03000) << 2) | ((ma & 0x03ff) << 1)) | rasterma);
++		glong = (glong << 16) | ((unsigned long)ram[addr] << 8) | ram[(unsigned long)addr + 1];
++		pLine += 8;
++	}
++	CRTC_InternalState.GraphicsLong = glong;
++	return pLine;
++}
++#endif
++
++#ifndef NO_EMUBR
++/* border (2) / sync (3) cells at PIXEL_STEP 2, shaped for Emu68 like
++ * CRTC_PlusCells: visible range computed once, no tests per cell. A border
++ * cell also writes o1-o3 into the first 3 bytes of the next cell, which the
++ * next visible cell overwrites, so only the last visible cell's survive. */
++static unsigned char *CRTC_FillCells(unsigned char *pLine, int Count)
++{
++	const unsigned int fill = CRTC_Run.fill;
++	int col0 = (int)(pLine - CRTC_Run.pRow), klo, khi;
++	if (CRTC_Run.visible)
++	{
++		klo = CRTC_Ceil8(CRTC_Run.x0 - 8 - col0, Count);
++		khi = CRTC_Ceil8(CRTC_Run.x1 - col0, Count);
++		if (klo < 0) klo = 0;
++		if (khi > Count) khi = Count;
++	}
++	else
++		klo = khi = Count;
++	if (klo < khi)
++	{
++		unsigned int *d = (unsigned int *)(pLine + (klo << 3)), *end = (unsigned int *)(pLine + (khi << 3));
++		do { d[0] = fill; d[1] = fill; d += 2; } while (d != end);
++		if (CRTC_Run.draw == 2)
++		{
++			unsigned char *x = (unsigned char *)end;
++			x[0] = CRTC_Run.o1; x[1] = CRTC_Run.o2; x[2] = CRTC_Run.o3;
++		}
++	}
++	return pLine + (Count << 3);
++}
++#endif
++
+ /* Count quiet cycles (Count <= CRTC_RunLeft) */
+ static void CRTC_RunCells(int Count)
+ {
+@@ -4162,6 +4359,16 @@ static void CRTC_RunCells(int Count)
+ 		const int visible = CRTC_Run.visible, x0 = CRTC_Run.x0, x1 = CRTC_Run.x1, cb = CRTC_Run.cb;
+ 		const int step1 = CRTC_Run.step1;
+ 
++#ifndef NO_EMUBR
++		/* Count > 0: a count of 0 or less (asictime, see arnold.c IO_AHEAD_TAKE) takes
++		 * the generic path, which draws nothing and leaves hc and pLine alone */
++		if (Count > 0 && CRTC_Run.draw == 1 && CRTC_Run.plus && CRTC_Run.inl && cb == 8 && (CRTC_Run.stab || !CRTC_Run.scroll))
++		{
++			pLine = CRTC_PlusCells(pLine, hc, Count);
++			hc = (hc + Count) & 0x0ff;
++		}
++		else
++#endif
+ 		if (CRTC_Run.draw == 1)
+ 		{
+ 			const RENDER_PIXCACHE *cache = CRTC_Run.cache;
+@@ -4172,6 +4379,10 @@ static void CRTC_RunCells(int Count)
+ 			const unsigned short *stab = CRTC_Run.stab;
+ 			const unsigned int maline = CRTC_Run.maline, rasterma = CRTC_Run.rasterma;
+ 			const unsigned long cm0 = CRTC_Run.cm0, cm1 = CRTC_Run.cm1;
++#ifndef NO_SPRINL
++			extern const signed int *const Render_PaletteRemap;
++			const int inl = CRTC_Run.inl;
++#endif
+ 
+ 			for (k = 0; k < Count; k++)
+ 			{
+@@ -4193,7 +4404,11 @@ static void CRTC_RunCells(int Count)
+ 				{
+ 					int c = hc & 0x03f;
+ 					glong = (glong << 16) | ((unsigned long)ram[Addr] << 8) | ram[(unsigned long)Addr + 1];
++					int spr = 0;
+ 					if ((c < 32 ? cm0 : cm1) & (1UL << (c & 31)))
++#ifndef NO_SPRINL
++					if (inl) spr = 1; else
++#endif
+ 					{
+ 						/* a sprite may be here: the original path, on the globals */
+ 						unsigned long Mask;
+@@ -4227,6 +4442,37 @@ static void CRTC_RunCells(int Count)
+ 						if (step1) ((unsigned int *)pLine)[1] = e->u.l[1];
+ 						pLine += cb >> 1;
+ 					}
++#ifndef NO_SPRINL
++					/* perf50: a sprite may be here; its pixels go over the cell
++					 * just drawn (see asic.c ASIC_SpriteCellEven) */
++					if (spr)
++					{
++#ifndef NO_SPRLINE
++						/* the line's composed sprite pixels (asic.c ASIC_ComposeLine) */
++						if (ASIC_ColMaskValid)
++						{
++							const unsigned char *s;
++							if (!ASIC_LineBufOK || ASIC_LineBufLine != ASICCRTC_Line)
++								ASIC_ComposeLine(ASICCRTC_Line);
++							s = ASIC_LineBuf + (c << 3);
++							if (((const unsigned int *)s)[0] | ((const unsigned int *)s)[1])
++							{
++								unsigned char *d = pLine - cb;
++								if (s[0]) d[0] = (unsigned char)Render_PaletteRemap[s[0]];
++								if (s[1]) d[1] = (unsigned char)Render_PaletteRemap[s[1]];
++								if (s[2]) d[2] = (unsigned char)Render_PaletteRemap[s[2]];
++								if (s[3]) d[3] = (unsigned char)Render_PaletteRemap[s[3]];
++								if (s[4]) d[4] = (unsigned char)Render_PaletteRemap[s[4]];
++								if (s[5]) d[5] = (unsigned char)Render_PaletteRemap[s[5]];
++								if (s[6]) d[6] = (unsigned char)Render_PaletteRemap[s[6]];
++								if (s[7]) d[7] = (unsigned char)Render_PaletteRemap[s[7]];
++							}
++						}
++						else
++#endif
++						ASIC_SpriteCellEven(ASICCRTC_Line, (int)hc, pLine - cb, Render_PaletteRemap);
++					}
++#endif
+ 				}
+ 				else
+ 				{
+@@ -4246,6 +4492,13 @@ static void CRTC_RunCells(int Count)
+ 			}
+ 			CRTC_InternalState.GraphicsLong = glong;
+ 		}
++#ifndef NO_EMUBR
++		else if (Count > 0 && cb == 8 && !step1)
++		{
++			pLine = CRTC_FillCells(pLine, Count);
++			hc = (hc + Count) & 0x0ff;
++		}
++#endif
+ 		else
+ 		{
+ 			/* border (2) or sync (3): the same fill each cell */
+diff --git a/src/cpc/hint.h b/src/cpc/hint.h
+new file mode 100644
+index 0000000..6133cdf
+--- /dev/null
++++ b/src/cpc/hint.h
+@@ -0,0 +1,15 @@
++/* Branch hints for Emu68 (perf50, 20 Oct 2026). Emu68 translates a forward
++ * conditional branch as "not taken" (and a backward one over more than 128
++ * bytes); a wrong guess leaves the translated unit through the dispatcher.
++ * These hints make gcc put the usual path on the fall-through side. They do
++ * not change what the code does. NO_HINTS: plain conditions. */
++#ifndef ARN_HINT_H
++#define ARN_HINT_H
++#if defined(__GNUC__) && !defined(NO_HINTS)
++#define ARN_LIKELY(x)   __builtin_expect(!!(x), 1)
++#define ARN_UNLIKELY(x) __builtin_expect(!!(x), 0)
++#else
++#define ARN_LIKELY(x)   (x)
++#define ARN_UNLIKELY(x) (x)
++#endif
++#endif
+diff --git a/src/cpc/render5.c b/src/cpc/render5.c
+index 9c03fc0..3cc072e 100644
+--- a/src/cpc/render5.c
++++ b/src/cpc/render5.c
+@@ -115,6 +115,8 @@ static void Render_TrueColourRGB_Setup(void);
+ screen, this then gives the index within the palette below for
+ the actual colour */
+ static signed int PaletteRemap[32];
++/* perf50: read by CRTC_RunCells for inline sprite cells (asic.c ASIC_SpriteCellEven) */
++const signed int *const Render_PaletteRemap = PaletteRemap;
+ extern unsigned long Render_RemapStamp;   /* Amiga port: defined with the pixel cache below */
+ 
+ 
+diff --git a/src/cpc/z80/z80.c b/src/cpc/z80/z80.c
+index 5889e91..53ee65b 100644
+--- a/src/cpc/z80/z80.c
++++ b/src/cpc/z80/z80.c
+@@ -19,6 +19,7 @@
+  *
+  */
+ #include "z80.h"
++#include "../hint.h"
+ #include "z80tables.h"
+ #include "z80macros.h"
+ Z80_REGISTERS R;
+@@ -9820,6 +9821,16 @@ void Z80_HaltSteps(int Count)
+ 	R.Flags |= Z80_CHECK_INTERRUPT_FLAG;
+ }
+ 
++/* perf50 (Emu68): each opcode ends with its own copy of the interrupt check and
++ * return instead of a "break" to the shared one after the switch. That branch
++ * was more than 8 KB away for 278 opcodes, too far for Emu68 to follow, so it
++ * left the translated unit on every instruction. Same code, same order.
++ * NO_Z80TAIL: break, as before. */
++#ifndef NO_Z80TAIL
++#define Z80_CASE_END { if (ARN_UNLIKELY((R.Flags & (Z80_CHECK_INTERRUPT_FLAG | Z80_EXECUTE_INTERRUPT_HANDLER_FLAG))==(Z80_CHECK_INTERRUPT_FLAG | Z80_EXECUTE_INTERRUPT_HANDLER_FLAG))) Cycles+=Z80_ExecuteInterrupt(); return Cycles; }
++#else
++#define Z80_CASE_END break;
++#endif
+ int Z80_ExecuteInstruction(void)
+ {
+ unsigned long Opcode;
+@@ -9834,7 +9845,7 @@ case 0x000:
+  		R.PC.W.l+=1; R.Flags |= Z80_CHECK_INTERRUPT_FLAG;
+ Cycles = 1;
+ }
+-break;
++Z80_CASE_END
+ case 0x001:
+ {
+ /* LD BC,nnnn */
+@@ -9844,7 +9855,7 @@ case 0x001:
+  		R.PC.W.l+=3; R.Flags |= Z80_CHECK_INTERRUPT_FLAG;
+ Cycles = 3;
+ }
+-break;
++Z80_CASE_END
+ case 0x002:
+ {
+ /* LD (BC),A */
+@@ -9856,7 +9867,7 @@ case 0x002:
+  		R.PC.W.l+=1; R.Flags |= Z80_CHECK_INTERRUPT_FLAG;
+ Cycles = 2;
+ }
+-break;
++Z80_CASE_END
+ case 0x003:
+ {
+ /* INC BC */
+@@ -9866,7 +9877,7 @@ case 0x003:
+  		R.PC.W.l+=1; R.Flags |= Z80_CHECK_INTERRUPT_FLAG;
+ Cycles = 2;
+ }
+-break;
++Z80_CASE_END
+ case 0x004:
+ {
+ INC_R(R.BC.B.h);
+@@ -9874,7 +9885,7 @@ INC_R(R.BC.B.h);
+  		R.PC.W.l+=1; R.Flags |= Z80_CHECK_INTERRUPT_FLAG;
+ Cycles = 1;
+ }
+-break;
++Z80_CASE_END
+ case 0x005:
+ {
+ DEC_R(R.BC.B.h);
+@@ -9882,7 +9893,7 @@ DEC_R(R.BC.B.h);
+  		R.PC.W.l+=1; R.Flags |= Z80_CHECK_INTERRUPT_FLAG;
+ Cycles = 1;
+ }
+-break;
++Z80_CASE_END
+ case 0x006:
+ {
+  /* LD B,n */
+@@ -9891,7 +9902,7 @@ R.BC.B.h = Z80_RD_OPCODE_BYTE(1);
+  		R.PC.W.l+=2; R.Flags |= Z80_CHECK_INTERRUPT_FLAG;
+ Cycles = 2;
+ }
+-break;
++Z80_CASE_END
+ case 0x007:
+ {
+ RLCA();
+@@ -9899,7 +9910,7 @@ RLCA();
+  		R.PC.W.l+=1; R.Flags |= Z80_CHECK_INTERRUPT_FLAG;
+ Cycles = 1;
+ }
+-break;
++Z80_CASE_END
+ case 0x008:
+ {
+ SWAP(R.AF.W,R.altAF.W);
+@@ -9907,7 +9918,7 @@ SWAP(R.AF.W,R.altAF.W);
+  		R.PC.W.l+=1; R.Flags |= Z80_CHECK_INTERRUPT_FLAG;
+ Cycles = 1;
+ }
+-break;
++Z80_CASE_END
+ case 0x009:
+ {
+ ADD_RR_rr(R.HL.W,R.BC.W);
+@@ -9915,7 +9926,7 @@ ADD_RR_rr(R.HL.W,R.BC.W);
+  		R.PC.W.l+=1; R.Flags |= Z80_CHECK_INTERRUPT_FLAG;
+ Cycles = 3;
+ }
+-break;
++Z80_CASE_END
+ case 0x00a:
+ {
+ /* LD A,(BC) */
+@@ -9926,7 +9937,7 @@ case 0x00a:
+  		R.PC.W.l+=1; R.Flags |= Z80_CHECK_INTERRUPT_FLAG;
+ Cycles = 2;
+ }
+-break;
++Z80_CASE_END
+ case 0x00b:
+ {
+ /* DEC BC */
+@@ -9936,7 +9947,7 @@ case 0x00b:
+  		R.PC.W.l+=1; R.Flags |= Z80_CHECK_INTERRUPT_FLAG;
+ Cycles = 2;
+ }
+-break;
++Z80_CASE_END
+ case 0x00c:
+ {
+ INC_R(R.BC.B.l);
+@@ -9944,7 +9955,7 @@ INC_R(R.BC.B.l);
+  		R.PC.W.l+=1; R.Flags |= Z80_CHECK_INTERRUPT_FLAG;
+ Cycles = 1;
+ }
+-break;
++Z80_CASE_END
+ case 0x00d:
+ {
+ DEC_R(R.BC.B.l);
+@@ -9952,7 +9963,7 @@ DEC_R(R.BC.B.l);
+  		R.PC.W.l+=1; R.Flags |= Z80_CHECK_INTERRUPT_FLAG;
+ Cycles = 1;
+ }
+-break;
++Z80_CASE_END
+ case 0x00e:
+ {
+  /* LD C,n */
+@@ -9961,7 +9972,7 @@ R.BC.B.l = Z80_RD_OPCODE_BYTE(1);
+  		R.PC.W.l+=2; R.Flags |= Z80_CHECK_INTERRUPT_FLAG;
+ Cycles = 2;
+ }
+-break;
++Z80_CASE_END
+ case 0x00f:
+ {
+ RRCA();
+@@ -9969,14 +9980,14 @@ RRCA();
+  		R.PC.W.l+=1; R.Flags |= Z80_CHECK_INTERRUPT_FLAG;
+ Cycles = 1;
+ }
+-break;
++Z80_CASE_END
+ case 0x010:
+ {
+ Cycles = DJNZ_dd();
+         R.R+=1;
+  R.Flags |= Z80_CHECK_INTERRUPT_FLAG;
+ }
+-break;
++Z80_CASE_END
+ case 0x011:
+ {
+ /* LD DE,nnnn */
+@@ -9986,7 +9997,7 @@ case 0x011:
+  		R.PC.W.l+=3; R.Flags |= Z80_CHECK_INTERRUPT_FLAG;
+ Cycles = 3;
+ }
+-break;
++Z80_CASE_END
+ case 0x012:
+ {
+ /* LD (DE),A */
+@@ -9998,7 +10009,7 @@ case 0x012:
+  		R.PC.W.l+=1; R.Flags |= Z80_CHECK_INTERRUPT_FLAG;
+ Cycles = 2;
+ }
+-break;
++Z80_CASE_END
+ case 0x013:
+ {
+ /* INC DE */
+@@ -10008,7 +10019,7 @@ case 0x013:
+  		R.PC.W.l+=1; R.Flags |= Z80_CHECK_INTERRUPT_FLAG;
+ Cycles = 2;
+ }
+-break;
++Z80_CASE_END
+ case 0x014:
+ {
+ INC_R(R.DE.B.h);
+@@ -10016,7 +10027,7 @@ INC_R(R.DE.B.h);
+  		R.PC.W.l+=1; R.Flags |= Z80_CHECK_INTERRUPT_FLAG;
+ Cycles = 1;
+ }
+-break;
++Z80_CASE_END
+ case 0x015:
+ {
+ DEC_R(R.DE.B.h);
+@@ -10024,7 +10035,7 @@ DEC_R(R.DE.B.h);
+  		R.PC.W.l+=1; R.Flags |= Z80_CHECK_INTERRUPT_FLAG;
+ Cycles = 1;
+ }
+-break;
++Z80_CASE_END
+ case 0x016:
+ {
+  /* LD D,n */
+@@ -10033,7 +10044,7 @@ R.DE.B.h = Z80_RD_OPCODE_BYTE(1);
+  		R.PC.W.l+=2; R.Flags |= Z80_CHECK_INTERRUPT_FLAG;
+ Cycles = 2;
+ }
+-break;
++Z80_CASE_END
+ case 0x017:
+ {
+ RLA();
+@@ -10041,7 +10052,7 @@ RLA();
+  		R.PC.W.l+=1; R.Flags |= Z80_CHECK_INTERRUPT_FLAG;
+ Cycles = 1;
+ }
+-break;
++Z80_CASE_END
+ case 0x018:
+ {
+ /* JR dd */
+@@ -10053,7 +10064,7 @@ R.PC.W.l = R.MemPtr.W;
+  R.Flags |= Z80_CHECK_INTERRUPT_FLAG;
+ Cycles = 3;
+ }
+-break;
++Z80_CASE_END
+ case 0x019:
+ {
+ ADD_RR_rr(R.HL.W,R.DE.W);
+@@ -10061,7 +10072,7 @@ ADD_RR_rr(R.HL.W,R.DE.W);
+  		R.PC.W.l+=1; R.Flags |= Z80_CHECK_INTERRUPT_FLAG;
+ Cycles = 3;
+ }
+-break;
++Z80_CASE_END
+ case 0x01a:
+ {
+ /* LD A,(DE) */
+@@ -10072,7 +10083,7 @@ case 0x01a:
+  		R.PC.W.l+=1; R.Flags |= Z80_CHECK_INTERRUPT_FLAG;
+ Cycles = 2;
+ }
+-break;
++Z80_CASE_END
+ case 0x01b:
+ {
+ /* DEC DE */
+@@ -10082,7 +10093,7 @@ case 0x01b:
+  		R.PC.W.l+=1; R.Flags |= Z80_CHECK_INTERRUPT_FLAG;
+ Cycles = 2;
+ }
+-break;
++Z80_CASE_END
+ case 0x01c:
+ {
+ INC_R(R.DE.B.l);
+@@ -10090,7 +10101,7 @@ INC_R(R.DE.B.l);
+  		R.PC.W.l+=1; R.Flags |= Z80_CHECK_INTERRUPT_FLAG;
+ Cycles = 1;
+ }
+-break;
++Z80_CASE_END
+ case 0x01d:
+ {
+ DEC_R(R.DE.B.l);
+@@ -10098,7 +10109,7 @@ DEC_R(R.DE.B.l);
+  		R.PC.W.l+=1; R.Flags |= Z80_CHECK_INTERRUPT_FLAG;
+ Cycles = 1;
+ }
+-break;
++Z80_CASE_END
+ case 0x01e:
+ {
+  /* LD E,n */
+@@ -10107,7 +10118,7 @@ R.DE.B.l = Z80_RD_OPCODE_BYTE(1);
+  		R.PC.W.l+=2; R.Flags |= Z80_CHECK_INTERRUPT_FLAG;
+ Cycles = 2;
+ }
+-break;
++Z80_CASE_END
+ case 0x01f:
+ {
+ RRA();
+@@ -10115,7 +10126,7 @@ RRA();
+  		R.PC.W.l+=1; R.Flags |= Z80_CHECK_INTERRUPT_FLAG;
+ Cycles = 1;
+ }
+-break;
++Z80_CASE_END
+ case 0x020:
+ {
+ /* JR cc,dd */
+@@ -10134,7 +10145,7 @@ else
+         R.R+=1;
+  R.Flags |= Z80_CHECK_INTERRUPT_FLAG;
+ }
+-break;
++Z80_CASE_END
+ case 0x021:
+ {
+ /* LD HL,nnnn */
+@@ -10144,7 +10155,7 @@ case 0x021:
+  		R.PC.W.l+=3; R.Flags |= Z80_CHECK_INTERRUPT_FLAG;
+ Cycles = 3;
+ }
+-break;
++Z80_CASE_END
+ case 0x022:
+ {
+ /* LD (nnnn),HL */
+@@ -10155,7 +10166,7 @@ case 0x022:
+  		R.PC.W.l+=3; R.Flags |= Z80_CHECK_INTERRUPT_FLAG;
+ Cycles = 5;
+ }
+-break;
++Z80_CASE_END
+ case 0x023:
+ {
+ /* INC HL */
+@@ -10165,7 +10176,7 @@ case 0x023:
+  		R.PC.W.l+=1; R.Flags |= Z80_CHECK_INTERRUPT_FLAG;
+ Cycles = 2;
+ }
+-break;
++Z80_CASE_END
+ case 0x024:
+ {
+ INC_R(R.HL.B.h);
+@@ -10173,7 +10184,7 @@ INC_R(R.HL.B.h);
+  		R.PC.W.l+=1; R.Flags |= Z80_CHECK_INTERRUPT_FLAG;
+ Cycles = 1;
+ }
+-break;
++Z80_CASE_END
+ case 0x025:
+ {
+ DEC_R(R.HL.B.h);
+@@ -10181,7 +10192,7 @@ DEC_R(R.HL.B.h);
+  		R.PC.W.l+=1; R.Flags |= Z80_CHECK_INTERRUPT_FLAG;
+ Cycles = 1;
+ }
+-break;
++Z80_CASE_END
+ case 0x026:
+ {
+  /* LD H,n */
+@@ -10190,7 +10201,7 @@ R.HL.B.h = Z80_RD_OPCODE_BYTE(1);
+  		R.PC.W.l+=2; R.Flags |= Z80_CHECK_INTERRUPT_FLAG;
+ Cycles = 2;
+ }
+-break;
++Z80_CASE_END
+ case 0x027:
+ {
+ DAA();
+@@ -10198,7 +10209,7 @@ DAA();
+  		R.PC.W.l+=1; R.Flags |= Z80_CHECK_INTERRUPT_FLAG;
+ Cycles = 1;
+ }
+-break;
++Z80_CASE_END
+ case 0x028:
+ {
+ /* JR cc,dd */
+@@ -10217,7 +10228,7 @@ else
+         R.R+=1;
+  R.Flags |= Z80_CHECK_INTERRUPT_FLAG;
+ }
+-break;
++Z80_CASE_END
+ case 0x029:
+ {
+ ADD_RR_rr(R.HL.W,R.HL.W);
+@@ -10225,7 +10236,7 @@ ADD_RR_rr(R.HL.W,R.HL.W);
+  		R.PC.W.l+=1; R.Flags |= Z80_CHECK_INTERRUPT_FLAG;
+ Cycles = 3;
+ }
+-break;
++Z80_CASE_END
+ case 0x02a:
+ {
+ /* LD HL,(nnnn) */
+@@ -10236,7 +10247,7 @@ case 0x02a:
+  		R.PC.W.l+=3; R.Flags |= Z80_CHECK_INTERRUPT_FLAG;
+ Cycles = 5;
+ }
+-break;
++Z80_CASE_END
+ case 0x02b:
+ {
+ /* DEC HL */
+@@ -10246,7 +10257,7 @@ case 0x02b:
+  		R.PC.W.l+=1; R.Flags |= Z80_CHECK_INTERRUPT_FLAG;
+ Cycles = 2;
+ }
+-break;
++Z80_CASE_END
+ case 0x02c:
+ {
+ INC_R(R.HL.B.l);
+@@ -10254,7 +10265,7 @@ INC_R(R.HL.B.l);
+  		R.PC.W.l+=1; R.Flags |= Z80_CHECK_INTERRUPT_FLAG;
+ Cycles = 1;
+ }
+-break;
++Z80_CASE_END
+ case 0x02d:
+ {
+ DEC_R(R.HL.B.l);
+@@ -10262,7 +10273,7 @@ DEC_R(R.HL.B.l);
+  		R.PC.W.l+=1; R.Flags |= Z80_CHECK_INTERRUPT_FLAG;
+ Cycles = 1;
+ }
+-break;
++Z80_CASE_END
+ case 0x02e:
+ {
+  /* LD L,n */
+@@ -10271,7 +10282,7 @@ R.HL.B.l = Z80_RD_OPCODE_BYTE(1);
+  		R.PC.W.l+=2; R.Flags |= Z80_CHECK_INTERRUPT_FLAG;
+ Cycles = 2;
+ }
+-break;
++Z80_CASE_END
+ case 0x02f:
+ {
+ /* CPL */
+@@ -10289,7 +10300,7 @@ case 0x02f:
+  		R.PC.W.l+=1; R.Flags |= Z80_CHECK_INTERRUPT_FLAG;
+ Cycles = 1;
+ }
+-break;
++Z80_CASE_END
+ case 0x030:
+ {
+ /* JR cc,dd */
+@@ -10308,7 +10319,7 @@ else
+         R.R+=1;
+  R.Flags |= Z80_CHECK_INTERRUPT_FLAG;
+ }
+-break;
++Z80_CASE_END
+ case 0x031:
+ {
+ /* LD SP,nnnn */
+@@ -10318,7 +10329,7 @@ case 0x031:
+  		R.PC.W.l+=3; R.Flags |= Z80_CHECK_INTERRUPT_FLAG;
+ Cycles = 3;
+ }
+-break;
++Z80_CASE_END
+ case 0x032:
+ {
+ /* LD (nnnn),A */
+@@ -10335,7 +10346,7 @@ case 0x032:
+  		R.PC.W.l+=3; R.Flags |= Z80_CHECK_INTERRUPT_FLAG;
+ Cycles = 4;
+ }
+-break;
++Z80_CASE_END
+ case 0x033:
+ {
+ /* INC SP */
+@@ -10345,7 +10356,7 @@ case 0x033:
+  		R.PC.W.l+=1; R.Flags |= Z80_CHECK_INTERRUPT_FLAG;
+ Cycles = 2;
+ }
+-break;
++Z80_CASE_END
+ case 0x034:
+ {
+ INC_HL_();
+@@ -10353,7 +10364,7 @@ INC_HL_();
+  		R.PC.W.l+=1; R.Flags |= Z80_CHECK_INTERRUPT_FLAG;
+ Cycles = 3;
+ }
+-break;
++Z80_CASE_END
+ case 0x035:
+ {
+ DEC_HL_();
+@@ -10361,7 +10372,7 @@ DEC_HL_();
+  		R.PC.W.l+=1; R.Flags |= Z80_CHECK_INTERRUPT_FLAG;
+ Cycles = 3;
+ }
+-break;
++Z80_CASE_END
+ case 0x036:
+ {
+  /* LD (HL),n */
+@@ -10371,7 +10382,7 @@ Z80_WR_BYTE(R.HL.W,R.TempByte);
+  		R.PC.W.l+=2; R.Flags |= Z80_CHECK_INTERRUPT_FLAG;
+ Cycles = 2;
+ }
+-break;
++Z80_CASE_END
+ case 0x037:
+ {
+ /* SCF */
+@@ -10389,7 +10400,7 @@ case 0x037:
+  		R.PC.W.l+=1; R.Flags |= Z80_CHECK_INTERRUPT_FLAG;
+ Cycles = 1;
+ }
+-break;
++Z80_CASE_END
+ case 0x038:
+ {
+ /* JR cc,dd */
+@@ -10408,7 +10419,7 @@ else
+         R.R+=1;
+  R.Flags |= Z80_CHECK_INTERRUPT_FLAG;
+ }
+-break;
++Z80_CASE_END
+ case 0x039:
+ {
+ ADD_RR_rr(R.HL.W,R.SP.W);
+@@ -10416,7 +10427,7 @@ ADD_RR_rr(R.HL.W,R.SP.W);
+  		R.PC.W.l+=1; R.Flags |= Z80_CHECK_INTERRUPT_FLAG;
+ Cycles = 3;
+ }
+-break;
++Z80_CASE_END
+ case 0x03a:
+ {
+ /* LD A,(nnnn) */
+@@ -10433,7 +10444,7 @@ case 0x03a:
+  		R.PC.W.l+=3; R.Flags |= Z80_CHECK_INTERRUPT_FLAG;
+ Cycles = 4;
+ }
+-break;
++Z80_CASE_END
+ case 0x03b:
+ {
+ /* DEC SP */
+@@ -10443,7 +10454,7 @@ case 0x03b:
+  		R.PC.W.l+=1; R.Flags |= Z80_CHECK_INTERRUPT_FLAG;
+ Cycles = 2;
+ }
+-break;
++Z80_CASE_END
+ case 0x03c:
+ {
+ INC_R(R.AF.B.h);
+@@ -10451,7 +10462,7 @@ INC_R(R.AF.B.h);
+  		R.PC.W.l+=1; R.Flags |= Z80_CHECK_INTERRUPT_FLAG;
+ Cycles = 1;
+ }
+-break;
++Z80_CASE_END
+ case 0x03d:
+ {
+ DEC_R(R.AF.B.h);
+@@ -10459,7 +10470,7 @@ DEC_R(R.AF.B.h);
+  		R.PC.W.l+=1; R.Flags |= Z80_CHECK_INTERRUPT_FLAG;
+ Cycles = 1;
+ }
+-break;
++Z80_CASE_END
+ case 0x03e:
+ {
+  /* LD A,n */
+@@ -10468,7 +10479,7 @@ R.AF.B.h = Z80_RD_OPCODE_BYTE(1);
+  		R.PC.W.l+=2; R.Flags |= Z80_CHECK_INTERRUPT_FLAG;
+ Cycles = 2;
+ }
+-break;
++Z80_CASE_END
+ case 0x03f:
+ {
+ /* CCF */
+@@ -10484,14 +10495,14 @@ case 0x03f:
+  		R.PC.W.l+=1; R.Flags |= Z80_CHECK_INTERRUPT_FLAG;
+ Cycles = 1;
+ }
+-break;
++Z80_CASE_END
+ case 0x040:
+ {
+         R.R+=1;
+  		R.PC.W.l+=1; R.Flags |= Z80_CHECK_INTERRUPT_FLAG;
+ Cycles = 1;
+ }
+-break;
++Z80_CASE_END
+ case 0x041:
+ {
+ /* LD B,C */
+@@ -10501,7 +10512,7 @@ case 0x041:
+  		R.PC.W.l+=1; R.Flags |= Z80_CHECK_INTERRUPT_FLAG;
+ Cycles = 1;
+ }
+-break;
++Z80_CASE_END
+ case 0x042:
+ {
+ /* LD B,D */
+@@ -10511,7 +10522,7 @@ case 0x042:
+  		R.PC.W.l+=1; R.Flags |= Z80_CHECK_INTERRUPT_FLAG;
+ Cycles = 1;
+ }
+-break;
++Z80_CASE_END
+ case 0x043:
+ {
+ /* LD B,E */
+@@ -10521,7 +10532,7 @@ case 0x043:
+  		R.PC.W.l+=1; R.Flags |= Z80_CHECK_INTERRUPT_FLAG;
+ Cycles = 1;
+ }
+-break;
++Z80_CASE_END
+ case 0x044:
+ {
+ /* LD B,H */
+@@ -10531,7 +10542,7 @@ case 0x044:
+  		R.PC.W.l+=1; R.Flags |= Z80_CHECK_INTERRUPT_FLAG;
+ Cycles = 1;
+ }
+-break;
++Z80_CASE_END
+ case 0x045:
+ {
+ /* LD B,L */
+@@ -10541,7 +10552,7 @@ case 0x045:
+  		R.PC.W.l+=1; R.Flags |= Z80_CHECK_INTERRUPT_FLAG;
+ Cycles = 1;
+ }
+-break;
++Z80_CASE_END
+ case 0x046:
+ {
+ /* LD B,(HL) */
+@@ -10551,7 +10562,7 @@ case 0x046:
+  		R.PC.W.l+=1; R.Flags |= Z80_CHECK_INTERRUPT_FLAG;
+ Cycles = 2;
+ }
+-break;
++Z80_CASE_END
+ case 0x047:
+ {
+ /* LD B,A */
+@@ -10561,7 +10572,7 @@ case 0x047:
+  		R.PC.W.l+=1; R.Flags |= Z80_CHECK_INTERRUPT_FLAG;
+ Cycles = 1;
+ }
+-break;
++Z80_CASE_END
+ case 0x048:
+ {
+ /* LD C,B */
+@@ -10571,14 +10582,14 @@ case 0x048:
+  		R.PC.W.l+=1; R.Flags |= Z80_CHECK_INTERRUPT_FLAG;
+ Cycles = 1;
+ }
+-break;
++Z80_CASE_END
+ case 0x049:
+ {
+         R.R+=1;
+  		R.PC.W.l+=1; R.Flags |= Z80_CHECK_INTERRUPT_FLAG;
+ Cycles = 1;
+ }
+-break;
++Z80_CASE_END
+ case 0x04a:
+ {
+ /* LD C,D */
+@@ -10588,7 +10599,7 @@ case 0x04a:
+  		R.PC.W.l+=1; R.Flags |= Z80_CHECK_INTERRUPT_FLAG;
+ Cycles = 1;
+ }
+-break;
++Z80_CASE_END
+ case 0x04b:
+ {
+ /* LD C,E */
+@@ -10598,7 +10609,7 @@ case 0x04b:
+  		R.PC.W.l+=1; R.Flags |= Z80_CHECK_INTERRUPT_FLAG;
+ Cycles = 1;
+ }
+-break;
++Z80_CASE_END
+ case 0x04c:
+ {
+ /* LD C,H */
+@@ -10608,7 +10619,7 @@ case 0x04c:
+  		R.PC.W.l+=1; R.Flags |= Z80_CHECK_INTERRUPT_FLAG;
+ Cycles = 1;
+ }
+-break;
++Z80_CASE_END
+ case 0x04d:
+ {
+ /* LD C,L */
+@@ -10618,7 +10629,7 @@ case 0x04d:
+  		R.PC.W.l+=1; R.Flags |= Z80_CHECK_INTERRUPT_FLAG;
+ Cycles = 1;
+ }
+-break;
++Z80_CASE_END
+ case 0x04e:
+ {
+ /* LD C,(HL) */
+@@ -10628,7 +10639,7 @@ case 0x04e:
+  		R.PC.W.l+=1; R.Flags |= Z80_CHECK_INTERRUPT_FLAG;
+ Cycles = 2;
+ }
+-break;
++Z80_CASE_END
+ case 0x04f:
+ {
+ /* LD C,A */
+@@ -10638,7 +10649,7 @@ case 0x04f:
+  		R.PC.W.l+=1; R.Flags |= Z80_CHECK_INTERRUPT_FLAG;
+ Cycles = 1;
+ }
+-break;
++Z80_CASE_END
+ case 0x050:
+ {
+ /* LD D,B */
+@@ -10648,7 +10659,7 @@ case 0x050:
+  		R.PC.W.l+=1; R.Flags |= Z80_CHECK_INTERRUPT_FLAG;
+ Cycles = 1;
+ }
+-break;
++Z80_CASE_END
+ case 0x051:
+ {
+ /* LD D,C */
+@@ -10658,14 +10669,14 @@ case 0x051:
+  		R.PC.W.l+=1; R.Flags |= Z80_CHECK_INTERRUPT_FLAG;
+ Cycles = 1;
+ }
+-break;
++Z80_CASE_END
+ case 0x052:
+ {
+         R.R+=1;
+  		R.PC.W.l+=1; R.Flags |= Z80_CHECK_INTERRUPT_FLAG;
+ Cycles = 1;
+ }
+-break;
++Z80_CASE_END
+ case 0x053:
+ {
+ /* LD D,E */
+@@ -10675,7 +10686,7 @@ case 0x053:
+  		R.PC.W.l+=1; R.Flags |= Z80_CHECK_INTERRUPT_FLAG;
+ Cycles = 1;
+ }
+-break;
++Z80_CASE_END
+ case 0x054:
+ {
+ /* LD D,H */
+@@ -10685,7 +10696,7 @@ case 0x054:
+  		R.PC.W.l+=1; R.Flags |= Z80_CHECK_INTERRUPT_FLAG;
+ Cycles = 1;
+ }
+-break;
++Z80_CASE_END
+ case 0x055:
+ {
+ /* LD D,L */
+@@ -10695,7 +10706,7 @@ case 0x055:
+  		R.PC.W.l+=1; R.Flags |= Z80_CHECK_INTERRUPT_FLAG;
+ Cycles = 1;
+ }
+-break;
++Z80_CASE_END
+ case 0x056:
+ {
+ /* LD D,(HL) */
+@@ -10705,7 +10716,7 @@ case 0x056:
+  		R.PC.W.l+=1; R.Flags |= Z80_CHECK_INTERRUPT_FLAG;
+ Cycles = 2;
+ }
+-break;
++Z80_CASE_END
+ case 0x057:
+ {
+ /* LD D,A */
+@@ -10715,7 +10726,7 @@ case 0x057:
+  		R.PC.W.l+=1; R.Flags |= Z80_CHECK_INTERRUPT_FLAG;
+ Cycles = 1;
+ }
+-break;
++Z80_CASE_END
+ case 0x058:
+ {
+ /* LD E,B */
+@@ -10725,7 +10736,7 @@ case 0x058:
+  		R.PC.W.l+=1; R.Flags |= Z80_CHECK_INTERRUPT_FLAG;
+ Cycles = 1;
+ }
+-break;
++Z80_CASE_END
+ case 0x059:
+ {
+ /* LD E,C */
+@@ -10735,7 +10746,7 @@ case 0x059:
+  		R.PC.W.l+=1; R.Flags |= Z80_CHECK_INTERRUPT_FLAG;
+ Cycles = 1;
+ }
+-break;
++Z80_CASE_END
+ case 0x05a:
+ {
+ /* LD E,D */
+@@ -10745,14 +10756,14 @@ case 0x05a:
+  		R.PC.W.l+=1; R.Flags |= Z80_CHECK_INTERRUPT_FLAG;
+ Cycles = 1;
+ }
+-break;
++Z80_CASE_END
+ case 0x05b:
+ {
+         R.R+=1;
+  		R.PC.W.l+=1; R.Flags |= Z80_CHECK_INTERRUPT_FLAG;
+ Cycles = 1;
+ }
+-break;
++Z80_CASE_END
+ case 0x05c:
+ {
+ /* LD E,H */
+@@ -10762,7 +10773,7 @@ case 0x05c:
+  		R.PC.W.l+=1; R.Flags |= Z80_CHECK_INTERRUPT_FLAG;
+ Cycles = 1;
+ }
+-break;
++Z80_CASE_END
+ case 0x05d:
+ {
+ /* LD E,L */
+@@ -10772,7 +10783,7 @@ case 0x05d:
+  		R.PC.W.l+=1; R.Flags |= Z80_CHECK_INTERRUPT_FLAG;
+ Cycles = 1;
+ }
+-break;
++Z80_CASE_END
+ case 0x05e:
+ {
+ /* LD E,(HL) */
+@@ -10782,7 +10793,7 @@ case 0x05e:
+  		R.PC.W.l+=1; R.Flags |= Z80_CHECK_INTERRUPT_FLAG;
+ Cycles = 2;
+ }
+-break;
++Z80_CASE_END
+ case 0x05f:
+ {
+ /* LD E,A */
+@@ -10792,7 +10803,7 @@ case 0x05f:
+  		R.PC.W.l+=1; R.Flags |= Z80_CHECK_INTERRUPT_FLAG;
+ Cycles = 1;
+ }
+-break;
++Z80_CASE_END
+ case 0x060:
+ {
+ /* LD H,B */
+@@ -10802,7 +10813,7 @@ case 0x060:
+  		R.PC.W.l+=1; R.Flags |= Z80_CHECK_INTERRUPT_FLAG;
+ Cycles = 1;
+ }
+-break;
++Z80_CASE_END
+ case 0x061:
+ {
+ /* LD H,C */
+@@ -10812,7 +10823,7 @@ case 0x061:
+  		R.PC.W.l+=1; R.Flags |= Z80_CHECK_INTERRUPT_FLAG;
+ Cycles = 1;
+ }
+-break;
++Z80_CASE_END
+ case 0x062:
+ {
+ /* LD H,D */
+@@ -10822,7 +10833,7 @@ case 0x062:
+  		R.PC.W.l+=1; R.Flags |= Z80_CHECK_INTERRUPT_FLAG;
+ Cycles = 1;
+ }
+-break;
++Z80_CASE_END
+ case 0x063:
+ {
+ /* LD H,E */
+@@ -10832,14 +10843,14 @@ case 0x063:
+  		R.PC.W.l+=1; R.Flags |= Z80_CHECK_INTERRUPT_FLAG;
+ Cycles = 1;
+ }
+-break;
++Z80_CASE_END
+ case 0x064:
+ {
+         R.R+=1;
+  		R.PC.W.l+=1; R.Flags |= Z80_CHECK_INTERRUPT_FLAG;
+ Cycles = 1;
+ }
+-break;
++Z80_CASE_END
+ case 0x065:
+ {
+ /* LD H,L */
+@@ -10849,7 +10860,7 @@ case 0x065:
+  		R.PC.W.l+=1; R.Flags |= Z80_CHECK_INTERRUPT_FLAG;
+ Cycles = 1;
+ }
+-break;
++Z80_CASE_END
+ case 0x066:
+ {
+ /* LD H,(HL) */
+@@ -10859,7 +10870,7 @@ case 0x066:
+  		R.PC.W.l+=1; R.Flags |= Z80_CHECK_INTERRUPT_FLAG;
+ Cycles = 2;
+ }
+-break;
++Z80_CASE_END
+ case 0x067:
+ {
+ /* LD H,A */
+@@ -10869,7 +10880,7 @@ case 0x067:
+  		R.PC.W.l+=1; R.Flags |= Z80_CHECK_INTERRUPT_FLAG;
+ Cycles = 1;
+ }
+-break;
++Z80_CASE_END
+ case 0x068:
+ {
+ /* LD L,B */
+@@ -10879,7 +10890,7 @@ case 0x068:
+  		R.PC.W.l+=1; R.Flags |= Z80_CHECK_INTERRUPT_FLAG;
+ Cycles = 1;
+ }
+-break;
++Z80_CASE_END
+ case 0x069:
+ {
+ /* LD L,C */
+@@ -10889,7 +10900,7 @@ case 0x069:
+  		R.PC.W.l+=1; R.Flags |= Z80_CHECK_INTERRUPT_FLAG;
+ Cycles = 1;
+ }
+-break;
++Z80_CASE_END
+ case 0x06a:
+ {
+ /* LD L,D */
+@@ -10899,7 +10910,7 @@ case 0x06a:
+  		R.PC.W.l+=1; R.Flags |= Z80_CHECK_INTERRUPT_FLAG;
+ Cycles = 1;
+ }
+-break;
++Z80_CASE_END
+ case 0x06b:
+ {
+ /* LD L,E */
+@@ -10909,7 +10920,7 @@ case 0x06b:
+  		R.PC.W.l+=1; R.Flags |= Z80_CHECK_INTERRUPT_FLAG;
+ Cycles = 1;
+ }
+-break;
++Z80_CASE_END
+ case 0x06c:
+ {
+ /* LD L,H */
+@@ -10919,14 +10930,14 @@ case 0x06c:
+  		R.PC.W.l+=1; R.Flags |= Z80_CHECK_INTERRUPT_FLAG;
+ Cycles = 1;
+ }
+-break;
++Z80_CASE_END
+ case 0x06d:
+ {
+         R.R+=1;
+  		R.PC.W.l+=1; R.Flags |= Z80_CHECK_INTERRUPT_FLAG;
+ Cycles = 1;
+ }
+-break;
++Z80_CASE_END
+ case 0x06e:
+ {
+ /* LD L,(HL) */
+@@ -10936,7 +10947,7 @@ case 0x06e:
+  		R.PC.W.l+=1; R.Flags |= Z80_CHECK_INTERRUPT_FLAG;
+ Cycles = 2;
+ }
+-break;
++Z80_CASE_END
+ case 0x06f:
+ {
+ /* LD L,A */
+@@ -10946,7 +10957,7 @@ case 0x06f:
+  		R.PC.W.l+=1; R.Flags |= Z80_CHECK_INTERRUPT_FLAG;
+ Cycles = 1;
+ }
+-break;
++Z80_CASE_END
+ case 0x070:
+ {
+ /* LD (HL),B */
+@@ -10956,7 +10967,7 @@ case 0x070:
+  		R.PC.W.l+=1; R.Flags |= Z80_CHECK_INTERRUPT_FLAG;
+ Cycles = 2;
+ }
+-break;
++Z80_CASE_END
+ case 0x071:
+ {
+ /* LD (HL),C */
+@@ -10966,7 +10977,7 @@ case 0x071:
+  		R.PC.W.l+=1; R.Flags |= Z80_CHECK_INTERRUPT_FLAG;
+ Cycles = 2;
+ }
+-break;
++Z80_CASE_END
+ case 0x072:
+ {
+ /* LD (HL),D */
+@@ -10976,7 +10987,7 @@ case 0x072:
+  		R.PC.W.l+=1; R.Flags |= Z80_CHECK_INTERRUPT_FLAG;
+ Cycles = 2;
+ }
+-break;
++Z80_CASE_END
+ case 0x073:
+ {
+ /* LD (HL),E */
+@@ -10986,7 +10997,7 @@ case 0x073:
+  		R.PC.W.l+=1; R.Flags |= Z80_CHECK_INTERRUPT_FLAG;
+ Cycles = 2;
+ }
+-break;
++Z80_CASE_END
+ case 0x074:
+ {
+ /* LD (HL),H */
+@@ -10996,7 +11007,7 @@ case 0x074:
+  		R.PC.W.l+=1; R.Flags |= Z80_CHECK_INTERRUPT_FLAG;
+ Cycles = 2;
+ }
+-break;
++Z80_CASE_END
+ case 0x075:
+ {
+ /* LD (HL),L */
+@@ -11006,7 +11017,7 @@ case 0x075:
+  		R.PC.W.l+=1; R.Flags |= Z80_CHECK_INTERRUPT_FLAG;
+ Cycles = 2;
+ }
+-break;
++Z80_CASE_END
+ case 0x076:
+ {
+ HALT(); Z80_HaltHit = 1;
+@@ -11014,7 +11025,7 @@ HALT(); Z80_HaltHit = 1;
+  R.Flags |= Z80_CHECK_INTERRUPT_FLAG;
+ Cycles = 1;
+ }
+-break;
++Z80_CASE_END
+ case 0x077:
+ {
+ /* LD (HL),A */
+@@ -11024,7 +11035,7 @@ case 0x077:
+  		R.PC.W.l+=1; R.Flags |= Z80_CHECK_INTERRUPT_FLAG;
+ Cycles = 2;
+ }
+-break;
++Z80_CASE_END
+ case 0x078:
+ {
+ /* LD A,B */
+@@ -11034,7 +11045,7 @@ case 0x078:
+  		R.PC.W.l+=1; R.Flags |= Z80_CHECK_INTERRUPT_FLAG;
+ Cycles = 1;
+ }
+-break;
++Z80_CASE_END
+ case 0x079:
+ {
+ /* LD A,C */
+@@ -11044,7 +11055,7 @@ case 0x079:
+  		R.PC.W.l+=1; R.Flags |= Z80_CHECK_INTERRUPT_FLAG;
+ Cycles = 1;
+ }
+-break;
++Z80_CASE_END
+ case 0x07a:
+ {
+ /* LD A,D */
+@@ -11054,7 +11065,7 @@ case 0x07a:
+  		R.PC.W.l+=1; R.Flags |= Z80_CHECK_INTERRUPT_FLAG;
+ Cycles = 1;
+ }
+-break;
++Z80_CASE_END
+ case 0x07b:
+ {
+ /* LD A,E */
+@@ -11064,7 +11075,7 @@ case 0x07b:
+  		R.PC.W.l+=1; R.Flags |= Z80_CHECK_INTERRUPT_FLAG;
+ Cycles = 1;
+ }
+-break;
++Z80_CASE_END
+ case 0x07c:
+ {
+ /* LD A,H */
+@@ -11074,7 +11085,7 @@ case 0x07c:
+  		R.PC.W.l+=1; R.Flags |= Z80_CHECK_INTERRUPT_FLAG;
+ Cycles = 1;
+ }
+-break;
++Z80_CASE_END
+ case 0x07d:
+ {
+ /* LD A,L */
+@@ -11084,7 +11095,7 @@ case 0x07d:
+  		R.PC.W.l+=1; R.Flags |= Z80_CHECK_INTERRUPT_FLAG;
+ Cycles = 1;
+ }
+-break;
++Z80_CASE_END
+ case 0x07e:
+ {
+ /* LD A,(HL) */
+@@ -11094,14 +11105,14 @@ case 0x07e:
+  		R.PC.W.l+=1; R.Flags |= Z80_CHECK_INTERRUPT_FLAG;
+ Cycles = 2;
+ }
+-break;
++Z80_CASE_END
+ case 0x07f:
+ {
+         R.R+=1;
+  		R.PC.W.l+=1; R.Flags |= Z80_CHECK_INTERRUPT_FLAG;
+ Cycles = 1;
+ }
+-break;
++Z80_CASE_END
+ case 0x080:
+ {
+ ADD_A_R(R.BC.B.h);
+@@ -11109,7 +11120,7 @@ ADD_A_R(R.BC.B.h);
+  		R.PC.W.l+=1; R.Flags |= Z80_CHECK_INTERRUPT_FLAG;
+ Cycles = 1;
+ }
+-break;
++Z80_CASE_END
+ case 0x081:
+ {
+ ADD_A_R(R.BC.B.l);
+@@ -11117,7 +11128,7 @@ ADD_A_R(R.BC.B.l);
+  		R.PC.W.l+=1; R.Flags |= Z80_CHECK_INTERRUPT_FLAG;
+ Cycles = 1;
+ }
+-break;
++Z80_CASE_END
+ case 0x082:
+ {
+ ADD_A_R(R.DE.B.h);
+@@ -11125,7 +11136,7 @@ ADD_A_R(R.DE.B.h);
+  		R.PC.W.l+=1; R.Flags |= Z80_CHECK_INTERRUPT_FLAG;
+ Cycles = 1;
+ }
+-break;
++Z80_CASE_END
+ case 0x083:
+ {
+ ADD_A_R(R.DE.B.l);
+@@ -11133,7 +11144,7 @@ ADD_A_R(R.DE.B.l);
+  		R.PC.W.l+=1; R.Flags |= Z80_CHECK_INTERRUPT_FLAG;
+ Cycles = 1;
+ }
+-break;
++Z80_CASE_END
+ case 0x084:
+ {
+ ADD_A_R(R.HL.B.h);
+@@ -11141,7 +11152,7 @@ ADD_A_R(R.HL.B.h);
+  		R.PC.W.l+=1; R.Flags |= Z80_CHECK_INTERRUPT_FLAG;
+ Cycles = 1;
+ }
+-break;
++Z80_CASE_END
+ case 0x085:
+ {
+ ADD_A_R(R.HL.B.l);
+@@ -11149,7 +11160,7 @@ ADD_A_R(R.HL.B.l);
+  		R.PC.W.l+=1; R.Flags |= Z80_CHECK_INTERRUPT_FLAG;
+ Cycles = 1;
+ }
+-break;
++Z80_CASE_END
+ case 0x086:
+ {
+ ADD_A_HL();
+@@ -11157,7 +11168,7 @@ ADD_A_HL();
+  		R.PC.W.l+=1; R.Flags |= Z80_CHECK_INTERRUPT_FLAG;
+ Cycles = 2;
+ }
+-break;
++Z80_CASE_END
+ case 0x087:
+ {
+ ADD_A_R(R.AF.B.h);
+@@ -11165,7 +11176,7 @@ ADD_A_R(R.AF.B.h);
+  		R.PC.W.l+=1; R.Flags |= Z80_CHECK_INTERRUPT_FLAG;
+ Cycles = 1;
+ }
+-break;
++Z80_CASE_END
+ case 0x088:
+ {
+ ADC_A_R(R.BC.B.h);
+@@ -11173,7 +11184,7 @@ ADC_A_R(R.BC.B.h);
+  		R.PC.W.l+=1; R.Flags |= Z80_CHECK_INTERRUPT_FLAG;
+ Cycles = 1;
+ }
+-break;
++Z80_CASE_END
+ case 0x089:
+ {
+ ADC_A_R(R.BC.B.l);
+@@ -11181,7 +11192,7 @@ ADC_A_R(R.BC.B.l);
+  		R.PC.W.l+=1; R.Flags |= Z80_CHECK_INTERRUPT_FLAG;
+ Cycles = 1;
+ }
+-break;
++Z80_CASE_END
+ case 0x08a:
+ {
+ ADC_A_R(R.DE.B.h);
+@@ -11189,7 +11200,7 @@ ADC_A_R(R.DE.B.h);
+  		R.PC.W.l+=1; R.Flags |= Z80_CHECK_INTERRUPT_FLAG;
+ Cycles = 1;
+ }
+-break;
++Z80_CASE_END
+ case 0x08b:
+ {
+ ADC_A_R(R.DE.B.l);
+@@ -11197,7 +11208,7 @@ ADC_A_R(R.DE.B.l);
+  		R.PC.W.l+=1; R.Flags |= Z80_CHECK_INTERRUPT_FLAG;
+ Cycles = 1;
+ }
+-break;
++Z80_CASE_END
+ case 0x08c:
+ {
+ ADC_A_R(R.HL.B.h);
+@@ -11205,7 +11216,7 @@ ADC_A_R(R.HL.B.h);
+  		R.PC.W.l+=1; R.Flags |= Z80_CHECK_INTERRUPT_FLAG;
+ Cycles = 1;
+ }
+-break;
++Z80_CASE_END
+ case 0x08d:
+ {
+ ADC_A_R(R.HL.B.l);
+@@ -11213,7 +11224,7 @@ ADC_A_R(R.HL.B.l);
+  		R.PC.W.l+=1; R.Flags |= Z80_CHECK_INTERRUPT_FLAG;
+ Cycles = 1;
+ }
+-break;
++Z80_CASE_END
+ case 0x08e:
+ {
+ ADC_A_HL();
+@@ -11221,7 +11232,7 @@ ADC_A_HL();
+  		R.PC.W.l+=1; R.Flags |= Z80_CHECK_INTERRUPT_FLAG;
+ Cycles = 2;
+ }
+-break;
++Z80_CASE_END
+ case 0x08f:
+ {
+ ADC_A_R(R.AF.B.h);
+@@ -11229,7 +11240,7 @@ ADC_A_R(R.AF.B.h);
+  		R.PC.W.l+=1; R.Flags |= Z80_CHECK_INTERRUPT_FLAG;
+ Cycles = 1;
+ }
+-break;
++Z80_CASE_END
+ case 0x090:
+ {
+ SUB_A_R(R.BC.B.h);
+@@ -11237,7 +11248,7 @@ SUB_A_R(R.BC.B.h);
+  		R.PC.W.l+=1; R.Flags |= Z80_CHECK_INTERRUPT_FLAG;
+ Cycles = 1;
+ }
+-break;
++Z80_CASE_END
+ case 0x091:
+ {
+ SUB_A_R(R.BC.B.l);
+@@ -11245,7 +11256,7 @@ SUB_A_R(R.BC.B.l);
+  		R.PC.W.l+=1; R.Flags |= Z80_CHECK_INTERRUPT_FLAG;
+ Cycles = 1;
+ }
+-break;
++Z80_CASE_END
+ case 0x092:
+ {
+ SUB_A_R(R.DE.B.h);
+@@ -11253,7 +11264,7 @@ SUB_A_R(R.DE.B.h);
+  		R.PC.W.l+=1; R.Flags |= Z80_CHECK_INTERRUPT_FLAG;
+ Cycles = 1;
+ }
+-break;
++Z80_CASE_END
+ case 0x093:
+ {
+ SUB_A_R(R.DE.B.l);
+@@ -11261,7 +11272,7 @@ SUB_A_R(R.DE.B.l);
+  		R.PC.W.l+=1; R.Flags |= Z80_CHECK_INTERRUPT_FLAG;
+ Cycles = 1;
+ }
+-break;
++Z80_CASE_END
+ case 0x094:
+ {
+ SUB_A_R(R.HL.B.h);
+@@ -11269,7 +11280,7 @@ SUB_A_R(R.HL.B.h);
+  		R.PC.W.l+=1; R.Flags |= Z80_CHECK_INTERRUPT_FLAG;
+ Cycles = 1;
+ }
+-break;
++Z80_CASE_END
+ case 0x095:
+ {
+ SUB_A_R(R.HL.B.l);
+@@ -11277,7 +11288,7 @@ SUB_A_R(R.HL.B.l);
+  		R.PC.W.l+=1; R.Flags |= Z80_CHECK_INTERRUPT_FLAG;
+ Cycles = 1;
+ }
+-break;
++Z80_CASE_END
+ case 0x096:
+ {
+ SUB_A_HL();
+@@ -11285,7 +11296,7 @@ SUB_A_HL();
+  		R.PC.W.l+=1; R.Flags |= Z80_CHECK_INTERRUPT_FLAG;
+ Cycles = 2;
+ }
+-break;
++Z80_CASE_END
+ case 0x097:
+ {
+ Z80_BYTE Flags;
+@@ -11296,7 +11307,7 @@ Z80_FLAGS_REG = Flags;
+  		R.PC.W.l+=1; R.Flags |= Z80_CHECK_INTERRUPT_FLAG;
+ Cycles = 1;
+ }
+-break;
++Z80_CASE_END
+ case 0x098:
+ {
+ SBC_A_R(R.BC.B.h);
+@@ -11304,7 +11315,7 @@ SBC_A_R(R.BC.B.h);
+  		R.PC.W.l+=1; R.Flags |= Z80_CHECK_INTERRUPT_FLAG;
+ Cycles = 1;
+ }
+-break;
++Z80_CASE_END
+ case 0x099:
+ {
+ SBC_A_R(R.BC.B.l);
+@@ -11312,7 +11323,7 @@ SBC_A_R(R.BC.B.l);
+  		R.PC.W.l+=1; R.Flags |= Z80_CHECK_INTERRUPT_FLAG;
+ Cycles = 1;
+ }
+-break;
++Z80_CASE_END
+ case 0x09a:
+ {
+ SBC_A_R(R.DE.B.h);
+@@ -11320,7 +11331,7 @@ SBC_A_R(R.DE.B.h);
+  		R.PC.W.l+=1; R.Flags |= Z80_CHECK_INTERRUPT_FLAG;
+ Cycles = 1;
+ }
+-break;
++Z80_CASE_END
+ case 0x09b:
+ {
+ SBC_A_R(R.DE.B.l);
+@@ -11328,7 +11339,7 @@ SBC_A_R(R.DE.B.l);
+  		R.PC.W.l+=1; R.Flags |= Z80_CHECK_INTERRUPT_FLAG;
+ Cycles = 1;
+ }
+-break;
++Z80_CASE_END
+ case 0x09c:
+ {
+ SBC_A_R(R.HL.B.h);
+@@ -11336,7 +11347,7 @@ SBC_A_R(R.HL.B.h);
+  		R.PC.W.l+=1; R.Flags |= Z80_CHECK_INTERRUPT_FLAG;
+ Cycles = 1;
+ }
+-break;
++Z80_CASE_END
+ case 0x09d:
+ {
+ SBC_A_R(R.HL.B.l);
+@@ -11344,7 +11355,7 @@ SBC_A_R(R.HL.B.l);
+  		R.PC.W.l+=1; R.Flags |= Z80_CHECK_INTERRUPT_FLAG;
+ Cycles = 1;
+ }
+-break;
++Z80_CASE_END
+ case 0x09e:
+ {
+ SBC_A_HL();
+@@ -11352,7 +11363,7 @@ SBC_A_HL();
+  		R.PC.W.l+=1; R.Flags |= Z80_CHECK_INTERRUPT_FLAG;
+ Cycles = 2;
+ }
+-break;
++Z80_CASE_END
+ case 0x09f:
+ {
+ SBC_A_R(R.AF.B.h);
+@@ -11360,7 +11371,7 @@ SBC_A_R(R.AF.B.h);
+  		R.PC.W.l+=1; R.Flags |= Z80_CHECK_INTERRUPT_FLAG;
+ Cycles = 1;
+ }
+-break;
++Z80_CASE_END
+ case 0x0a0:
+ {
+ AND_A_R(R.BC.B.h);
+@@ -11368,7 +11379,7 @@ AND_A_R(R.BC.B.h);
+  		R.PC.W.l+=1; R.Flags |= Z80_CHECK_INTERRUPT_FLAG;
+ Cycles = 1;
+ }
+-break;
++Z80_CASE_END
+ case 0x0a1:
+ {
+ AND_A_R(R.BC.B.l);
+@@ -11376,7 +11387,7 @@ AND_A_R(R.BC.B.l);
+  		R.PC.W.l+=1; R.Flags |= Z80_CHECK_INTERRUPT_FLAG;
+ Cycles = 1;
+ }
+-break;
++Z80_CASE_END
+ case 0x0a2:
+ {
+ AND_A_R(R.DE.B.h);
+@@ -11384,7 +11395,7 @@ AND_A_R(R.DE.B.h);
+  		R.PC.W.l+=1; R.Flags |= Z80_CHECK_INTERRUPT_FLAG;
+ Cycles = 1;
+ }
+-break;
++Z80_CASE_END
+ case 0x0a3:
+ {
+ AND_A_R(R.DE.B.l);
+@@ -11392,7 +11403,7 @@ AND_A_R(R.DE.B.l);
+  		R.PC.W.l+=1; R.Flags |= Z80_CHECK_INTERRUPT_FLAG;
+ Cycles = 1;
+ }
+-break;
++Z80_CASE_END
+ case 0x0a4:
+ {
+ AND_A_R(R.HL.B.h);
+@@ -11400,7 +11411,7 @@ AND_A_R(R.HL.B.h);
+  		R.PC.W.l+=1; R.Flags |= Z80_CHECK_INTERRUPT_FLAG;
+ Cycles = 1;
+ }
+-break;
++Z80_CASE_END
+ case 0x0a5:
+ {
+ AND_A_R(R.HL.B.l);
+@@ -11408,7 +11419,7 @@ AND_A_R(R.HL.B.l);
+  		R.PC.W.l+=1; R.Flags |= Z80_CHECK_INTERRUPT_FLAG;
+ Cycles = 1;
+ }
+-break;
++Z80_CASE_END
+ case 0x0a6:
+ {
+ AND_A_HL();
+@@ -11416,7 +11427,7 @@ AND_A_HL();
+  		R.PC.W.l+=1; R.Flags |= Z80_CHECK_INTERRUPT_FLAG;
+ Cycles = 2;
+ }
+-break;
++Z80_CASE_END
+ case 0x0a7:
+ {
+ Z80_BYTE Flags;
+@@ -11428,7 +11439,7 @@ Z80_FLAGS_REG = Flags;
+  		R.PC.W.l+=1; R.Flags |= Z80_CHECK_INTERRUPT_FLAG;
+ Cycles = 1;
+ }
+-break;
++Z80_CASE_END
+ case 0x0a8:
+ {
+ XOR_A_R(R.BC.B.h);
+@@ -11436,7 +11447,7 @@ XOR_A_R(R.BC.B.h);
+  		R.PC.W.l+=1; R.Flags |= Z80_CHECK_INTERRUPT_FLAG;
+ Cycles = 1;
+ }
+-break;
++Z80_CASE_END
+ case 0x0a9:
+ {
+ XOR_A_R(R.BC.B.l);
+@@ -11444,7 +11455,7 @@ XOR_A_R(R.BC.B.l);
+  		R.PC.W.l+=1; R.Flags |= Z80_CHECK_INTERRUPT_FLAG;
+ Cycles = 1;
+ }
+-break;
++Z80_CASE_END
+ case 0x0aa:
+ {
+ XOR_A_R(R.DE.B.h);
+@@ -11452,7 +11463,7 @@ XOR_A_R(R.DE.B.h);
+  		R.PC.W.l+=1; R.Flags |= Z80_CHECK_INTERRUPT_FLAG;
+ Cycles = 1;
+ }
+-break;
++Z80_CASE_END
+ case 0x0ab:
+ {
+ XOR_A_R(R.DE.B.l);
+@@ -11460,7 +11471,7 @@ XOR_A_R(R.DE.B.l);
+  		R.PC.W.l+=1; R.Flags |= Z80_CHECK_INTERRUPT_FLAG;
+ Cycles = 1;
+ }
+-break;
++Z80_CASE_END
+ case 0x0ac:
+ {
+ XOR_A_R(R.HL.B.h);
+@@ -11468,7 +11479,7 @@ XOR_A_R(R.HL.B.h);
+  		R.PC.W.l+=1; R.Flags |= Z80_CHECK_INTERRUPT_FLAG;
+ Cycles = 1;
+ }
+-break;
++Z80_CASE_END
+ case 0x0ad:
+ {
+ XOR_A_R(R.HL.B.l);
+@@ -11476,7 +11487,7 @@ XOR_A_R(R.HL.B.l);
+  		R.PC.W.l+=1; R.Flags |= Z80_CHECK_INTERRUPT_FLAG;
+ Cycles = 1;
+ }
+-break;
++Z80_CASE_END
+ case 0x0ae:
+ {
+ XOR_A_HL();
+@@ -11484,7 +11495,7 @@ XOR_A_HL();
+  		R.PC.W.l+=1; R.Flags |= Z80_CHECK_INTERRUPT_FLAG;
+ Cycles = 2;
+ }
+-break;
++Z80_CASE_END
+ case 0x0af:
+ {
+ Z80_BYTE Flags;
+@@ -11495,7 +11506,7 @@ Z80_FLAGS_REG = Flags;
+  		R.PC.W.l+=1; R.Flags |= Z80_CHECK_INTERRUPT_FLAG;
+ Cycles = 1;
+ }
+-break;
++Z80_CASE_END
+ case 0x0b0:
+ {
+ OR_A_R(R.BC.B.h);
+@@ -11503,7 +11514,7 @@ OR_A_R(R.BC.B.h);
+  		R.PC.W.l+=1; R.Flags |= Z80_CHECK_INTERRUPT_FLAG;
+ Cycles = 1;
+ }
+-break;
++Z80_CASE_END
+ case 0x0b1:
+ {
+ OR_A_R(R.BC.B.l);
+@@ -11511,7 +11522,7 @@ OR_A_R(R.BC.B.l);
+  		R.PC.W.l+=1; R.Flags |= Z80_CHECK_INTERRUPT_FLAG;
+ Cycles = 1;
+ }
+-break;
++Z80_CASE_END
+ case 0x0b2:
+ {
+ OR_A_R(R.DE.B.h);
+@@ -11519,7 +11530,7 @@ OR_A_R(R.DE.B.h);
+  		R.PC.W.l+=1; R.Flags |= Z80_CHECK_INTERRUPT_FLAG;
+ Cycles = 1;
+ }
+-break;
++Z80_CASE_END
+ case 0x0b3:
+ {
+ OR_A_R(R.DE.B.l);
+@@ -11527,7 +11538,7 @@ OR_A_R(R.DE.B.l);
+  		R.PC.W.l+=1; R.Flags |= Z80_CHECK_INTERRUPT_FLAG;
+ Cycles = 1;
+ }
+-break;
++Z80_CASE_END
+ case 0x0b4:
+ {
+ OR_A_R(R.HL.B.h);
+@@ -11535,7 +11546,7 @@ OR_A_R(R.HL.B.h);
+  		R.PC.W.l+=1; R.Flags |= Z80_CHECK_INTERRUPT_FLAG;
+ Cycles = 1;
+ }
+-break;
++Z80_CASE_END
+ case 0x0b5:
+ {
+ OR_A_R(R.HL.B.l);
+@@ -11543,7 +11554,7 @@ OR_A_R(R.HL.B.l);
+  		R.PC.W.l+=1; R.Flags |= Z80_CHECK_INTERRUPT_FLAG;
+ Cycles = 1;
+ }
+-break;
++Z80_CASE_END
+ case 0x0b6:
+ {
+ OR_A_HL();
+@@ -11551,7 +11562,7 @@ OR_A_HL();
+  		R.PC.W.l+=1; R.Flags |= Z80_CHECK_INTERRUPT_FLAG;
+ Cycles = 2;
+ }
+-break;
++Z80_CASE_END
+ case 0x0b7:
+ {
+ Z80_BYTE Flags;
+@@ -11562,7 +11573,7 @@ Z80_FLAGS_REG = Flags;
+  		R.PC.W.l+=1; R.Flags |= Z80_CHECK_INTERRUPT_FLAG;
+ Cycles = 1;
+ }
+-break;
++Z80_CASE_END
+ case 0x0b8:
+ {
+ CP_A_R(R.BC.B.h);
+@@ -11570,7 +11581,7 @@ CP_A_R(R.BC.B.h);
+  		R.PC.W.l+=1; R.Flags |= Z80_CHECK_INTERRUPT_FLAG;
+ Cycles = 1;
+ }
+-break;
++Z80_CASE_END
+ case 0x0b9:
+ {
+ CP_A_R(R.BC.B.l);
+@@ -11578,7 +11589,7 @@ CP_A_R(R.BC.B.l);
+  		R.PC.W.l+=1; R.Flags |= Z80_CHECK_INTERRUPT_FLAG;
+ Cycles = 1;
+ }
+-break;
++Z80_CASE_END
+ case 0x0ba:
+ {
+ CP_A_R(R.DE.B.h);
+@@ -11586,7 +11597,7 @@ CP_A_R(R.DE.B.h);
+  		R.PC.W.l+=1; R.Flags |= Z80_CHECK_INTERRUPT_FLAG;
+ Cycles = 1;
+ }
+-break;
++Z80_CASE_END
+ case 0x0bb:
+ {
+ CP_A_R(R.DE.B.l);
+@@ -11594,7 +11605,7 @@ CP_A_R(R.DE.B.l);
+  		R.PC.W.l+=1; R.Flags |= Z80_CHECK_INTERRUPT_FLAG;
+ Cycles = 1;
+ }
+-break;
++Z80_CASE_END
+ case 0x0bc:
+ {
+ CP_A_R(R.HL.B.h);
+@@ -11602,7 +11613,7 @@ CP_A_R(R.HL.B.h);
+  		R.PC.W.l+=1; R.Flags |= Z80_CHECK_INTERRUPT_FLAG;
+ Cycles = 1;
+ }
+-break;
++Z80_CASE_END
+ case 0x0bd:
+ {
+ CP_A_R(R.HL.B.l);
+@@ -11610,7 +11621,7 @@ CP_A_R(R.HL.B.l);
+  		R.PC.W.l+=1; R.Flags |= Z80_CHECK_INTERRUPT_FLAG;
+ Cycles = 1;
+ }
+-break;
++Z80_CASE_END
+ case 0x0be:
+ {
+ CP_A_HL();
+@@ -11618,7 +11629,7 @@ CP_A_HL();
+  		R.PC.W.l+=1; R.Flags |= Z80_CHECK_INTERRUPT_FLAG;
+ Cycles = 2;
+ }
+-break;
++Z80_CASE_END
+ case 0x0bf:
+ {
+ Z80_BYTE Flags;
+@@ -11629,7 +11640,7 @@ Z80_FLAGS_REG = Flags;
+  		R.PC.W.l+=1; R.Flags |= Z80_CHECK_INTERRUPT_FLAG;
+ Cycles = 1;
+ }
+-break;
++Z80_CASE_END
+ case 0x0c0:
+ {
+ if (Z80_TEST_ZERO_NOT_SET)
+@@ -11644,7 +11655,7 @@ else
+         R.R+=1;
+  R.Flags |= Z80_CHECK_INTERRUPT_FLAG;
+ }
+-break;
++Z80_CASE_END
+ case 0x0c1:
+ {
+ R.BC.W = POP();
+@@ -11652,7 +11663,7 @@ R.BC.W = POP();
+  		R.PC.W.l+=1; R.Flags |= Z80_CHECK_INTERRUPT_FLAG;
+ Cycles = 3;
+ }
+-break;
++Z80_CASE_END
+ case 0x0c2:
+ {
+ /* JP cc, nnnn */
+@@ -11668,7 +11679,7 @@ Cycles=3;
+         R.R+=1;
+  R.Flags |= Z80_CHECK_INTERRUPT_FLAG;
+ }
+-break;
++Z80_CASE_END
+ case 0x0c3:
+ {
+ /* JP nnnn */
+@@ -11678,7 +11689,7 @@ R.PC.W.l = R.MemPtr.W;
+  R.Flags |= Z80_CHECK_INTERRUPT_FLAG;
+ Cycles = 3;
+ }
+-break;
++Z80_CASE_END
+ case 0x0c4:
+ {
+ /* CALL cc,nnnn */
+@@ -11696,7 +11707,7 @@ else
+         R.R+=1;
+  R.Flags |= Z80_CHECK_INTERRUPT_FLAG;
+ }
+-break;
++Z80_CASE_END
+ case 0x0c5:
+ {
+ PUSH(R.BC.W);
+@@ -11704,7 +11715,7 @@ PUSH(R.BC.W);
+  		R.PC.W.l+=1; R.Flags |= Z80_CHECK_INTERRUPT_FLAG;
+ Cycles = 4;
+ }
+-break;
++Z80_CASE_END
+ case 0x0c6:
+ {
+ R.TempByte = Z80_RD_OPCODE_BYTE(1);
+@@ -11713,7 +11724,7 @@ ADD_A_X(R.TempByte);
+  		R.PC.W.l+=2; R.Flags |= Z80_CHECK_INTERRUPT_FLAG;
+ Cycles = 2;
+ }
+-break;
++Z80_CASE_END
+ case 0x0c7:
+ {
+ /* RST 0x0000 */
+@@ -11728,7 +11739,7 @@ R.PC.W.l = R.MemPtr.W;
+  R.Flags |= Z80_CHECK_INTERRUPT_FLAG;
+ Cycles = 4;
+ }
+-break;
++Z80_CASE_END
+ case 0x0c8:
+ {
+ if (Z80_TEST_ZERO_SET)
+@@ -11743,7 +11754,7 @@ else
+         R.R+=1;
+  R.Flags |= Z80_CHECK_INTERRUPT_FLAG;
+ }
+-break;
++Z80_CASE_END
+ case 0x0c9:
+ {
+ RETURN();
+@@ -11751,7 +11762,7 @@ RETURN();
+  R.Flags |= Z80_CHECK_INTERRUPT_FLAG;
+ Cycles = 3;
+ }
+-break;
++Z80_CASE_END
+ case 0x0ca:
+ {
+ /* JP cc, nnnn */
+@@ -11767,12 +11778,12 @@ Cycles=3;
+         R.R+=1;
+  R.Flags |= Z80_CHECK_INTERRUPT_FLAG;
+ }
+-break;
++Z80_CASE_END
+ case 0x0cb:
+ {
+ Cycles = Z80_CB_ExecuteInstruction();
+ }
+-break;
++Z80_CASE_END
+ case 0x0cc:
+ {
+ /* CALL cc,nnnn */
+@@ -11790,7 +11801,7 @@ else
+         R.R+=1;
+  R.Flags |= Z80_CHECK_INTERRUPT_FLAG;
+ }
+-break;
++Z80_CASE_END
+ case 0x0cd:
+ {
+ /* CALL nnnn */
+@@ -11801,7 +11812,7 @@ R.PC.W.l = R.MemPtr.W;
+  R.Flags |= Z80_CHECK_INTERRUPT_FLAG;
+ Cycles = 5;
+ }
+-break;
++Z80_CASE_END
+ case 0x0ce:
+ {
+ R.TempByte = Z80_RD_OPCODE_BYTE(1);
+@@ -11810,7 +11821,7 @@ ADC_A_X(R.TempByte);
+  		R.PC.W.l+=2; R.Flags |= Z80_CHECK_INTERRUPT_FLAG;
+ Cycles = 2;
+ }
+-break;
++Z80_CASE_END
+ case 0x0cf:
+ {
+ /* RST 0x0008 */
+@@ -11825,7 +11836,7 @@ R.PC.W.l = R.MemPtr.W;
+  R.Flags |= Z80_CHECK_INTERRUPT_FLAG;
+ Cycles = 4;
+ }
+-break;
++Z80_CASE_END
+ case 0x0d0:
+ {
+ if (Z80_TEST_CARRY_NOT_SET)
+@@ -11840,7 +11851,7 @@ else
+         R.R+=1;
+  R.Flags |= Z80_CHECK_INTERRUPT_FLAG;
+ }
+-break;
++Z80_CASE_END
+ case 0x0d1:
+ {
+ R.DE.W = POP();
+@@ -11848,7 +11859,7 @@ R.DE.W = POP();
+  		R.PC.W.l+=1; R.Flags |= Z80_CHECK_INTERRUPT_FLAG;
+ Cycles = 3;
+ }
+-break;
++Z80_CASE_END
+ case 0x0d2:
+ {
+ /* JP cc, nnnn */
+@@ -11864,7 +11875,7 @@ Cycles=3;
+         R.R+=1;
+  R.Flags |= Z80_CHECK_INTERRUPT_FLAG;
+ }
+-break;
++Z80_CASE_END
+ case 0x0d3:
+ {
+ /* OUT (n),A */
+@@ -11881,7 +11892,7 @@ case 0x0d3:
+         R.R+=1;
+  		R.PC.W.l+=2; R.Flags |= Z80_CHECK_INTERRUPT_FLAG;
+ }
+-break;
++Z80_CASE_END
+ case 0x0d4:
+ {
+ /* CALL cc,nnnn */
+@@ -11899,7 +11910,7 @@ else
+         R.R+=1;
+  R.Flags |= Z80_CHECK_INTERRUPT_FLAG;
+ }
+-break;
++Z80_CASE_END
+ case 0x0d5:
+ {
+ PUSH(R.DE.W);
+@@ -11907,7 +11918,7 @@ PUSH(R.DE.W);
+  		R.PC.W.l+=1; R.Flags |= Z80_CHECK_INTERRUPT_FLAG;
+ Cycles = 4;
+ }
+-break;
++Z80_CASE_END
+ case 0x0d6:
+ {
+ R.TempByte = Z80_RD_OPCODE_BYTE(1);
+@@ -11916,7 +11927,7 @@ SUB_A_X(R.TempByte);
+  		R.PC.W.l+=2; R.Flags |= Z80_CHECK_INTERRUPT_FLAG;
+ Cycles = 2;
+ }
+-break;
++Z80_CASE_END
+ case 0x0d7:
+ {
+ /* RST 0x0010 */
+@@ -11931,7 +11942,7 @@ R.PC.W.l = R.MemPtr.W;
+  R.Flags |= Z80_CHECK_INTERRUPT_FLAG;
+ Cycles = 4;
+ }
+-break;
++Z80_CASE_END
+ case 0x0d8:
+ {
+ if (Z80_TEST_CARRY_SET)
+@@ -11946,7 +11957,7 @@ else
+         R.R+=1;
+  R.Flags |= Z80_CHECK_INTERRUPT_FLAG;
+ }
+-break;
++Z80_CASE_END
+ case 0x0d9:
+ {
+ SWAP(R.DE.W, R.altDE.W);
+@@ -11956,7 +11967,7 @@ SWAP(R.BC.W, R.altBC.W);
+  		R.PC.W.l+=1; R.Flags |= Z80_CHECK_INTERRUPT_FLAG;
+ Cycles = 1;
+ }
+-break;
++Z80_CASE_END
+ case 0x0da:
+ {
+ /* JP cc, nnnn */
+@@ -11972,7 +11983,7 @@ Cycles=3;
+         R.R+=1;
+  R.Flags |= Z80_CHECK_INTERRUPT_FLAG;
+ }
+-break;
++Z80_CASE_END
+ case 0x0db:
+ {
+ /* IN A,(n) */
+@@ -11989,7 +12000,7 @@ case 0x0db:
+         R.R+=1;
+  		R.PC.W.l+=2; R.Flags |= Z80_CHECK_INTERRUPT_FLAG;
+ }
+-break;
++Z80_CASE_END
+ case 0x0dc:
+ {
+ /* CALL cc,nnnn */
+@@ -12007,12 +12018,12 @@ else
+         R.R+=1;
+  R.Flags |= Z80_CHECK_INTERRUPT_FLAG;
+ }
+-break;
++Z80_CASE_END
+ case 0x0dd:
+ {
+ Cycles = Z80_DD_ExecuteInstruction();
+ }
+-break;
++Z80_CASE_END
+ case 0x0de:
+ {
+ R.TempByte = Z80_RD_OPCODE_BYTE(1);
+@@ -12021,7 +12032,7 @@ SBC_A_X(R.TempByte);
+  		R.PC.W.l+=2; R.Flags |= Z80_CHECK_INTERRUPT_FLAG;
+ Cycles = 2;
+ }
+-break;
++Z80_CASE_END
+ case 0x0df:
+ {
+ /* RST 0x0018 */
+@@ -12036,7 +12047,7 @@ R.PC.W.l = R.MemPtr.W;
+  R.Flags |= Z80_CHECK_INTERRUPT_FLAG;
+ Cycles = 4;
+ }
+-break;
++Z80_CASE_END
+ case 0x0e0:
+ {
+ if (Z80_TEST_PARITY_ODD)
+@@ -12051,7 +12062,7 @@ else
+         R.R+=1;
+  R.Flags |= Z80_CHECK_INTERRUPT_FLAG;
+ }
+-break;
++Z80_CASE_END
+ case 0x0e1:
+ {
+ R.HL.W = POP();
+@@ -12059,7 +12070,7 @@ R.HL.W = POP();
+  		R.PC.W.l+=1; R.Flags |= Z80_CHECK_INTERRUPT_FLAG;
+ Cycles = 3;
+ }
+-break;
++Z80_CASE_END
+ case 0x0e2:
+ {
+ /* JP cc, nnnn */
+@@ -12075,7 +12086,7 @@ Cycles=3;
+         R.R+=1;
+  R.Flags |= Z80_CHECK_INTERRUPT_FLAG;
+ }
+-break;
++Z80_CASE_END
+ case 0x0e3:
+ {
+  
+@@ -12086,7 +12097,7 @@ case 0x0e3:
+  		R.PC.W.l+=1; R.Flags |= Z80_CHECK_INTERRUPT_FLAG;
+ Cycles = 6;
+ }
+-break;
++Z80_CASE_END
+ case 0x0e4:
+ {
+ /* CALL cc,nnnn */
+@@ -12104,7 +12115,7 @@ else
+         R.R+=1;
+  R.Flags |= Z80_CHECK_INTERRUPT_FLAG;
+ }
+-break;
++Z80_CASE_END
+ case 0x0e5:
+ {
+ PUSH(R.HL.W);
+@@ -12112,7 +12123,7 @@ PUSH(R.HL.W);
+  		R.PC.W.l+=1; R.Flags |= Z80_CHECK_INTERRUPT_FLAG;
+ Cycles = 4;
+ }
+-break;
++Z80_CASE_END
+ case 0x0e6:
+ {
+ R.TempByte = Z80_RD_OPCODE_BYTE(1);
+@@ -12121,7 +12132,7 @@ AND_A_X(R.TempByte);
+  		R.PC.W.l+=2; R.Flags |= Z80_CHECK_INTERRUPT_FLAG;
+ Cycles = 2;
+ }
+-break;
++Z80_CASE_END
+ case 0x0e7:
+ {
+ /* RST 0x0020 */
+@@ -12136,7 +12147,7 @@ R.PC.W.l = R.MemPtr.W;
+  R.Flags |= Z80_CHECK_INTERRUPT_FLAG;
+ Cycles = 4;
+ }
+-break;
++Z80_CASE_END
+ case 0x0e8:
+ {
+ if (Z80_TEST_PARITY_EVEN)
+@@ -12151,7 +12162,7 @@ else
+         R.R+=1;
+  R.Flags |= Z80_CHECK_INTERRUPT_FLAG;
+ }
+-break;
++Z80_CASE_END
+ case 0x0e9:
+ {
+ /* JP (HL) */
+@@ -12161,7 +12172,7 @@ case 0x0e9:
+  R.Flags |= Z80_CHECK_INTERRUPT_FLAG;
+ Cycles = 1;
+ }
+-break;
++Z80_CASE_END
+ case 0x0ea:
+ {
+ /* JP cc, nnnn */
+@@ -12177,7 +12188,7 @@ Cycles=3;
+         R.R+=1;
+  R.Flags |= Z80_CHECK_INTERRUPT_FLAG;
+ }
+-break;
++Z80_CASE_END
+ case 0x0eb:
+ {
+ SWAP(R.HL.W,R.DE.W);
+@@ -12185,7 +12196,7 @@ SWAP(R.HL.W,R.DE.W);
+  		R.PC.W.l+=1; R.Flags |= Z80_CHECK_INTERRUPT_FLAG;
+ Cycles = 1;
+ }
+-break;
++Z80_CASE_END
+ case 0x0ec:
+ {
+ /* CALL cc,nnnn */
+@@ -12203,12 +12214,12 @@ else
+         R.R+=1;
+  R.Flags |= Z80_CHECK_INTERRUPT_FLAG;
+ }
+-break;
++Z80_CASE_END
+ case 0x0ed:
+ {
+ Cycles = Z80_ED_ExecuteInstruction();
+ }
+-break;
++Z80_CASE_END
+ case 0x0ee:
+ {
+ R.TempByte = Z80_RD_OPCODE_BYTE(1);
+@@ -12217,7 +12228,7 @@ XOR_A_X(R.TempByte);
+  		R.PC.W.l+=2; R.Flags |= Z80_CHECK_INTERRUPT_FLAG;
+ Cycles = 2;
+ }
+-break;
++Z80_CASE_END
+ case 0x0ef:
+ {
+ /* RST 0x0028 */
+@@ -12232,7 +12243,7 @@ R.PC.W.l = R.MemPtr.W;
+  R.Flags |= Z80_CHECK_INTERRUPT_FLAG;
+ Cycles = 4;
+ }
+-break;
++Z80_CASE_END
+ case 0x0f0:
+ {
+ if (Z80_TEST_POSITIVE)
+@@ -12247,7 +12258,7 @@ else
+         R.R+=1;
+  R.Flags |= Z80_CHECK_INTERRUPT_FLAG;
+ }
+-break;
++Z80_CASE_END
+ case 0x0f1:
+ {
+ R.AF.W = POP();
+@@ -12255,7 +12266,7 @@ R.AF.W = POP();
+  		R.PC.W.l+=1; R.Flags |= Z80_CHECK_INTERRUPT_FLAG;
+ Cycles = 3;
+ }
+-break;
++Z80_CASE_END
+ case 0x0f2:
+ {
+ /* JP cc, nnnn */
+@@ -12271,7 +12282,7 @@ Cycles=3;
+         R.R+=1;
+  R.Flags |= Z80_CHECK_INTERRUPT_FLAG;
+ }
+-break;
++Z80_CASE_END
+ case 0x0f3:
+ {
+ /* DI */
+@@ -12281,7 +12292,7 @@ case 0x0f3:
+         R.R+=1;
+  		R.PC.W.l+=1; Cycles = 1;
+ }
+-break;
++Z80_CASE_END
+ case 0x0f4:
+ {
+ /* CALL cc,nnnn */
+@@ -12299,7 +12310,7 @@ else
+         R.R+=1;
+  R.Flags |= Z80_CHECK_INTERRUPT_FLAG;
+ }
+-break;
++Z80_CASE_END
+ case 0x0f5:
+ {
+ PUSH(R.AF.W);
+@@ -12307,7 +12318,7 @@ PUSH(R.AF.W);
+  		R.PC.W.l+=1; R.Flags |= Z80_CHECK_INTERRUPT_FLAG;
+ Cycles = 4;
+ }
+-break;
++Z80_CASE_END
+ case 0x0f6:
+ {
+ R.TempByte = Z80_RD_OPCODE_BYTE(1);
+@@ -12316,7 +12327,7 @@ OR_A_X(R.TempByte);
+  		R.PC.W.l+=2; R.Flags |= Z80_CHECK_INTERRUPT_FLAG;
+ Cycles = 2;
+ }
+-break;
++Z80_CASE_END
+ case 0x0f7:
+ {
+ /* RST 0x0030 */
+@@ -12331,7 +12342,7 @@ R.PC.W.l = R.MemPtr.W;
+  R.Flags |= Z80_CHECK_INTERRUPT_FLAG;
+ Cycles = 4;
+ }
+-break;
++Z80_CASE_END
+ case 0x0f8:
+ {
+ if (Z80_TEST_MINUS)
+@@ -12346,7 +12357,7 @@ else
+         R.R+=1;
+  R.Flags |= Z80_CHECK_INTERRUPT_FLAG;
+ }
+-break;
++Z80_CASE_END
+ case 0x0f9:
+ {
+ /* LD SP,HL */
+@@ -12356,7 +12367,7 @@ case 0x0f9:
+  		R.PC.W.l+=1; R.Flags |= Z80_CHECK_INTERRUPT_FLAG;
+ Cycles = 2;
+ }
+-break;
++Z80_CASE_END
+ case 0x0fa:
+ {
+ /* JP cc, nnnn */
+@@ -12372,7 +12383,7 @@ Cycles=3;
+         R.R+=1;
+  R.Flags |= Z80_CHECK_INTERRUPT_FLAG;
+ }
+-break;
++Z80_CASE_END
+ case 0x0fb:
+ {
+ /* EI */
+@@ -12382,7 +12393,7 @@ case 0x0fb:
+         R.R+=1;
+  		R.PC.W.l+=1; Cycles = 1;
+ }
+-break;
++Z80_CASE_END
+ case 0x0fc:
+ {
+ /* CALL cc,nnnn */
+@@ -12400,12 +12411,12 @@ else
+         R.R+=1;
+  R.Flags |= Z80_CHECK_INTERRUPT_FLAG;
+ }
+-break;
++Z80_CASE_END
+ case 0x0fd:
+ {
+ Cycles = Z80_FD_ExecuteInstruction();
+ }
+-break;
++Z80_CASE_END
+ case 0x0fe:
+ {
+ R.TempByte = Z80_RD_OPCODE_BYTE(1);
+@@ -12414,7 +12425,7 @@ CP_A_X(R.TempByte);
+  		R.PC.W.l+=2; R.Flags |= Z80_CHECK_INTERRUPT_FLAG;
+ Cycles = 2;
+ }
+-break;
++Z80_CASE_END
+ case 0x0ff:
+ {
+ /* RST 0x0038 */
+@@ -12429,7 +12440,7 @@ R.PC.W.l = R.MemPtr.W;
+  R.Flags |= Z80_CHECK_INTERRUPT_FLAG;
+ Cycles = 4;
+ }
+-break;
++Z80_CASE_END
+ default:
+ /* the following tells MSDEV 6 to not generate */
+ /* code which checks if a input value to the  */
+@@ -12442,7 +12453,7 @@ __assume(0);
+ break;
+ }
+ /* check interrupts? */
+-if ((R.Flags & (Z80_CHECK_INTERRUPT_FLAG | Z80_EXECUTE_INTERRUPT_HANDLER_FLAG))==(Z80_CHECK_INTERRUPT_FLAG | Z80_EXECUTE_INTERRUPT_HANDLER_FLAG))
++if (ARN_UNLIKELY((R.Flags & (Z80_CHECK_INTERRUPT_FLAG | Z80_EXECUTE_INTERRUPT_HANDLER_FLAG))==(Z80_CHECK_INTERRUPT_FLAG | Z80_EXECUTE_INTERRUPT_HANDLER_FLAG)))
+ {
+ Cycles+=Z80_ExecuteInterrupt();
+ }
+-- 
+2.50.0.windows.2
+

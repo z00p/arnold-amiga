@@ -26,6 +26,10 @@
 
 #include "host.h"
 
+#ifndef NO_SNDAA
+extern unsigned long PSG_RenderSpan(unsigned long Span, unsigned long *pRight);
+#endif
+
 void	Digiblaster_Reset(void);
 
 int SamplesToGenerate;
@@ -181,6 +185,12 @@ void    Audio_Init(int newFrequency, int newBitsPerSample, int newNoOfChannels)
 		AudioBufferSize = AudioBufSize;
 
         NoOfSamplesInSampleBuffer = (int)SamplesPerScreen;
+#ifndef NO_SNDLUT_FIX
+        /* soundq (21 Oct 2026): the first block was converted with SamplesToGenerate
+           still 0 (it is set after the conversion), so the host got the buffer's
+           uninitialised memory (0xDEDE in WinUAE: a click/thump at the start) */
+        SamplesToGenerate = NoOfSamplesInSampleBuffer;
+#endif
 
 
         /* allocate memory for sample buffer */
@@ -393,6 +403,10 @@ char *AudioEvent_UpdateCycle(char *pAudioPtr)
 	/* store outputs */
 	pAudioPtr[0] = LeftVolume;
 	pAudioPtr[1] = RightVolume;
+#ifndef NO_SNDLUT_FIX
+	pAudioPtr[2] = 0;   /* no fraction (see AudioEvent_ConvertToOutputFormat_16BitStereo) */
+	pAudioPtr[3] = 0;
+#endif
 /*	pAudioPtr[2] = Digiblaster_Volume; */
 	pAudioPtr+=4;
 
@@ -493,11 +507,25 @@ void	AudioEvent_ConvertToOutputFormat_16BitStereo(char *pSrcBuffer, char *pDestB
 		PSG_RightVolume = pSrcAudioPtr[0];
 		pSrcAudioPtr+=3;
 		
+#ifndef NO_SNDLUT_FIX
+		/* soundq (21 Oct 2026): the mixed bytes are 4..252 (AudioEvent_UpdateCycle),
+		   but VolumeLookup16Bit has 32 entries. On the Amiga indices >= 32 read the
+		   next table in .bss (Digiblaster_Lookup16Bit, (i-32)<<7, linear by luck),
+		   and indices < 32 gave i<<10: loud negative peaks turned into big positive
+		   spikes (crackle when two loud channels on a side are low together). Now
+		   linear for all: byte << 7, plus the 7-bit fraction the sub-sample PSG
+		   render leaves in the spare bytes 2 and 3 (0 without it). 0..32383. */
+		pDestAudioPtr[0] = (unsigned short)((PSG_LeftVolume << 7) | (pSrcAudioPtr[-2] & 0x7f));
+		pDestAudioPtr++;
+		pDestAudioPtr[0] = (unsigned short)((PSG_RightVolume << 7) | (pSrcAudioPtr[-1] & 0x7f));
+		pDestAudioPtr++;
+#else
 		/* mix 8-bit stereo */
 		pDestAudioPtr[0] = VolumeLookup16Bit[PSG_LeftVolume];
 		pDestAudioPtr++;
 		pDestAudioPtr[0] = VolumeLookup16Bit[PSG_RightVolume];
 		pDestAudioPtr++;
+#endif
 	}
 }
 
@@ -526,7 +554,11 @@ void	AudioEvent_ConvertToOutputFormat_16BitMono(char *pSrcBuffer, char *pDestBuf
 		/* mix it */
 		PSG_Volume = (PSG_LeftVolume + PSG_RightVolume)>>1;
 
+#ifndef NO_SNDLUT_FIX
+		pDestAudioPtr[0] = (unsigned short)(PSG_Volume << 7);   /* see the stereo one */
+#else
 		pDestAudioPtr[0] = VolumeLookup16Bit[PSG_Volume];	/* + Digiblaster_Vol; */
+#endif
 		pDestAudioPtr++;
 	}
 }
@@ -754,9 +786,20 @@ int     AudioEvent_TraverseAudioEventsAndBuildSampleData(int CPCNopCount, int No
         }
 
 		{
+#ifndef NO_SNDAA
+			/* soundq (21 Oct 2026, psgplay.c NO_SNDAA): an event splits its sample;
+			   the PSG is rendered up to the event, then from it, and the sample is
+			   the time-weighted average. SpanRecip turns the NOPs (16.16, >> 8)
+			   from the sample's start into a 16.16 fraction of the sample. */
+			unsigned long SpanRecip = (1UL<<28) / (unsigned long)(NopsPerSampleScaled.FixedPoint.L>>8);
+#endif
 			/* for each sample in sample buffer */
 			for (i=0; i<NoOfSamplesInSampleBuffer; i++)
 			{
+#ifndef NO_SNDAA
+				unsigned long AccL = 0, AccR = 0, SpanPos = 0, OutL, OutR;
+				int Split = 0;
+#endif
 				/* compare current NopCount to NopCount of next event */
 				/* if it is equal or greater, then we must perform this
 				event */
@@ -769,6 +812,19 @@ int     AudioEvent_TraverseAudioEventsAndBuildSampleData(int CPCNopCount, int No
 					{
 						do
 						{
+#ifndef NO_SNDAA
+							{
+								unsigned long Fe = (((unsigned long)((NopOffset<<16) - NopCountBefore) >> 8) * SpanRecip) >> 12;
+								if (Fe > 0x0ffff) Fe = 0x0ffff;
+								if (Fe > SpanPos)
+								{
+									unsigned long L, R, Sp = Fe - SpanPos;
+									L = PSG_RenderSpan(Sp, &R);
+									AccL += L * Sp; AccR += R * Sp;
+									SpanPos = Fe; Split = 1;
+								}
+							}
+#endif
 							/* we need to perform this event */
 							switch (pCurrentEvent->Type)
 							{
@@ -822,7 +878,25 @@ int     AudioEvent_TraverseAudioEventsAndBuildSampleData(int CPCNopCount, int No
 					}
 				}
 			
+#ifndef NO_SNDAA
+				if (!Split)
+					OutL = PSG_RenderSpan(0x10000, &OutR);
+				else
+				{
+					unsigned long L, R, Sp = 0x10000 - SpanPos;
+					L = PSG_RenderSpan(Sp, &R);
+					OutL = (AccL + L * Sp) >> 16;
+					OutR = (AccR + R * Sp) >> 16;
+				}
+				/* the mix (0..252) in byte 0/1, its 7-bit fraction in 2/3 */
+				pAudioPtr[0] = (char)(OutL >> 7);
+				pAudioPtr[1] = (char)(OutR >> 7);
+				pAudioPtr[2] = (char)(OutL & 0x7f);
+				pAudioPtr[3] = (char)(OutR & 0x7f);
+				pAudioPtr += 4;
+#else
 				pAudioPtr = (char *)AudioEvent_UpdateCycle(pAudioPtr);
+#endif
             
 				NopCount.FixedPoint.L += NopsPerSampleScaled.FixedPoint.L;    
 			}

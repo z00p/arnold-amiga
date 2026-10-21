@@ -115,6 +115,8 @@ static void Render_TrueColourRGB_Setup(void);
 screen, this then gives the index within the palette below for
 the actual colour */
 static signed int PaletteRemap[32];
+/* perf50: read by CRTC_RunCells for inline sprite cells (asic.c ASIC_SpriteCellEven) */
+const signed int *const Render_PaletteRemap = PaletteRemap;
 extern unsigned long Render_RemapStamp;   /* Amiga port: defined with the pixel cache below */
 
 

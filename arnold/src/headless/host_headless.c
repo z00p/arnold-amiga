@@ -45,7 +45,9 @@ GRAPHICS_BUFFER_INFO *Host_GetGraphicsBufferInfo(void)
 }
 BOOL Host_LockGraphicsBuffer(void) { return TRUE; }
 void Host_UnlockGraphicsBuffer(void) {}
-void Host_SwapGraphicsBuffers(void) { frames++; if (depth == 8) Palette_Set(); }
+static void framesum(void);
+static void undrawn(void);
+void Host_SwapGraphicsBuffers(void) { frames++; if (depth == 8) Palette_Set(); if (getenv("FRAMESUM")) framesum(); if (getenv("UNDRAWN")) undrawn(); }
 void Host_SetPaletteEntry(int i, unsigned char r, unsigned char g, unsigned char b)
 {
 	pal[i & 255][0] = r; pal[i & 255][1] = g; pal[i & 255][2] = b;
@@ -69,6 +71,18 @@ void Host_UnLockAudioBuffer(void)
 	Audio_SplitTo8(abuf, l, r, n);
 	for (i = 0; i < n; i++) { out[2 * i] = (unsigned char)(l[i] + 128); out[2 * i + 1] = (unsigned char)(r[i] + 128); }
 	fwrite(out, 1, 2 * n, wav); wav_bytes += 2 * n;
+	/* RAWIDX=file (soundq, 21 Oct 2026): the core's mixed left/right bytes
+	 * before the 16-bit lookup (audioevent.c, 4 bytes a sample), to check
+	 * the lookup offline (tools/soundq) */
+	{ static FILE *raw; static int tried; extern unsigned char *pAudioBuffer2;
+	  if (!tried) { tried = 1; if (getenv("RAWIDX")) raw = fopen(getenv("RAWIDX"), "wb"); }
+	  static FILE *raw16; static int tried16;   /* RAW16=file: the core's 16-bit values, before the 8-bit conversion */
+	  if (!tried16) { tried16 = 1; if (getenv("RAW16")) raw16 = fopen(getenv("RAW16"), "wb"); }
+	  if (raw16) fwrite(abuf, 2, 2 * n, raw16);
+	  static FILE *rawt;
+	  if (raw && !rawt) { char tn[600]; snprintf(tn, sizeof tn, "%s.t", getenv("RAWIDX")); rawt = fopen(tn, "w"); }
+	  if (rawt) fprintf(rawt, "%lu\n", CPC_GetNopCount());   /* the block's end (NOP time) */
+	  if (raw && pAudioBuffer2) for (i = 0; i < n; i++) { fputc(pAudioBuffer2[4 * i], raw); fputc(pAudioBuffer2[4 * i + 1], raw); } }
 }
 static void wav_header(void)
 {
@@ -115,7 +129,7 @@ BOOL Host_ProcessSystemEvents(void)
 {
 #ifdef TRACE_HW
 	{ static int fr; const char *a = getenv("TRACE_AT"); int at = a ? atoi(a) : -1; fr++;
-	  Trace_On = (fr == at); if (fr == 600 && getenv("RAMDUMP")) { extern unsigned char *Z80MemoryBase; FILE *mf = fopen(getenv("RAMDUMP"), "wb"); if (mf) { fwrite(Z80MemoryBase, 1, 65536, mf); fclose(mf); } }
+	  Trace_On = (fr == at) || (getenv("TRACE_FROM") && fr >= atoi(getenv("TRACE_FROM"))); if (fr == 600 && getenv("RAMDUMP")) { extern unsigned char *Z80MemoryBase; FILE *mf = fopen(getenv("RAMDUMP"), "wb"); if (mf) { fwrite(Z80MemoryBase, 1, 65536, mf); fclose(mf); } }
 	  if (Trace_On) { extern void Trace_Regs(void); fprintf(stderr, "=== frame %d ===\n", fr); Trace_Regs(); } }
 #endif
 	/* PCSAMPLE=n: the Z80's PC, SP, AF, HL, IFF1 and IM at each frame end, from
@@ -177,6 +191,29 @@ static unsigned long dump_to(const char *name)
 	}
 	fclose(f);
 	return sum & 0xffffffffUL;
+}
+/* UNDRAWN=1 (pinball, 20 Oct 2026): rows of the frame the core did not draw
+ * (still holding the marker byte 0xFE written after the previous frame) */
+static void undrawn(void)
+{
+	int y, x, n; char buf[2048]; int len = 0;
+	if (depth != 8) return;
+	for (y = 0; y < H; y++) {
+		for (n = 0, x = 0; x < W; x++) n += chunky[y * W + x] == 0xFE;
+		if (n && len < 1900) len += sprintf(buf + len, " %d(%d)", y, n);
+	}
+	if (len) printf("undrawn %d:%s\n", frames, buf);
+	memset(chunky, 0xFE, W * H);
+}
+/* FRAMESUM=1: the RGB checksum of every drawn frame (pinball, 20 Oct 2026) */
+static void framesum(void)
+{
+	int i; unsigned long sum = 0;
+	for (i = 0; i < W*H; i++) {
+		if (depth == 8) { unsigned char c = chunky[i]; sum = ((sum * 31 + pal[c][0]) * 31 + pal[c][1]) * 31 + pal[c][2]; }
+		else sum = sum * 31 + ((unsigned short *)chunky)[i];
+	}
+	printf("framesum %d %08lx\n", frames, sum & 0xffffffffUL);
 }
 static void dump(void) { unsigned long sum = dump_to(outname); printf("frames=%d checksum=%08lx\n", frames, sum); }
 static void snap(long frame)

@@ -1338,12 +1338,18 @@ Z80_FLAGS_REG = Z80_FLAGS_REG | (Register & 0x001)
 /* put a word on the stack */
 
 
+#ifndef NO_ASICTIME
+/* Amiga port (asictime): high byte first, as the Z80 does (it matters only for
+ * a PUSH into the Plus ASIC registers, now timed per byte: z80.c Z80_WriteNop) */
+#define PUSH(Data)						{										        R.SP.W-=2;						        Z80_WR_BYTE((Z80_WORD)(R.SP.W+1),(Z80_BYTE)((Data)>>8));	        Z80_WR_BYTE(R.SP.W,(Z80_BYTE)(Data));	}
+#else
 #define PUSH(Data)						\
 {										\
         R.SP.W-=2;						\
 										\
         Z80_WR_WORD(R.SP.W,Data);		\
 }
+#endif
 #define HALT()			    R.Flags |=Z80_EXECUTING_HALT_FLAG
            
 

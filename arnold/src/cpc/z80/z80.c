@@ -19,6 +19,7 @@
  *
  */
 #include "z80.h"
+#include "../hint.h"
 #include "z80tables.h"
 #include "z80macros.h"
 Z80_REGISTERS R;
@@ -7127,7 +7128,7 @@ case 0x040:
 {
 /* IN B,(C) */
  		R.MemPtr.W = R.BC.W; 
-		R.BC.B.h = Z80_DoIn(R.MemPtr.W);            
+		Z80_IO_AT(4); R.BC.B.h = Z80_DoIn(R.MemPtr.W);            
 		++R.MemPtr.W; 
 		{											
 			Z80_BYTE	Flags;						
@@ -7145,7 +7146,7 @@ case 0x041:
  /* OUT (C),B */
  
 		R.MemPtr.W = R.BC.W; 
-		Z80_DoOut(R.MemPtr.W,R.BC.B.h);                     
+		Z80_IO_AT(3); Z80_DoOut(R.MemPtr.W,R.BC.B.h);                     
         ++R.MemPtr.W;                                       
 		Cycles = 4;
 		R.PC.W.l+=2; R.Flags |= Z80_CHECK_INTERRUPT_FLAG;
@@ -7238,7 +7239,7 @@ case 0x048:
 {
 /* IN C,(C) */
  		R.MemPtr.W = R.BC.W; 
-		R.BC.B.l = Z80_DoIn(R.MemPtr.W);            
+		Z80_IO_AT(4); R.BC.B.l = Z80_DoIn(R.MemPtr.W);            
 		++R.MemPtr.W; 
 		{											
 			Z80_BYTE	Flags;						
@@ -7256,7 +7257,7 @@ case 0x049:
  /* OUT (C),C */
  
 		R.MemPtr.W = R.BC.W; 
-		Z80_DoOut(R.MemPtr.W,R.BC.B.l);                     
+		Z80_IO_AT(3); Z80_DoOut(R.MemPtr.W,R.BC.B.l);                     
         ++R.MemPtr.W;                                       
 		Cycles = 4;
 		R.PC.W.l+=2; R.Flags |= Z80_CHECK_INTERRUPT_FLAG;
@@ -7355,7 +7356,7 @@ case 0x050:
 {
 /* IN D,(C) */
  		R.MemPtr.W = R.BC.W; 
-		R.DE.B.h = Z80_DoIn(R.MemPtr.W);            
+		Z80_IO_AT(4); R.DE.B.h = Z80_DoIn(R.MemPtr.W);            
 		++R.MemPtr.W; 
 		{											
 			Z80_BYTE	Flags;						
@@ -7373,7 +7374,7 @@ case 0x051:
  /* OUT (C),D */
  
 		R.MemPtr.W = R.BC.W; 
-		Z80_DoOut(R.MemPtr.W,R.DE.B.h);                     
+		Z80_IO_AT(3); Z80_DoOut(R.MemPtr.W,R.DE.B.h);                     
         ++R.MemPtr.W;                                       
 		Cycles = 4;
 		R.PC.W.l+=2; R.Flags |= Z80_CHECK_INTERRUPT_FLAG;
@@ -7477,7 +7478,7 @@ case 0x058:
 {
 /* IN E,(C) */
  		R.MemPtr.W = R.BC.W; 
-		R.DE.B.l = Z80_DoIn(R.MemPtr.W);            
+		Z80_IO_AT(4); R.DE.B.l = Z80_DoIn(R.MemPtr.W);            
 		++R.MemPtr.W; 
 		{											
 			Z80_BYTE	Flags;						
@@ -7495,7 +7496,7 @@ case 0x059:
  /* OUT (C),E */
  
 		R.MemPtr.W = R.BC.W; 
-		Z80_DoOut(R.MemPtr.W,R.DE.B.l);                     
+		Z80_IO_AT(3); Z80_DoOut(R.MemPtr.W,R.DE.B.l);                     
         ++R.MemPtr.W;                                       
 		Cycles = 4;
 		R.PC.W.l+=2; R.Flags |= Z80_CHECK_INTERRUPT_FLAG;
@@ -7601,7 +7602,7 @@ case 0x060:
 {
 /* IN H,(C) */
  		R.MemPtr.W = R.BC.W; 
-		R.HL.B.h = Z80_DoIn(R.MemPtr.W);            
+		Z80_IO_AT(4); R.HL.B.h = Z80_DoIn(R.MemPtr.W);            
 		++R.MemPtr.W; 
 		{											
 			Z80_BYTE	Flags;						
@@ -7619,7 +7620,7 @@ case 0x061:
  /* OUT (C),H */
  
 		R.MemPtr.W = R.BC.W; 
-		Z80_DoOut(R.MemPtr.W,R.HL.B.h);                     
+		Z80_IO_AT(3); Z80_DoOut(R.MemPtr.W,R.HL.B.h);                     
         ++R.MemPtr.W;                                       
 		Cycles = 4;
 		R.PC.W.l+=2; R.Flags |= Z80_CHECK_INTERRUPT_FLAG;
@@ -7723,7 +7724,7 @@ case 0x068:
 {
 /* IN L,(C) */
  		R.MemPtr.W = R.BC.W; 
-		R.HL.B.l = Z80_DoIn(R.MemPtr.W);            
+		Z80_IO_AT(4); R.HL.B.l = Z80_DoIn(R.MemPtr.W);            
 		++R.MemPtr.W; 
 		{											
 			Z80_BYTE	Flags;						
@@ -7741,7 +7742,7 @@ case 0x069:
  /* OUT (C),L */
  
 		R.MemPtr.W = R.BC.W; 
-		Z80_DoOut(R.MemPtr.W,R.HL.B.l);                     
+		Z80_IO_AT(3); Z80_DoOut(R.MemPtr.W,R.HL.B.l);                     
         ++R.MemPtr.W;                                       
 		Cycles = 4;
 		R.PC.W.l+=2; R.Flags |= Z80_CHECK_INTERRUPT_FLAG;
@@ -7846,7 +7847,7 @@ case 0x070:
 {
 /* IN X,(C) */
  		R.MemPtr.W = R.BC.W; 
-		R.TempByte = Z80_DoIn(R.MemPtr.W);            
+		Z80_IO_AT(4); R.TempByte = Z80_DoIn(R.MemPtr.W);            
 		++R.MemPtr.W; 
 		{											
 			Z80_BYTE	Flags;						
@@ -7864,7 +7865,7 @@ case 0x071:
  /* OUT (C),0 */
  
 		R.MemPtr.W = R.BC.W; 
-		Z80_DoOut(R.MemPtr.W,0);                     
+		Z80_IO_AT(3); Z80_DoOut(R.MemPtr.W,0);                     
         ++R.MemPtr.W;                                       
 		Cycles = 4;
 		R.PC.W.l+=2; R.Flags |= Z80_CHECK_INTERRUPT_FLAG;
@@ -7954,7 +7955,7 @@ case 0x078:
 {
 /* IN A,(C) */
  		R.MemPtr.W = R.BC.W; 
-		R.AF.B.h = Z80_DoIn(R.MemPtr.W);            
+		Z80_IO_AT(4); R.AF.B.h = Z80_DoIn(R.MemPtr.W);            
 		++R.MemPtr.W; 
 		{											
 			Z80_BYTE	Flags;						
@@ -7972,7 +7973,7 @@ case 0x079:
  /* OUT (C),A */
  
 		R.MemPtr.W = R.BC.W; 
-		Z80_DoOut(R.MemPtr.W,R.AF.B.h);                     
+		Z80_IO_AT(3); Z80_DoOut(R.MemPtr.W,R.AF.B.h);                     
         ++R.MemPtr.W;                                       
 		Cycles = 4;
 		R.PC.W.l+=2; R.Flags |= Z80_CHECK_INTERRUPT_FLAG;
@@ -9820,6 +9821,16 @@ void Z80_HaltSteps(int Count)
 	R.Flags |= Z80_CHECK_INTERRUPT_FLAG;
 }
 
+/* perf50 (Emu68): each opcode ends with its own copy of the interrupt check and
+ * return instead of a "break" to the shared one after the switch. That branch
+ * was more than 8 KB away for 278 opcodes, too far for Emu68 to follow, so it
+ * left the translated unit on every instruction. Same code, same order.
+ * NO_Z80TAIL: break, as before. */
+#ifndef NO_Z80TAIL
+#define Z80_CASE_END { if (ARN_UNLIKELY((R.Flags & (Z80_CHECK_INTERRUPT_FLAG | Z80_EXECUTE_INTERRUPT_HANDLER_FLAG))==(Z80_CHECK_INTERRUPT_FLAG | Z80_EXECUTE_INTERRUPT_HANDLER_FLAG))) Cycles+=Z80_ExecuteInterrupt(); return Cycles; }
+#else
+#define Z80_CASE_END break;
+#endif
 int Z80_ExecuteInstruction(void)
 {
 unsigned long Opcode;
@@ -9834,7 +9845,7 @@ case 0x000:
  		R.PC.W.l+=1; R.Flags |= Z80_CHECK_INTERRUPT_FLAG;
 Cycles = 1;
 }
-break;
+Z80_CASE_END
 case 0x001:
 {
 /* LD BC,nnnn */
@@ -9844,7 +9855,7 @@ case 0x001:
  		R.PC.W.l+=3; R.Flags |= Z80_CHECK_INTERRUPT_FLAG;
 Cycles = 3;
 }
-break;
+Z80_CASE_END
 case 0x002:
 {
 /* LD (BC),A */
@@ -9856,7 +9867,7 @@ case 0x002:
  		R.PC.W.l+=1; R.Flags |= Z80_CHECK_INTERRUPT_FLAG;
 Cycles = 2;
 }
-break;
+Z80_CASE_END
 case 0x003:
 {
 /* INC BC */
@@ -9866,7 +9877,7 @@ case 0x003:
  		R.PC.W.l+=1; R.Flags |= Z80_CHECK_INTERRUPT_FLAG;
 Cycles = 2;
 }
-break;
+Z80_CASE_END
 case 0x004:
 {
 INC_R(R.BC.B.h);
@@ -9874,7 +9885,7 @@ INC_R(R.BC.B.h);
  		R.PC.W.l+=1; R.Flags |= Z80_CHECK_INTERRUPT_FLAG;
 Cycles = 1;
 }
-break;
+Z80_CASE_END
 case 0x005:
 {
 DEC_R(R.BC.B.h);
@@ -9882,7 +9893,7 @@ DEC_R(R.BC.B.h);
  		R.PC.W.l+=1; R.Flags |= Z80_CHECK_INTERRUPT_FLAG;
 Cycles = 1;
 }
-break;
+Z80_CASE_END
 case 0x006:
 {
  /* LD B,n */
@@ -9891,7 +9902,7 @@ R.BC.B.h = Z80_RD_OPCODE_BYTE(1);
  		R.PC.W.l+=2; R.Flags |= Z80_CHECK_INTERRUPT_FLAG;
 Cycles = 2;
 }
-break;
+Z80_CASE_END
 case 0x007:
 {
 RLCA();
@@ -9899,7 +9910,7 @@ RLCA();
  		R.PC.W.l+=1; R.Flags |= Z80_CHECK_INTERRUPT_FLAG;
 Cycles = 1;
 }
-break;
+Z80_CASE_END
 case 0x008:
 {
 SWAP(R.AF.W,R.altAF.W);
@@ -9907,7 +9918,7 @@ SWAP(R.AF.W,R.altAF.W);
  		R.PC.W.l+=1; R.Flags |= Z80_CHECK_INTERRUPT_FLAG;
 Cycles = 1;
 }
-break;
+Z80_CASE_END
 case 0x009:
 {
 ADD_RR_rr(R.HL.W,R.BC.W);
@@ -9915,7 +9926,7 @@ ADD_RR_rr(R.HL.W,R.BC.W);
  		R.PC.W.l+=1; R.Flags |= Z80_CHECK_INTERRUPT_FLAG;
 Cycles = 3;
 }
-break;
+Z80_CASE_END
 case 0x00a:
 {
 /* LD A,(BC) */
@@ -9926,7 +9937,7 @@ case 0x00a:
  		R.PC.W.l+=1; R.Flags |= Z80_CHECK_INTERRUPT_FLAG;
 Cycles = 2;
 }
-break;
+Z80_CASE_END
 case 0x00b:
 {
 /* DEC BC */
@@ -9936,7 +9947,7 @@ case 0x00b:
  		R.PC.W.l+=1; R.Flags |= Z80_CHECK_INTERRUPT_FLAG;
 Cycles = 2;
 }
-break;
+Z80_CASE_END
 case 0x00c:
 {
 INC_R(R.BC.B.l);
@@ -9944,7 +9955,7 @@ INC_R(R.BC.B.l);
  		R.PC.W.l+=1; R.Flags |= Z80_CHECK_INTERRUPT_FLAG;
 Cycles = 1;
 }
-break;
+Z80_CASE_END
 case 0x00d:
 {
 DEC_R(R.BC.B.l);
@@ -9952,7 +9963,7 @@ DEC_R(R.BC.B.l);
  		R.PC.W.l+=1; R.Flags |= Z80_CHECK_INTERRUPT_FLAG;
 Cycles = 1;
 }
-break;
+Z80_CASE_END
 case 0x00e:
 {
  /* LD C,n */
@@ -9961,7 +9972,7 @@ R.BC.B.l = Z80_RD_OPCODE_BYTE(1);
  		R.PC.W.l+=2; R.Flags |= Z80_CHECK_INTERRUPT_FLAG;
 Cycles = 2;
 }
-break;
+Z80_CASE_END
 case 0x00f:
 {
 RRCA();
@@ -9969,14 +9980,14 @@ RRCA();
  		R.PC.W.l+=1; R.Flags |= Z80_CHECK_INTERRUPT_FLAG;
 Cycles = 1;
 }
-break;
+Z80_CASE_END
 case 0x010:
 {
 Cycles = DJNZ_dd();
         R.R+=1;
  R.Flags |= Z80_CHECK_INTERRUPT_FLAG;
 }
-break;
+Z80_CASE_END
 case 0x011:
 {
 /* LD DE,nnnn */
@@ -9986,7 +9997,7 @@ case 0x011:
  		R.PC.W.l+=3; R.Flags |= Z80_CHECK_INTERRUPT_FLAG;
 Cycles = 3;
 }
-break;
+Z80_CASE_END
 case 0x012:
 {
 /* LD (DE),A */
@@ -9998,7 +10009,7 @@ case 0x012:
  		R.PC.W.l+=1; R.Flags |= Z80_CHECK_INTERRUPT_FLAG;
 Cycles = 2;
 }
-break;
+Z80_CASE_END
 case 0x013:
 {
 /* INC DE */
@@ -10008,7 +10019,7 @@ case 0x013:
  		R.PC.W.l+=1; R.Flags |= Z80_CHECK_INTERRUPT_FLAG;
 Cycles = 2;
 }
-break;
+Z80_CASE_END
 case 0x014:
 {
 INC_R(R.DE.B.h);
@@ -10016,7 +10027,7 @@ INC_R(R.DE.B.h);
  		R.PC.W.l+=1; R.Flags |= Z80_CHECK_INTERRUPT_FLAG;
 Cycles = 1;
 }
-break;
+Z80_CASE_END
 case 0x015:
 {
 DEC_R(R.DE.B.h);
@@ -10024,7 +10035,7 @@ DEC_R(R.DE.B.h);
  		R.PC.W.l+=1; R.Flags |= Z80_CHECK_INTERRUPT_FLAG;
 Cycles = 1;
 }
-break;
+Z80_CASE_END
 case 0x016:
 {
  /* LD D,n */
@@ -10033,7 +10044,7 @@ R.DE.B.h = Z80_RD_OPCODE_BYTE(1);
  		R.PC.W.l+=2; R.Flags |= Z80_CHECK_INTERRUPT_FLAG;
 Cycles = 2;
 }
-break;
+Z80_CASE_END
 case 0x017:
 {
 RLA();
@@ -10041,7 +10052,7 @@ RLA();
  		R.PC.W.l+=1; R.Flags |= Z80_CHECK_INTERRUPT_FLAG;
 Cycles = 1;
 }
-break;
+Z80_CASE_END
 case 0x018:
 {
 /* JR dd */
@@ -10053,7 +10064,7 @@ R.PC.W.l = R.MemPtr.W;
  R.Flags |= Z80_CHECK_INTERRUPT_FLAG;
 Cycles = 3;
 }
-break;
+Z80_CASE_END
 case 0x019:
 {
 ADD_RR_rr(R.HL.W,R.DE.W);
@@ -10061,7 +10072,7 @@ ADD_RR_rr(R.HL.W,R.DE.W);
  		R.PC.W.l+=1; R.Flags |= Z80_CHECK_INTERRUPT_FLAG;
 Cycles = 3;
 }
-break;
+Z80_CASE_END
 case 0x01a:
 {
 /* LD A,(DE) */
@@ -10072,7 +10083,7 @@ case 0x01a:
  		R.PC.W.l+=1; R.Flags |= Z80_CHECK_INTERRUPT_FLAG;
 Cycles = 2;
 }
-break;
+Z80_CASE_END
 case 0x01b:
 {
 /* DEC DE */
@@ -10082,7 +10093,7 @@ case 0x01b:
  		R.PC.W.l+=1; R.Flags |= Z80_CHECK_INTERRUPT_FLAG;
 Cycles = 2;
 }
-break;
+Z80_CASE_END
 case 0x01c:
 {
 INC_R(R.DE.B.l);
@@ -10090,7 +10101,7 @@ INC_R(R.DE.B.l);
  		R.PC.W.l+=1; R.Flags |= Z80_CHECK_INTERRUPT_FLAG;
 Cycles = 1;
 }
-break;
+Z80_CASE_END
 case 0x01d:
 {
 DEC_R(R.DE.B.l);
@@ -10098,7 +10109,7 @@ DEC_R(R.DE.B.l);
  		R.PC.W.l+=1; R.Flags |= Z80_CHECK_INTERRUPT_FLAG;
 Cycles = 1;
 }
-break;
+Z80_CASE_END
 case 0x01e:
 {
  /* LD E,n */
@@ -10107,7 +10118,7 @@ R.DE.B.l = Z80_RD_OPCODE_BYTE(1);
  		R.PC.W.l+=2; R.Flags |= Z80_CHECK_INTERRUPT_FLAG;
 Cycles = 2;
 }
-break;
+Z80_CASE_END
 case 0x01f:
 {
 RRA();
@@ -10115,7 +10126,7 @@ RRA();
  		R.PC.W.l+=1; R.Flags |= Z80_CHECK_INTERRUPT_FLAG;
 Cycles = 1;
 }
-break;
+Z80_CASE_END
 case 0x020:
 {
 /* JR cc,dd */
@@ -10134,7 +10145,7 @@ else
         R.R+=1;
  R.Flags |= Z80_CHECK_INTERRUPT_FLAG;
 }
-break;
+Z80_CASE_END
 case 0x021:
 {
 /* LD HL,nnnn */
@@ -10144,7 +10155,7 @@ case 0x021:
  		R.PC.W.l+=3; R.Flags |= Z80_CHECK_INTERRUPT_FLAG;
 Cycles = 3;
 }
-break;
+Z80_CASE_END
 case 0x022:
 {
 /* LD (nnnn),HL */
@@ -10155,7 +10166,7 @@ case 0x022:
  		R.PC.W.l+=3; R.Flags |= Z80_CHECK_INTERRUPT_FLAG;
 Cycles = 5;
 }
-break;
+Z80_CASE_END
 case 0x023:
 {
 /* INC HL */
@@ -10165,7 +10176,7 @@ case 0x023:
  		R.PC.W.l+=1; R.Flags |= Z80_CHECK_INTERRUPT_FLAG;
 Cycles = 2;
 }
-break;
+Z80_CASE_END
 case 0x024:
 {
 INC_R(R.HL.B.h);
@@ -10173,7 +10184,7 @@ INC_R(R.HL.B.h);
  		R.PC.W.l+=1; R.Flags |= Z80_CHECK_INTERRUPT_FLAG;
 Cycles = 1;
 }
-break;
+Z80_CASE_END
 case 0x025:
 {
 DEC_R(R.HL.B.h);
@@ -10181,7 +10192,7 @@ DEC_R(R.HL.B.h);
  		R.PC.W.l+=1; R.Flags |= Z80_CHECK_INTERRUPT_FLAG;
 Cycles = 1;
 }
-break;
+Z80_CASE_END
 case 0x026:
 {
  /* LD H,n */
@@ -10190,7 +10201,7 @@ R.HL.B.h = Z80_RD_OPCODE_BYTE(1);
  		R.PC.W.l+=2; R.Flags |= Z80_CHECK_INTERRUPT_FLAG;
 Cycles = 2;
 }
-break;
+Z80_CASE_END
 case 0x027:
 {
 DAA();
@@ -10198,7 +10209,7 @@ DAA();
  		R.PC.W.l+=1; R.Flags |= Z80_CHECK_INTERRUPT_FLAG;
 Cycles = 1;
 }
-break;
+Z80_CASE_END
 case 0x028:
 {
 /* JR cc,dd */
@@ -10217,7 +10228,7 @@ else
         R.R+=1;
  R.Flags |= Z80_CHECK_INTERRUPT_FLAG;
 }
-break;
+Z80_CASE_END
 case 0x029:
 {
 ADD_RR_rr(R.HL.W,R.HL.W);
@@ -10225,7 +10236,7 @@ ADD_RR_rr(R.HL.W,R.HL.W);
  		R.PC.W.l+=1; R.Flags |= Z80_CHECK_INTERRUPT_FLAG;
 Cycles = 3;
 }
-break;
+Z80_CASE_END
 case 0x02a:
 {
 /* LD HL,(nnnn) */
@@ -10236,7 +10247,7 @@ case 0x02a:
  		R.PC.W.l+=3; R.Flags |= Z80_CHECK_INTERRUPT_FLAG;
 Cycles = 5;
 }
-break;
+Z80_CASE_END
 case 0x02b:
 {
 /* DEC HL */
@@ -10246,7 +10257,7 @@ case 0x02b:
  		R.PC.W.l+=1; R.Flags |= Z80_CHECK_INTERRUPT_FLAG;
 Cycles = 2;
 }
-break;
+Z80_CASE_END
 case 0x02c:
 {
 INC_R(R.HL.B.l);
@@ -10254,7 +10265,7 @@ INC_R(R.HL.B.l);
  		R.PC.W.l+=1; R.Flags |= Z80_CHECK_INTERRUPT_FLAG;
 Cycles = 1;
 }
-break;
+Z80_CASE_END
 case 0x02d:
 {
 DEC_R(R.HL.B.l);
@@ -10262,7 +10273,7 @@ DEC_R(R.HL.B.l);
  		R.PC.W.l+=1; R.Flags |= Z80_CHECK_INTERRUPT_FLAG;
 Cycles = 1;
 }
-break;
+Z80_CASE_END
 case 0x02e:
 {
  /* LD L,n */
@@ -10271,7 +10282,7 @@ R.HL.B.l = Z80_RD_OPCODE_BYTE(1);
  		R.PC.W.l+=2; R.Flags |= Z80_CHECK_INTERRUPT_FLAG;
 Cycles = 2;
 }
-break;
+Z80_CASE_END
 case 0x02f:
 {
 /* CPL */
@@ -10289,7 +10300,7 @@ case 0x02f:
  		R.PC.W.l+=1; R.Flags |= Z80_CHECK_INTERRUPT_FLAG;
 Cycles = 1;
 }
-break;
+Z80_CASE_END
 case 0x030:
 {
 /* JR cc,dd */
@@ -10308,7 +10319,7 @@ else
         R.R+=1;
  R.Flags |= Z80_CHECK_INTERRUPT_FLAG;
 }
-break;
+Z80_CASE_END
 case 0x031:
 {
 /* LD SP,nnnn */
@@ -10318,7 +10329,7 @@ case 0x031:
  		R.PC.W.l+=3; R.Flags |= Z80_CHECK_INTERRUPT_FLAG;
 Cycles = 3;
 }
-break;
+Z80_CASE_END
 case 0x032:
 {
 /* LD (nnnn),A */
@@ -10335,7 +10346,7 @@ case 0x032:
  		R.PC.W.l+=3; R.Flags |= Z80_CHECK_INTERRUPT_FLAG;
 Cycles = 4;
 }
-break;
+Z80_CASE_END
 case 0x033:
 {
 /* INC SP */
@@ -10345,7 +10356,7 @@ case 0x033:
  		R.PC.W.l+=1; R.Flags |= Z80_CHECK_INTERRUPT_FLAG;
 Cycles = 2;
 }
-break;
+Z80_CASE_END
 case 0x034:
 {
 INC_HL_();
@@ -10353,7 +10364,7 @@ INC_HL_();
  		R.PC.W.l+=1; R.Flags |= Z80_CHECK_INTERRUPT_FLAG;
 Cycles = 3;
 }
-break;
+Z80_CASE_END
 case 0x035:
 {
 DEC_HL_();
@@ -10361,7 +10372,7 @@ DEC_HL_();
  		R.PC.W.l+=1; R.Flags |= Z80_CHECK_INTERRUPT_FLAG;
 Cycles = 3;
 }
-break;
+Z80_CASE_END
 case 0x036:
 {
  /* LD (HL),n */
@@ -10371,7 +10382,7 @@ Z80_WR_BYTE(R.HL.W,R.TempByte);
  		R.PC.W.l+=2; R.Flags |= Z80_CHECK_INTERRUPT_FLAG;
 Cycles = 2;
 }
-break;
+Z80_CASE_END
 case 0x037:
 {
 /* SCF */
@@ -10389,7 +10400,7 @@ case 0x037:
  		R.PC.W.l+=1; R.Flags |= Z80_CHECK_INTERRUPT_FLAG;
 Cycles = 1;
 }
-break;
+Z80_CASE_END
 case 0x038:
 {
 /* JR cc,dd */
@@ -10408,7 +10419,7 @@ else
         R.R+=1;
  R.Flags |= Z80_CHECK_INTERRUPT_FLAG;
 }
-break;
+Z80_CASE_END
 case 0x039:
 {
 ADD_RR_rr(R.HL.W,R.SP.W);
@@ -10416,7 +10427,7 @@ ADD_RR_rr(R.HL.W,R.SP.W);
  		R.PC.W.l+=1; R.Flags |= Z80_CHECK_INTERRUPT_FLAG;
 Cycles = 3;
 }
-break;
+Z80_CASE_END
 case 0x03a:
 {
 /* LD A,(nnnn) */
@@ -10433,7 +10444,7 @@ case 0x03a:
  		R.PC.W.l+=3; R.Flags |= Z80_CHECK_INTERRUPT_FLAG;
 Cycles = 4;
 }
-break;
+Z80_CASE_END
 case 0x03b:
 {
 /* DEC SP */
@@ -10443,7 +10454,7 @@ case 0x03b:
  		R.PC.W.l+=1; R.Flags |= Z80_CHECK_INTERRUPT_FLAG;
 Cycles = 2;
 }
-break;
+Z80_CASE_END
 case 0x03c:
 {
 INC_R(R.AF.B.h);
@@ -10451,7 +10462,7 @@ INC_R(R.AF.B.h);
  		R.PC.W.l+=1; R.Flags |= Z80_CHECK_INTERRUPT_FLAG;
 Cycles = 1;
 }
-break;
+Z80_CASE_END
 case 0x03d:
 {
 DEC_R(R.AF.B.h);
@@ -10459,7 +10470,7 @@ DEC_R(R.AF.B.h);
  		R.PC.W.l+=1; R.Flags |= Z80_CHECK_INTERRUPT_FLAG;
 Cycles = 1;
 }
-break;
+Z80_CASE_END
 case 0x03e:
 {
  /* LD A,n */
@@ -10468,7 +10479,7 @@ R.AF.B.h = Z80_RD_OPCODE_BYTE(1);
  		R.PC.W.l+=2; R.Flags |= Z80_CHECK_INTERRUPT_FLAG;
 Cycles = 2;
 }
-break;
+Z80_CASE_END
 case 0x03f:
 {
 /* CCF */
@@ -10484,14 +10495,14 @@ case 0x03f:
  		R.PC.W.l+=1; R.Flags |= Z80_CHECK_INTERRUPT_FLAG;
 Cycles = 1;
 }
-break;
+Z80_CASE_END
 case 0x040:
 {
         R.R+=1;
  		R.PC.W.l+=1; R.Flags |= Z80_CHECK_INTERRUPT_FLAG;
 Cycles = 1;
 }
-break;
+Z80_CASE_END
 case 0x041:
 {
 /* LD B,C */
@@ -10501,7 +10512,7 @@ case 0x041:
  		R.PC.W.l+=1; R.Flags |= Z80_CHECK_INTERRUPT_FLAG;
 Cycles = 1;
 }
-break;
+Z80_CASE_END
 case 0x042:
 {
 /* LD B,D */
@@ -10511,7 +10522,7 @@ case 0x042:
  		R.PC.W.l+=1; R.Flags |= Z80_CHECK_INTERRUPT_FLAG;
 Cycles = 1;
 }
-break;
+Z80_CASE_END
 case 0x043:
 {
 /* LD B,E */
@@ -10521,7 +10532,7 @@ case 0x043:
  		R.PC.W.l+=1; R.Flags |= Z80_CHECK_INTERRUPT_FLAG;
 Cycles = 1;
 }
-break;
+Z80_CASE_END
 case 0x044:
 {
 /* LD B,H */
@@ -10531,7 +10542,7 @@ case 0x044:
  		R.PC.W.l+=1; R.Flags |= Z80_CHECK_INTERRUPT_FLAG;
 Cycles = 1;
 }
-break;
+Z80_CASE_END
 case 0x045:
 {
 /* LD B,L */
@@ -10541,7 +10552,7 @@ case 0x045:
  		R.PC.W.l+=1; R.Flags |= Z80_CHECK_INTERRUPT_FLAG;
 Cycles = 1;
 }
-break;
+Z80_CASE_END
 case 0x046:
 {
 /* LD B,(HL) */
@@ -10551,7 +10562,7 @@ case 0x046:
  		R.PC.W.l+=1; R.Flags |= Z80_CHECK_INTERRUPT_FLAG;
 Cycles = 2;
 }
-break;
+Z80_CASE_END
 case 0x047:
 {
 /* LD B,A */
@@ -10561,7 +10572,7 @@ case 0x047:
  		R.PC.W.l+=1; R.Flags |= Z80_CHECK_INTERRUPT_FLAG;
 Cycles = 1;
 }
-break;
+Z80_CASE_END
 case 0x048:
 {
 /* LD C,B */
@@ -10571,14 +10582,14 @@ case 0x048:
  		R.PC.W.l+=1; R.Flags |= Z80_CHECK_INTERRUPT_FLAG;
 Cycles = 1;
 }
-break;
+Z80_CASE_END
 case 0x049:
 {
         R.R+=1;
  		R.PC.W.l+=1; R.Flags |= Z80_CHECK_INTERRUPT_FLAG;
 Cycles = 1;
 }
-break;
+Z80_CASE_END
 case 0x04a:
 {
 /* LD C,D */
@@ -10588,7 +10599,7 @@ case 0x04a:
  		R.PC.W.l+=1; R.Flags |= Z80_CHECK_INTERRUPT_FLAG;
 Cycles = 1;
 }
-break;
+Z80_CASE_END
 case 0x04b:
 {
 /* LD C,E */
@@ -10598,7 +10609,7 @@ case 0x04b:
  		R.PC.W.l+=1; R.Flags |= Z80_CHECK_INTERRUPT_FLAG;
 Cycles = 1;
 }
-break;
+Z80_CASE_END
 case 0x04c:
 {
 /* LD C,H */
@@ -10608,7 +10619,7 @@ case 0x04c:
  		R.PC.W.l+=1; R.Flags |= Z80_CHECK_INTERRUPT_FLAG;
 Cycles = 1;
 }
-break;
+Z80_CASE_END
 case 0x04d:
 {
 /* LD C,L */
@@ -10618,7 +10629,7 @@ case 0x04d:
  		R.PC.W.l+=1; R.Flags |= Z80_CHECK_INTERRUPT_FLAG;
 Cycles = 1;
 }
-break;
+Z80_CASE_END
 case 0x04e:
 {
 /* LD C,(HL) */
@@ -10628,7 +10639,7 @@ case 0x04e:
  		R.PC.W.l+=1; R.Flags |= Z80_CHECK_INTERRUPT_FLAG;
 Cycles = 2;
 }
-break;
+Z80_CASE_END
 case 0x04f:
 {
 /* LD C,A */
@@ -10638,7 +10649,7 @@ case 0x04f:
  		R.PC.W.l+=1; R.Flags |= Z80_CHECK_INTERRUPT_FLAG;
 Cycles = 1;
 }
-break;
+Z80_CASE_END
 case 0x050:
 {
 /* LD D,B */
@@ -10648,7 +10659,7 @@ case 0x050:
  		R.PC.W.l+=1; R.Flags |= Z80_CHECK_INTERRUPT_FLAG;
 Cycles = 1;
 }
-break;
+Z80_CASE_END
 case 0x051:
 {
 /* LD D,C */
@@ -10658,14 +10669,14 @@ case 0x051:
  		R.PC.W.l+=1; R.Flags |= Z80_CHECK_INTERRUPT_FLAG;
 Cycles = 1;
 }
-break;
+Z80_CASE_END
 case 0x052:
 {
         R.R+=1;
  		R.PC.W.l+=1; R.Flags |= Z80_CHECK_INTERRUPT_FLAG;
 Cycles = 1;
 }
-break;
+Z80_CASE_END
 case 0x053:
 {
 /* LD D,E */
@@ -10675,7 +10686,7 @@ case 0x053:
  		R.PC.W.l+=1; R.Flags |= Z80_CHECK_INTERRUPT_FLAG;
 Cycles = 1;
 }
-break;
+Z80_CASE_END
 case 0x054:
 {
 /* LD D,H */
@@ -10685,7 +10696,7 @@ case 0x054:
  		R.PC.W.l+=1; R.Flags |= Z80_CHECK_INTERRUPT_FLAG;
 Cycles = 1;
 }
-break;
+Z80_CASE_END
 case 0x055:
 {
 /* LD D,L */
@@ -10695,7 +10706,7 @@ case 0x055:
  		R.PC.W.l+=1; R.Flags |= Z80_CHECK_INTERRUPT_FLAG;
 Cycles = 1;
 }
-break;
+Z80_CASE_END
 case 0x056:
 {
 /* LD D,(HL) */
@@ -10705,7 +10716,7 @@ case 0x056:
  		R.PC.W.l+=1; R.Flags |= Z80_CHECK_INTERRUPT_FLAG;
 Cycles = 2;
 }
-break;
+Z80_CASE_END
 case 0x057:
 {
 /* LD D,A */
@@ -10715,7 +10726,7 @@ case 0x057:
  		R.PC.W.l+=1; R.Flags |= Z80_CHECK_INTERRUPT_FLAG;
 Cycles = 1;
 }
-break;
+Z80_CASE_END
 case 0x058:
 {
 /* LD E,B */
@@ -10725,7 +10736,7 @@ case 0x058:
  		R.PC.W.l+=1; R.Flags |= Z80_CHECK_INTERRUPT_FLAG;
 Cycles = 1;
 }
-break;
+Z80_CASE_END
 case 0x059:
 {
 /* LD E,C */
@@ -10735,7 +10746,7 @@ case 0x059:
  		R.PC.W.l+=1; R.Flags |= Z80_CHECK_INTERRUPT_FLAG;
 Cycles = 1;
 }
-break;
+Z80_CASE_END
 case 0x05a:
 {
 /* LD E,D */
@@ -10745,14 +10756,14 @@ case 0x05a:
  		R.PC.W.l+=1; R.Flags |= Z80_CHECK_INTERRUPT_FLAG;
 Cycles = 1;
 }
-break;
+Z80_CASE_END
 case 0x05b:
 {
         R.R+=1;
  		R.PC.W.l+=1; R.Flags |= Z80_CHECK_INTERRUPT_FLAG;
 Cycles = 1;
 }
-break;
+Z80_CASE_END
 case 0x05c:
 {
 /* LD E,H */
@@ -10762,7 +10773,7 @@ case 0x05c:
  		R.PC.W.l+=1; R.Flags |= Z80_CHECK_INTERRUPT_FLAG;
 Cycles = 1;
 }
-break;
+Z80_CASE_END
 case 0x05d:
 {
 /* LD E,L */
@@ -10772,7 +10783,7 @@ case 0x05d:
  		R.PC.W.l+=1; R.Flags |= Z80_CHECK_INTERRUPT_FLAG;
 Cycles = 1;
 }
-break;
+Z80_CASE_END
 case 0x05e:
 {
 /* LD E,(HL) */
@@ -10782,7 +10793,7 @@ case 0x05e:
  		R.PC.W.l+=1; R.Flags |= Z80_CHECK_INTERRUPT_FLAG;
 Cycles = 2;
 }
-break;
+Z80_CASE_END
 case 0x05f:
 {
 /* LD E,A */
@@ -10792,7 +10803,7 @@ case 0x05f:
  		R.PC.W.l+=1; R.Flags |= Z80_CHECK_INTERRUPT_FLAG;
 Cycles = 1;
 }
-break;
+Z80_CASE_END
 case 0x060:
 {
 /* LD H,B */
@@ -10802,7 +10813,7 @@ case 0x060:
  		R.PC.W.l+=1; R.Flags |= Z80_CHECK_INTERRUPT_FLAG;
 Cycles = 1;
 }
-break;
+Z80_CASE_END
 case 0x061:
 {
 /* LD H,C */
@@ -10812,7 +10823,7 @@ case 0x061:
  		R.PC.W.l+=1; R.Flags |= Z80_CHECK_INTERRUPT_FLAG;
 Cycles = 1;
 }
-break;
+Z80_CASE_END
 case 0x062:
 {
 /* LD H,D */
@@ -10822,7 +10833,7 @@ case 0x062:
  		R.PC.W.l+=1; R.Flags |= Z80_CHECK_INTERRUPT_FLAG;
 Cycles = 1;
 }
-break;
+Z80_CASE_END
 case 0x063:
 {
 /* LD H,E */
@@ -10832,14 +10843,14 @@ case 0x063:
  		R.PC.W.l+=1; R.Flags |= Z80_CHECK_INTERRUPT_FLAG;
 Cycles = 1;
 }
-break;
+Z80_CASE_END
 case 0x064:
 {
         R.R+=1;
  		R.PC.W.l+=1; R.Flags |= Z80_CHECK_INTERRUPT_FLAG;
 Cycles = 1;
 }
-break;
+Z80_CASE_END
 case 0x065:
 {
 /* LD H,L */
@@ -10849,7 +10860,7 @@ case 0x065:
  		R.PC.W.l+=1; R.Flags |= Z80_CHECK_INTERRUPT_FLAG;
 Cycles = 1;
 }
-break;
+Z80_CASE_END
 case 0x066:
 {
 /* LD H,(HL) */
@@ -10859,7 +10870,7 @@ case 0x066:
  		R.PC.W.l+=1; R.Flags |= Z80_CHECK_INTERRUPT_FLAG;
 Cycles = 2;
 }
-break;
+Z80_CASE_END
 case 0x067:
 {
 /* LD H,A */
@@ -10869,7 +10880,7 @@ case 0x067:
  		R.PC.W.l+=1; R.Flags |= Z80_CHECK_INTERRUPT_FLAG;
 Cycles = 1;
 }
-break;
+Z80_CASE_END
 case 0x068:
 {
 /* LD L,B */
@@ -10879,7 +10890,7 @@ case 0x068:
  		R.PC.W.l+=1; R.Flags |= Z80_CHECK_INTERRUPT_FLAG;
 Cycles = 1;
 }
-break;
+Z80_CASE_END
 case 0x069:
 {
 /* LD L,C */
@@ -10889,7 +10900,7 @@ case 0x069:
  		R.PC.W.l+=1; R.Flags |= Z80_CHECK_INTERRUPT_FLAG;
 Cycles = 1;
 }
-break;
+Z80_CASE_END
 case 0x06a:
 {
 /* LD L,D */
@@ -10899,7 +10910,7 @@ case 0x06a:
  		R.PC.W.l+=1; R.Flags |= Z80_CHECK_INTERRUPT_FLAG;
 Cycles = 1;
 }
-break;
+Z80_CASE_END
 case 0x06b:
 {
 /* LD L,E */
@@ -10909,7 +10920,7 @@ case 0x06b:
  		R.PC.W.l+=1; R.Flags |= Z80_CHECK_INTERRUPT_FLAG;
 Cycles = 1;
 }
-break;
+Z80_CASE_END
 case 0x06c:
 {
 /* LD L,H */
@@ -10919,14 +10930,14 @@ case 0x06c:
  		R.PC.W.l+=1; R.Flags |= Z80_CHECK_INTERRUPT_FLAG;
 Cycles = 1;
 }
-break;
+Z80_CASE_END
 case 0x06d:
 {
         R.R+=1;
  		R.PC.W.l+=1; R.Flags |= Z80_CHECK_INTERRUPT_FLAG;
 Cycles = 1;
 }
-break;
+Z80_CASE_END
 case 0x06e:
 {
 /* LD L,(HL) */
@@ -10936,7 +10947,7 @@ case 0x06e:
  		R.PC.W.l+=1; R.Flags |= Z80_CHECK_INTERRUPT_FLAG;
 Cycles = 2;
 }
-break;
+Z80_CASE_END
 case 0x06f:
 {
 /* LD L,A */
@@ -10946,7 +10957,7 @@ case 0x06f:
  		R.PC.W.l+=1; R.Flags |= Z80_CHECK_INTERRUPT_FLAG;
 Cycles = 1;
 }
-break;
+Z80_CASE_END
 case 0x070:
 {
 /* LD (HL),B */
@@ -10956,7 +10967,7 @@ case 0x070:
  		R.PC.W.l+=1; R.Flags |= Z80_CHECK_INTERRUPT_FLAG;
 Cycles = 2;
 }
-break;
+Z80_CASE_END
 case 0x071:
 {
 /* LD (HL),C */
@@ -10966,7 +10977,7 @@ case 0x071:
  		R.PC.W.l+=1; R.Flags |= Z80_CHECK_INTERRUPT_FLAG;
 Cycles = 2;
 }
-break;
+Z80_CASE_END
 case 0x072:
 {
 /* LD (HL),D */
@@ -10976,7 +10987,7 @@ case 0x072:
  		R.PC.W.l+=1; R.Flags |= Z80_CHECK_INTERRUPT_FLAG;
 Cycles = 2;
 }
-break;
+Z80_CASE_END
 case 0x073:
 {
 /* LD (HL),E */
@@ -10986,7 +10997,7 @@ case 0x073:
  		R.PC.W.l+=1; R.Flags |= Z80_CHECK_INTERRUPT_FLAG;
 Cycles = 2;
 }
-break;
+Z80_CASE_END
 case 0x074:
 {
 /* LD (HL),H */
@@ -10996,7 +11007,7 @@ case 0x074:
  		R.PC.W.l+=1; R.Flags |= Z80_CHECK_INTERRUPT_FLAG;
 Cycles = 2;
 }
-break;
+Z80_CASE_END
 case 0x075:
 {
 /* LD (HL),L */
@@ -11006,7 +11017,7 @@ case 0x075:
  		R.PC.W.l+=1; R.Flags |= Z80_CHECK_INTERRUPT_FLAG;
 Cycles = 2;
 }
-break;
+Z80_CASE_END
 case 0x076:
 {
 HALT(); Z80_HaltHit = 1;
@@ -11014,7 +11025,7 @@ HALT(); Z80_HaltHit = 1;
  R.Flags |= Z80_CHECK_INTERRUPT_FLAG;
 Cycles = 1;
 }
-break;
+Z80_CASE_END
 case 0x077:
 {
 /* LD (HL),A */
@@ -11024,7 +11035,7 @@ case 0x077:
  		R.PC.W.l+=1; R.Flags |= Z80_CHECK_INTERRUPT_FLAG;
 Cycles = 2;
 }
-break;
+Z80_CASE_END
 case 0x078:
 {
 /* LD A,B */
@@ -11034,7 +11045,7 @@ case 0x078:
  		R.PC.W.l+=1; R.Flags |= Z80_CHECK_INTERRUPT_FLAG;
 Cycles = 1;
 }
-break;
+Z80_CASE_END
 case 0x079:
 {
 /* LD A,C */
@@ -11044,7 +11055,7 @@ case 0x079:
  		R.PC.W.l+=1; R.Flags |= Z80_CHECK_INTERRUPT_FLAG;
 Cycles = 1;
 }
-break;
+Z80_CASE_END
 case 0x07a:
 {
 /* LD A,D */
@@ -11054,7 +11065,7 @@ case 0x07a:
  		R.PC.W.l+=1; R.Flags |= Z80_CHECK_INTERRUPT_FLAG;
 Cycles = 1;
 }
-break;
+Z80_CASE_END
 case 0x07b:
 {
 /* LD A,E */
@@ -11064,7 +11075,7 @@ case 0x07b:
  		R.PC.W.l+=1; R.Flags |= Z80_CHECK_INTERRUPT_FLAG;
 Cycles = 1;
 }
-break;
+Z80_CASE_END
 case 0x07c:
 {
 /* LD A,H */
@@ -11074,7 +11085,7 @@ case 0x07c:
  		R.PC.W.l+=1; R.Flags |= Z80_CHECK_INTERRUPT_FLAG;
 Cycles = 1;
 }
-break;
+Z80_CASE_END
 case 0x07d:
 {
 /* LD A,L */
@@ -11084,7 +11095,7 @@ case 0x07d:
  		R.PC.W.l+=1; R.Flags |= Z80_CHECK_INTERRUPT_FLAG;
 Cycles = 1;
 }
-break;
+Z80_CASE_END
 case 0x07e:
 {
 /* LD A,(HL) */
@@ -11094,14 +11105,14 @@ case 0x07e:
  		R.PC.W.l+=1; R.Flags |= Z80_CHECK_INTERRUPT_FLAG;
 Cycles = 2;
 }
-break;
+Z80_CASE_END
 case 0x07f:
 {
         R.R+=1;
  		R.PC.W.l+=1; R.Flags |= Z80_CHECK_INTERRUPT_FLAG;
 Cycles = 1;
 }
-break;
+Z80_CASE_END
 case 0x080:
 {
 ADD_A_R(R.BC.B.h);
@@ -11109,7 +11120,7 @@ ADD_A_R(R.BC.B.h);
  		R.PC.W.l+=1; R.Flags |= Z80_CHECK_INTERRUPT_FLAG;
 Cycles = 1;
 }
-break;
+Z80_CASE_END
 case 0x081:
 {
 ADD_A_R(R.BC.B.l);
@@ -11117,7 +11128,7 @@ ADD_A_R(R.BC.B.l);
  		R.PC.W.l+=1; R.Flags |= Z80_CHECK_INTERRUPT_FLAG;
 Cycles = 1;
 }
-break;
+Z80_CASE_END
 case 0x082:
 {
 ADD_A_R(R.DE.B.h);
@@ -11125,7 +11136,7 @@ ADD_A_R(R.DE.B.h);
  		R.PC.W.l+=1; R.Flags |= Z80_CHECK_INTERRUPT_FLAG;
 Cycles = 1;
 }
-break;
+Z80_CASE_END
 case 0x083:
 {
 ADD_A_R(R.DE.B.l);
@@ -11133,7 +11144,7 @@ ADD_A_R(R.DE.B.l);
  		R.PC.W.l+=1; R.Flags |= Z80_CHECK_INTERRUPT_FLAG;
 Cycles = 1;
 }
-break;
+Z80_CASE_END
 case 0x084:
 {
 ADD_A_R(R.HL.B.h);
@@ -11141,7 +11152,7 @@ ADD_A_R(R.HL.B.h);
  		R.PC.W.l+=1; R.Flags |= Z80_CHECK_INTERRUPT_FLAG;
 Cycles = 1;
 }
-break;
+Z80_CASE_END
 case 0x085:
 {
 ADD_A_R(R.HL.B.l);
@@ -11149,7 +11160,7 @@ ADD_A_R(R.HL.B.l);
  		R.PC.W.l+=1; R.Flags |= Z80_CHECK_INTERRUPT_FLAG;
 Cycles = 1;
 }
-break;
+Z80_CASE_END
 case 0x086:
 {
 ADD_A_HL();
@@ -11157,7 +11168,7 @@ ADD_A_HL();
  		R.PC.W.l+=1; R.Flags |= Z80_CHECK_INTERRUPT_FLAG;
 Cycles = 2;
 }
-break;
+Z80_CASE_END
 case 0x087:
 {
 ADD_A_R(R.AF.B.h);
@@ -11165,7 +11176,7 @@ ADD_A_R(R.AF.B.h);
  		R.PC.W.l+=1; R.Flags |= Z80_CHECK_INTERRUPT_FLAG;
 Cycles = 1;
 }
-break;
+Z80_CASE_END
 case 0x088:
 {
 ADC_A_R(R.BC.B.h);
@@ -11173,7 +11184,7 @@ ADC_A_R(R.BC.B.h);
  		R.PC.W.l+=1; R.Flags |= Z80_CHECK_INTERRUPT_FLAG;
 Cycles = 1;
 }
-break;
+Z80_CASE_END
 case 0x089:
 {
 ADC_A_R(R.BC.B.l);
@@ -11181,7 +11192,7 @@ ADC_A_R(R.BC.B.l);
  		R.PC.W.l+=1; R.Flags |= Z80_CHECK_INTERRUPT_FLAG;
 Cycles = 1;
 }
-break;
+Z80_CASE_END
 case 0x08a:
 {
 ADC_A_R(R.DE.B.h);
@@ -11189,7 +11200,7 @@ ADC_A_R(R.DE.B.h);
  		R.PC.W.l+=1; R.Flags |= Z80_CHECK_INTERRUPT_FLAG;
 Cycles = 1;
 }
-break;
+Z80_CASE_END
 case 0x08b:
 {
 ADC_A_R(R.DE.B.l);
@@ -11197,7 +11208,7 @@ ADC_A_R(R.DE.B.l);
  		R.PC.W.l+=1; R.Flags |= Z80_CHECK_INTERRUPT_FLAG;
 Cycles = 1;
 }
-break;
+Z80_CASE_END
 case 0x08c:
 {
 ADC_A_R(R.HL.B.h);
@@ -11205,7 +11216,7 @@ ADC_A_R(R.HL.B.h);
  		R.PC.W.l+=1; R.Flags |= Z80_CHECK_INTERRUPT_FLAG;
 Cycles = 1;
 }
-break;
+Z80_CASE_END
 case 0x08d:
 {
 ADC_A_R(R.HL.B.l);
@@ -11213,7 +11224,7 @@ ADC_A_R(R.HL.B.l);
  		R.PC.W.l+=1; R.Flags |= Z80_CHECK_INTERRUPT_FLAG;
 Cycles = 1;
 }
-break;
+Z80_CASE_END
 case 0x08e:
 {
 ADC_A_HL();
@@ -11221,7 +11232,7 @@ ADC_A_HL();
  		R.PC.W.l+=1; R.Flags |= Z80_CHECK_INTERRUPT_FLAG;
 Cycles = 2;
 }
-break;
+Z80_CASE_END
 case 0x08f:
 {
 ADC_A_R(R.AF.B.h);
@@ -11229,7 +11240,7 @@ ADC_A_R(R.AF.B.h);
  		R.PC.W.l+=1; R.Flags |= Z80_CHECK_INTERRUPT_FLAG;
 Cycles = 1;
 }
-break;
+Z80_CASE_END
 case 0x090:
 {
 SUB_A_R(R.BC.B.h);
@@ -11237,7 +11248,7 @@ SUB_A_R(R.BC.B.h);
  		R.PC.W.l+=1; R.Flags |= Z80_CHECK_INTERRUPT_FLAG;
 Cycles = 1;
 }
-break;
+Z80_CASE_END
 case 0x091:
 {
 SUB_A_R(R.BC.B.l);
@@ -11245,7 +11256,7 @@ SUB_A_R(R.BC.B.l);
  		R.PC.W.l+=1; R.Flags |= Z80_CHECK_INTERRUPT_FLAG;
 Cycles = 1;
 }
-break;
+Z80_CASE_END
 case 0x092:
 {
 SUB_A_R(R.DE.B.h);
@@ -11253,7 +11264,7 @@ SUB_A_R(R.DE.B.h);
  		R.PC.W.l+=1; R.Flags |= Z80_CHECK_INTERRUPT_FLAG;
 Cycles = 1;
 }
-break;
+Z80_CASE_END
 case 0x093:
 {
 SUB_A_R(R.DE.B.l);
@@ -11261,7 +11272,7 @@ SUB_A_R(R.DE.B.l);
  		R.PC.W.l+=1; R.Flags |= Z80_CHECK_INTERRUPT_FLAG;
 Cycles = 1;
 }
-break;
+Z80_CASE_END
 case 0x094:
 {
 SUB_A_R(R.HL.B.h);
@@ -11269,7 +11280,7 @@ SUB_A_R(R.HL.B.h);
  		R.PC.W.l+=1; R.Flags |= Z80_CHECK_INTERRUPT_FLAG;
 Cycles = 1;
 }
-break;
+Z80_CASE_END
 case 0x095:
 {
 SUB_A_R(R.HL.B.l);
@@ -11277,7 +11288,7 @@ SUB_A_R(R.HL.B.l);
  		R.PC.W.l+=1; R.Flags |= Z80_CHECK_INTERRUPT_FLAG;
 Cycles = 1;
 }
-break;
+Z80_CASE_END
 case 0x096:
 {
 SUB_A_HL();
@@ -11285,7 +11296,7 @@ SUB_A_HL();
  		R.PC.W.l+=1; R.Flags |= Z80_CHECK_INTERRUPT_FLAG;
 Cycles = 2;
 }
-break;
+Z80_CASE_END
 case 0x097:
 {
 Z80_BYTE Flags;
@@ -11296,7 +11307,7 @@ Z80_FLAGS_REG = Flags;
  		R.PC.W.l+=1; R.Flags |= Z80_CHECK_INTERRUPT_FLAG;
 Cycles = 1;
 }
-break;
+Z80_CASE_END
 case 0x098:
 {
 SBC_A_R(R.BC.B.h);
@@ -11304,7 +11315,7 @@ SBC_A_R(R.BC.B.h);
  		R.PC.W.l+=1; R.Flags |= Z80_CHECK_INTERRUPT_FLAG;
 Cycles = 1;
 }
-break;
+Z80_CASE_END
 case 0x099:
 {
 SBC_A_R(R.BC.B.l);
@@ -11312,7 +11323,7 @@ SBC_A_R(R.BC.B.l);
  		R.PC.W.l+=1; R.Flags |= Z80_CHECK_INTERRUPT_FLAG;
 Cycles = 1;
 }
-break;
+Z80_CASE_END
 case 0x09a:
 {
 SBC_A_R(R.DE.B.h);
@@ -11320,7 +11331,7 @@ SBC_A_R(R.DE.B.h);
  		R.PC.W.l+=1; R.Flags |= Z80_CHECK_INTERRUPT_FLAG;
 Cycles = 1;
 }
-break;
+Z80_CASE_END
 case 0x09b:
 {
 SBC_A_R(R.DE.B.l);
@@ -11328,7 +11339,7 @@ SBC_A_R(R.DE.B.l);
  		R.PC.W.l+=1; R.Flags |= Z80_CHECK_INTERRUPT_FLAG;
 Cycles = 1;
 }
-break;
+Z80_CASE_END
 case 0x09c:
 {
 SBC_A_R(R.HL.B.h);
@@ -11336,7 +11347,7 @@ SBC_A_R(R.HL.B.h);
  		R.PC.W.l+=1; R.Flags |= Z80_CHECK_INTERRUPT_FLAG;
 Cycles = 1;
 }
-break;
+Z80_CASE_END
 case 0x09d:
 {
 SBC_A_R(R.HL.B.l);
@@ -11344,7 +11355,7 @@ SBC_A_R(R.HL.B.l);
  		R.PC.W.l+=1; R.Flags |= Z80_CHECK_INTERRUPT_FLAG;
 Cycles = 1;
 }
-break;
+Z80_CASE_END
 case 0x09e:
 {
 SBC_A_HL();
@@ -11352,7 +11363,7 @@ SBC_A_HL();
  		R.PC.W.l+=1; R.Flags |= Z80_CHECK_INTERRUPT_FLAG;
 Cycles = 2;
 }
-break;
+Z80_CASE_END
 case 0x09f:
 {
 SBC_A_R(R.AF.B.h);
@@ -11360,7 +11371,7 @@ SBC_A_R(R.AF.B.h);
  		R.PC.W.l+=1; R.Flags |= Z80_CHECK_INTERRUPT_FLAG;
 Cycles = 1;
 }
-break;
+Z80_CASE_END
 case 0x0a0:
 {
 AND_A_R(R.BC.B.h);
@@ -11368,7 +11379,7 @@ AND_A_R(R.BC.B.h);
  		R.PC.W.l+=1; R.Flags |= Z80_CHECK_INTERRUPT_FLAG;
 Cycles = 1;
 }
-break;
+Z80_CASE_END
 case 0x0a1:
 {
 AND_A_R(R.BC.B.l);
@@ -11376,7 +11387,7 @@ AND_A_R(R.BC.B.l);
  		R.PC.W.l+=1; R.Flags |= Z80_CHECK_INTERRUPT_FLAG;
 Cycles = 1;
 }
-break;
+Z80_CASE_END
 case 0x0a2:
 {
 AND_A_R(R.DE.B.h);
@@ -11384,7 +11395,7 @@ AND_A_R(R.DE.B.h);
  		R.PC.W.l+=1; R.Flags |= Z80_CHECK_INTERRUPT_FLAG;
 Cycles = 1;
 }
-break;
+Z80_CASE_END
 case 0x0a3:
 {
 AND_A_R(R.DE.B.l);
@@ -11392,7 +11403,7 @@ AND_A_R(R.DE.B.l);
  		R.PC.W.l+=1; R.Flags |= Z80_CHECK_INTERRUPT_FLAG;
 Cycles = 1;
 }
-break;
+Z80_CASE_END
 case 0x0a4:
 {
 AND_A_R(R.HL.B.h);
@@ -11400,7 +11411,7 @@ AND_A_R(R.HL.B.h);
  		R.PC.W.l+=1; R.Flags |= Z80_CHECK_INTERRUPT_FLAG;
 Cycles = 1;
 }
-break;
+Z80_CASE_END
 case 0x0a5:
 {
 AND_A_R(R.HL.B.l);
@@ -11408,7 +11419,7 @@ AND_A_R(R.HL.B.l);
  		R.PC.W.l+=1; R.Flags |= Z80_CHECK_INTERRUPT_FLAG;
 Cycles = 1;
 }
-break;
+Z80_CASE_END
 case 0x0a6:
 {
 AND_A_HL();
@@ -11416,7 +11427,7 @@ AND_A_HL();
  		R.PC.W.l+=1; R.Flags |= Z80_CHECK_INTERRUPT_FLAG;
 Cycles = 2;
 }
-break;
+Z80_CASE_END
 case 0x0a7:
 {
 Z80_BYTE Flags;
@@ -11428,7 +11439,7 @@ Z80_FLAGS_REG = Flags;
  		R.PC.W.l+=1; R.Flags |= Z80_CHECK_INTERRUPT_FLAG;
 Cycles = 1;
 }
-break;
+Z80_CASE_END
 case 0x0a8:
 {
 XOR_A_R(R.BC.B.h);
@@ -11436,7 +11447,7 @@ XOR_A_R(R.BC.B.h);
  		R.PC.W.l+=1; R.Flags |= Z80_CHECK_INTERRUPT_FLAG;
 Cycles = 1;
 }
-break;
+Z80_CASE_END
 case 0x0a9:
 {
 XOR_A_R(R.BC.B.l);
@@ -11444,7 +11455,7 @@ XOR_A_R(R.BC.B.l);
  		R.PC.W.l+=1; R.Flags |= Z80_CHECK_INTERRUPT_FLAG;
 Cycles = 1;
 }
-break;
+Z80_CASE_END
 case 0x0aa:
 {
 XOR_A_R(R.DE.B.h);
@@ -11452,7 +11463,7 @@ XOR_A_R(R.DE.B.h);
  		R.PC.W.l+=1; R.Flags |= Z80_CHECK_INTERRUPT_FLAG;
 Cycles = 1;
 }
-break;
+Z80_CASE_END
 case 0x0ab:
 {
 XOR_A_R(R.DE.B.l);
@@ -11460,7 +11471,7 @@ XOR_A_R(R.DE.B.l);
  		R.PC.W.l+=1; R.Flags |= Z80_CHECK_INTERRUPT_FLAG;
 Cycles = 1;
 }
-break;
+Z80_CASE_END
 case 0x0ac:
 {
 XOR_A_R(R.HL.B.h);
@@ -11468,7 +11479,7 @@ XOR_A_R(R.HL.B.h);
  		R.PC.W.l+=1; R.Flags |= Z80_CHECK_INTERRUPT_FLAG;
 Cycles = 1;
 }
-break;
+Z80_CASE_END
 case 0x0ad:
 {
 XOR_A_R(R.HL.B.l);
@@ -11476,7 +11487,7 @@ XOR_A_R(R.HL.B.l);
  		R.PC.W.l+=1; R.Flags |= Z80_CHECK_INTERRUPT_FLAG;
 Cycles = 1;
 }
-break;
+Z80_CASE_END
 case 0x0ae:
 {
 XOR_A_HL();
@@ -11484,7 +11495,7 @@ XOR_A_HL();
  		R.PC.W.l+=1; R.Flags |= Z80_CHECK_INTERRUPT_FLAG;
 Cycles = 2;
 }
-break;
+Z80_CASE_END
 case 0x0af:
 {
 Z80_BYTE Flags;
@@ -11495,7 +11506,7 @@ Z80_FLAGS_REG = Flags;
  		R.PC.W.l+=1; R.Flags |= Z80_CHECK_INTERRUPT_FLAG;
 Cycles = 1;
 }
-break;
+Z80_CASE_END
 case 0x0b0:
 {
 OR_A_R(R.BC.B.h);
@@ -11503,7 +11514,7 @@ OR_A_R(R.BC.B.h);
  		R.PC.W.l+=1; R.Flags |= Z80_CHECK_INTERRUPT_FLAG;
 Cycles = 1;
 }
-break;
+Z80_CASE_END
 case 0x0b1:
 {
 OR_A_R(R.BC.B.l);
@@ -11511,7 +11522,7 @@ OR_A_R(R.BC.B.l);
  		R.PC.W.l+=1; R.Flags |= Z80_CHECK_INTERRUPT_FLAG;
 Cycles = 1;
 }
-break;
+Z80_CASE_END
 case 0x0b2:
 {
 OR_A_R(R.DE.B.h);
@@ -11519,7 +11530,7 @@ OR_A_R(R.DE.B.h);
  		R.PC.W.l+=1; R.Flags |= Z80_CHECK_INTERRUPT_FLAG;
 Cycles = 1;
 }
-break;
+Z80_CASE_END
 case 0x0b3:
 {
 OR_A_R(R.DE.B.l);
@@ -11527,7 +11538,7 @@ OR_A_R(R.DE.B.l);
  		R.PC.W.l+=1; R.Flags |= Z80_CHECK_INTERRUPT_FLAG;
 Cycles = 1;
 }
-break;
+Z80_CASE_END
 case 0x0b4:
 {
 OR_A_R(R.HL.B.h);
@@ -11535,7 +11546,7 @@ OR_A_R(R.HL.B.h);
  		R.PC.W.l+=1; R.Flags |= Z80_CHECK_INTERRUPT_FLAG;
 Cycles = 1;
 }
-break;
+Z80_CASE_END
 case 0x0b5:
 {
 OR_A_R(R.HL.B.l);
@@ -11543,7 +11554,7 @@ OR_A_R(R.HL.B.l);
  		R.PC.W.l+=1; R.Flags |= Z80_CHECK_INTERRUPT_FLAG;
 Cycles = 1;
 }
-break;
+Z80_CASE_END
 case 0x0b6:
 {
 OR_A_HL();
@@ -11551,7 +11562,7 @@ OR_A_HL();
  		R.PC.W.l+=1; R.Flags |= Z80_CHECK_INTERRUPT_FLAG;
 Cycles = 2;
 }
-break;
+Z80_CASE_END
 case 0x0b7:
 {
 Z80_BYTE Flags;
@@ -11562,7 +11573,7 @@ Z80_FLAGS_REG = Flags;
  		R.PC.W.l+=1; R.Flags |= Z80_CHECK_INTERRUPT_FLAG;
 Cycles = 1;
 }
-break;
+Z80_CASE_END
 case 0x0b8:
 {
 CP_A_R(R.BC.B.h);
@@ -11570,7 +11581,7 @@ CP_A_R(R.BC.B.h);
  		R.PC.W.l+=1; R.Flags |= Z80_CHECK_INTERRUPT_FLAG;
 Cycles = 1;
 }
-break;
+Z80_CASE_END
 case 0x0b9:
 {
 CP_A_R(R.BC.B.l);
@@ -11578,7 +11589,7 @@ CP_A_R(R.BC.B.l);
  		R.PC.W.l+=1; R.Flags |= Z80_CHECK_INTERRUPT_FLAG;
 Cycles = 1;
 }
-break;
+Z80_CASE_END
 case 0x0ba:
 {
 CP_A_R(R.DE.B.h);
@@ -11586,7 +11597,7 @@ CP_A_R(R.DE.B.h);
  		R.PC.W.l+=1; R.Flags |= Z80_CHECK_INTERRUPT_FLAG;
 Cycles = 1;
 }
-break;
+Z80_CASE_END
 case 0x0bb:
 {
 CP_A_R(R.DE.B.l);
@@ -11594,7 +11605,7 @@ CP_A_R(R.DE.B.l);
  		R.PC.W.l+=1; R.Flags |= Z80_CHECK_INTERRUPT_FLAG;
 Cycles = 1;
 }
-break;
+Z80_CASE_END
 case 0x0bc:
 {
 CP_A_R(R.HL.B.h);
@@ -11602,7 +11613,7 @@ CP_A_R(R.HL.B.h);
  		R.PC.W.l+=1; R.Flags |= Z80_CHECK_INTERRUPT_FLAG;
 Cycles = 1;
 }
-break;
+Z80_CASE_END
 case 0x0bd:
 {
 CP_A_R(R.HL.B.l);
@@ -11610,7 +11621,7 @@ CP_A_R(R.HL.B.l);
  		R.PC.W.l+=1; R.Flags |= Z80_CHECK_INTERRUPT_FLAG;
 Cycles = 1;
 }
-break;
+Z80_CASE_END
 case 0x0be:
 {
 CP_A_HL();
@@ -11618,7 +11629,7 @@ CP_A_HL();
  		R.PC.W.l+=1; R.Flags |= Z80_CHECK_INTERRUPT_FLAG;
 Cycles = 2;
 }
-break;
+Z80_CASE_END
 case 0x0bf:
 {
 Z80_BYTE Flags;
@@ -11629,7 +11640,7 @@ Z80_FLAGS_REG = Flags;
  		R.PC.W.l+=1; R.Flags |= Z80_CHECK_INTERRUPT_FLAG;
 Cycles = 1;
 }
-break;
+Z80_CASE_END
 case 0x0c0:
 {
 if (Z80_TEST_ZERO_NOT_SET)
@@ -11644,7 +11655,7 @@ else
         R.R+=1;
  R.Flags |= Z80_CHECK_INTERRUPT_FLAG;
 }
-break;
+Z80_CASE_END
 case 0x0c1:
 {
 R.BC.W = POP();
@@ -11652,7 +11663,7 @@ R.BC.W = POP();
  		R.PC.W.l+=1; R.Flags |= Z80_CHECK_INTERRUPT_FLAG;
 Cycles = 3;
 }
-break;
+Z80_CASE_END
 case 0x0c2:
 {
 /* JP cc, nnnn */
@@ -11668,7 +11679,7 @@ Cycles=3;
         R.R+=1;
  R.Flags |= Z80_CHECK_INTERRUPT_FLAG;
 }
-break;
+Z80_CASE_END
 case 0x0c3:
 {
 /* JP nnnn */
@@ -11678,7 +11689,7 @@ R.PC.W.l = R.MemPtr.W;
  R.Flags |= Z80_CHECK_INTERRUPT_FLAG;
 Cycles = 3;
 }
-break;
+Z80_CASE_END
 case 0x0c4:
 {
 /* CALL cc,nnnn */
@@ -11696,7 +11707,7 @@ else
         R.R+=1;
  R.Flags |= Z80_CHECK_INTERRUPT_FLAG;
 }
-break;
+Z80_CASE_END
 case 0x0c5:
 {
 PUSH(R.BC.W);
@@ -11704,7 +11715,7 @@ PUSH(R.BC.W);
  		R.PC.W.l+=1; R.Flags |= Z80_CHECK_INTERRUPT_FLAG;
 Cycles = 4;
 }
-break;
+Z80_CASE_END
 case 0x0c6:
 {
 R.TempByte = Z80_RD_OPCODE_BYTE(1);
@@ -11713,7 +11724,7 @@ ADD_A_X(R.TempByte);
  		R.PC.W.l+=2; R.Flags |= Z80_CHECK_INTERRUPT_FLAG;
 Cycles = 2;
 }
-break;
+Z80_CASE_END
 case 0x0c7:
 {
 /* RST 0x0000 */
@@ -11728,7 +11739,7 @@ R.PC.W.l = R.MemPtr.W;
  R.Flags |= Z80_CHECK_INTERRUPT_FLAG;
 Cycles = 4;
 }
-break;
+Z80_CASE_END
 case 0x0c8:
 {
 if (Z80_TEST_ZERO_SET)
@@ -11743,7 +11754,7 @@ else
         R.R+=1;
  R.Flags |= Z80_CHECK_INTERRUPT_FLAG;
 }
-break;
+Z80_CASE_END
 case 0x0c9:
 {
 RETURN();
@@ -11751,7 +11762,7 @@ RETURN();
  R.Flags |= Z80_CHECK_INTERRUPT_FLAG;
 Cycles = 3;
 }
-break;
+Z80_CASE_END
 case 0x0ca:
 {
 /* JP cc, nnnn */
@@ -11767,12 +11778,12 @@ Cycles=3;
         R.R+=1;
  R.Flags |= Z80_CHECK_INTERRUPT_FLAG;
 }
-break;
+Z80_CASE_END
 case 0x0cb:
 {
 Cycles = Z80_CB_ExecuteInstruction();
 }
-break;
+Z80_CASE_END
 case 0x0cc:
 {
 /* CALL cc,nnnn */
@@ -11790,7 +11801,7 @@ else
         R.R+=1;
  R.Flags |= Z80_CHECK_INTERRUPT_FLAG;
 }
-break;
+Z80_CASE_END
 case 0x0cd:
 {
 /* CALL nnnn */
@@ -11801,7 +11812,7 @@ R.PC.W.l = R.MemPtr.W;
  R.Flags |= Z80_CHECK_INTERRUPT_FLAG;
 Cycles = 5;
 }
-break;
+Z80_CASE_END
 case 0x0ce:
 {
 R.TempByte = Z80_RD_OPCODE_BYTE(1);
@@ -11810,7 +11821,7 @@ ADC_A_X(R.TempByte);
  		R.PC.W.l+=2; R.Flags |= Z80_CHECK_INTERRUPT_FLAG;
 Cycles = 2;
 }
-break;
+Z80_CASE_END
 case 0x0cf:
 {
 /* RST 0x0008 */
@@ -11825,7 +11836,7 @@ R.PC.W.l = R.MemPtr.W;
  R.Flags |= Z80_CHECK_INTERRUPT_FLAG;
 Cycles = 4;
 }
-break;
+Z80_CASE_END
 case 0x0d0:
 {
 if (Z80_TEST_CARRY_NOT_SET)
@@ -11840,7 +11851,7 @@ else
         R.R+=1;
  R.Flags |= Z80_CHECK_INTERRUPT_FLAG;
 }
-break;
+Z80_CASE_END
 case 0x0d1:
 {
 R.DE.W = POP();
@@ -11848,7 +11859,7 @@ R.DE.W = POP();
  		R.PC.W.l+=1; R.Flags |= Z80_CHECK_INTERRUPT_FLAG;
 Cycles = 3;
 }
-break;
+Z80_CASE_END
 case 0x0d2:
 {
 /* JP cc, nnnn */
@@ -11864,7 +11875,7 @@ Cycles=3;
         R.R+=1;
  R.Flags |= Z80_CHECK_INTERRUPT_FLAG;
 }
-break;
+Z80_CASE_END
 case 0x0d3:
 {
 /* OUT (n),A */
@@ -11872,7 +11883,7 @@ case 0x0d3:
     R.MemPtr.B.l = Z80_RD_OPCODE_BYTE(1); 
 	R.MemPtr.B.h = R.AF.B.h; 
 	/* perform out */ 
-    Z80_DoOut(R.MemPtr.W, R.AF.B.h); 
+    Z80_IO_AT(2); Z80_DoOut(R.MemPtr.W, R.AF.B.h); 
 	/* update mem ptr */ 
 	R.MemPtr.B.l++; 
 	R.MemPtr.B.h = R.AF.B.h; 
@@ -11881,7 +11892,7 @@ case 0x0d3:
         R.R+=1;
  		R.PC.W.l+=2; R.Flags |= Z80_CHECK_INTERRUPT_FLAG;
 }
-break;
+Z80_CASE_END
 case 0x0d4:
 {
 /* CALL cc,nnnn */
@@ -11899,7 +11910,7 @@ else
         R.R+=1;
  R.Flags |= Z80_CHECK_INTERRUPT_FLAG;
 }
-break;
+Z80_CASE_END
 case 0x0d5:
 {
 PUSH(R.DE.W);
@@ -11907,7 +11918,7 @@ PUSH(R.DE.W);
  		R.PC.W.l+=1; R.Flags |= Z80_CHECK_INTERRUPT_FLAG;
 Cycles = 4;
 }
-break;
+Z80_CASE_END
 case 0x0d6:
 {
 R.TempByte = Z80_RD_OPCODE_BYTE(1);
@@ -11916,7 +11927,7 @@ SUB_A_X(R.TempByte);
  		R.PC.W.l+=2; R.Flags |= Z80_CHECK_INTERRUPT_FLAG;
 Cycles = 2;
 }
-break;
+Z80_CASE_END
 case 0x0d7:
 {
 /* RST 0x0010 */
@@ -11931,7 +11942,7 @@ R.PC.W.l = R.MemPtr.W;
  R.Flags |= Z80_CHECK_INTERRUPT_FLAG;
 Cycles = 4;
 }
-break;
+Z80_CASE_END
 case 0x0d8:
 {
 if (Z80_TEST_CARRY_SET)
@@ -11946,7 +11957,7 @@ else
         R.R+=1;
  R.Flags |= Z80_CHECK_INTERRUPT_FLAG;
 }
-break;
+Z80_CASE_END
 case 0x0d9:
 {
 SWAP(R.DE.W, R.altDE.W);
@@ -11956,7 +11967,7 @@ SWAP(R.BC.W, R.altBC.W);
  		R.PC.W.l+=1; R.Flags |= Z80_CHECK_INTERRUPT_FLAG;
 Cycles = 1;
 }
-break;
+Z80_CASE_END
 case 0x0da:
 {
 /* JP cc, nnnn */
@@ -11972,7 +11983,7 @@ Cycles=3;
         R.R+=1;
  R.Flags |= Z80_CHECK_INTERRUPT_FLAG;
 }
-break;
+Z80_CASE_END
 case 0x0db:
 {
 /* IN A,(n) */
@@ -11981,7 +11992,7 @@ case 0x0db:
 	R.MemPtr.B.l = Z80_RD_OPCODE_BYTE(1);
 	R.MemPtr.B.h = R.AF.B.h;
     /* a in upper byte of port, data in lower byte of port */
-    R.AF.B.h = Z80_DoIn(R.MemPtr.W);
+    Z80_IO_AT(2); R.AF.B.h = Z80_DoIn(R.MemPtr.W);
 	/* update mem ptr */
 	R.MemPtr.W++;
 	/* no flags changed */
@@ -11989,7 +12000,7 @@ case 0x0db:
         R.R+=1;
  		R.PC.W.l+=2; R.Flags |= Z80_CHECK_INTERRUPT_FLAG;
 }
-break;
+Z80_CASE_END
 case 0x0dc:
 {
 /* CALL cc,nnnn */
@@ -12007,12 +12018,12 @@ else
         R.R+=1;
  R.Flags |= Z80_CHECK_INTERRUPT_FLAG;
 }
-break;
+Z80_CASE_END
 case 0x0dd:
 {
 Cycles = Z80_DD_ExecuteInstruction();
 }
-break;
+Z80_CASE_END
 case 0x0de:
 {
 R.TempByte = Z80_RD_OPCODE_BYTE(1);
@@ -12021,7 +12032,7 @@ SBC_A_X(R.TempByte);
  		R.PC.W.l+=2; R.Flags |= Z80_CHECK_INTERRUPT_FLAG;
 Cycles = 2;
 }
-break;
+Z80_CASE_END
 case 0x0df:
 {
 /* RST 0x0018 */
@@ -12036,7 +12047,7 @@ R.PC.W.l = R.MemPtr.W;
  R.Flags |= Z80_CHECK_INTERRUPT_FLAG;
 Cycles = 4;
 }
-break;
+Z80_CASE_END
 case 0x0e0:
 {
 if (Z80_TEST_PARITY_ODD)
@@ -12051,7 +12062,7 @@ else
         R.R+=1;
  R.Flags |= Z80_CHECK_INTERRUPT_FLAG;
 }
-break;
+Z80_CASE_END
 case 0x0e1:
 {
 R.HL.W = POP();
@@ -12059,7 +12070,7 @@ R.HL.W = POP();
  		R.PC.W.l+=1; R.Flags |= Z80_CHECK_INTERRUPT_FLAG;
 Cycles = 3;
 }
-break;
+Z80_CASE_END
 case 0x0e2:
 {
 /* JP cc, nnnn */
@@ -12075,7 +12086,7 @@ Cycles=3;
         R.R+=1;
  R.Flags |= Z80_CHECK_INTERRUPT_FLAG;
 }
-break;
+Z80_CASE_END
 case 0x0e3:
 {
  
@@ -12086,7 +12097,7 @@ case 0x0e3:
  		R.PC.W.l+=1; R.Flags |= Z80_CHECK_INTERRUPT_FLAG;
 Cycles = 6;
 }
-break;
+Z80_CASE_END
 case 0x0e4:
 {
 /* CALL cc,nnnn */
@@ -12104,7 +12115,7 @@ else
         R.R+=1;
  R.Flags |= Z80_CHECK_INTERRUPT_FLAG;
 }
-break;
+Z80_CASE_END
 case 0x0e5:
 {
 PUSH(R.HL.W);
@@ -12112,7 +12123,7 @@ PUSH(R.HL.W);
  		R.PC.W.l+=1; R.Flags |= Z80_CHECK_INTERRUPT_FLAG;
 Cycles = 4;
 }
-break;
+Z80_CASE_END
 case 0x0e6:
 {
 R.TempByte = Z80_RD_OPCODE_BYTE(1);
@@ -12121,7 +12132,7 @@ AND_A_X(R.TempByte);
  		R.PC.W.l+=2; R.Flags |= Z80_CHECK_INTERRUPT_FLAG;
 Cycles = 2;
 }
-break;
+Z80_CASE_END
 case 0x0e7:
 {
 /* RST 0x0020 */
@@ -12136,7 +12147,7 @@ R.PC.W.l = R.MemPtr.W;
  R.Flags |= Z80_CHECK_INTERRUPT_FLAG;
 Cycles = 4;
 }
-break;
+Z80_CASE_END
 case 0x0e8:
 {
 if (Z80_TEST_PARITY_EVEN)
@@ -12151,7 +12162,7 @@ else
         R.R+=1;
  R.Flags |= Z80_CHECK_INTERRUPT_FLAG;
 }
-break;
+Z80_CASE_END
 case 0x0e9:
 {
 /* JP (HL) */
@@ -12161,7 +12172,7 @@ case 0x0e9:
  R.Flags |= Z80_CHECK_INTERRUPT_FLAG;
 Cycles = 1;
 }
-break;
+Z80_CASE_END
 case 0x0ea:
 {
 /* JP cc, nnnn */
@@ -12177,7 +12188,7 @@ Cycles=3;
         R.R+=1;
  R.Flags |= Z80_CHECK_INTERRUPT_FLAG;
 }
-break;
+Z80_CASE_END
 case 0x0eb:
 {
 SWAP(R.HL.W,R.DE.W);
@@ -12185,7 +12196,7 @@ SWAP(R.HL.W,R.DE.W);
  		R.PC.W.l+=1; R.Flags |= Z80_CHECK_INTERRUPT_FLAG;
 Cycles = 1;
 }
-break;
+Z80_CASE_END
 case 0x0ec:
 {
 /* CALL cc,nnnn */
@@ -12203,12 +12214,12 @@ else
         R.R+=1;
  R.Flags |= Z80_CHECK_INTERRUPT_FLAG;
 }
-break;
+Z80_CASE_END
 case 0x0ed:
 {
 Cycles = Z80_ED_ExecuteInstruction();
 }
-break;
+Z80_CASE_END
 case 0x0ee:
 {
 R.TempByte = Z80_RD_OPCODE_BYTE(1);
@@ -12217,7 +12228,7 @@ XOR_A_X(R.TempByte);
  		R.PC.W.l+=2; R.Flags |= Z80_CHECK_INTERRUPT_FLAG;
 Cycles = 2;
 }
-break;
+Z80_CASE_END
 case 0x0ef:
 {
 /* RST 0x0028 */
@@ -12232,7 +12243,7 @@ R.PC.W.l = R.MemPtr.W;
  R.Flags |= Z80_CHECK_INTERRUPT_FLAG;
 Cycles = 4;
 }
-break;
+Z80_CASE_END
 case 0x0f0:
 {
 if (Z80_TEST_POSITIVE)
@@ -12247,7 +12258,7 @@ else
         R.R+=1;
  R.Flags |= Z80_CHECK_INTERRUPT_FLAG;
 }
-break;
+Z80_CASE_END
 case 0x0f1:
 {
 R.AF.W = POP();
@@ -12255,7 +12266,7 @@ R.AF.W = POP();
  		R.PC.W.l+=1; R.Flags |= Z80_CHECK_INTERRUPT_FLAG;
 Cycles = 3;
 }
-break;
+Z80_CASE_END
 case 0x0f2:
 {
 /* JP cc, nnnn */
@@ -12271,7 +12282,7 @@ Cycles=3;
         R.R+=1;
  R.Flags |= Z80_CHECK_INTERRUPT_FLAG;
 }
-break;
+Z80_CASE_END
 case 0x0f3:
 {
 /* DI */
@@ -12281,7 +12292,7 @@ case 0x0f3:
         R.R+=1;
  		R.PC.W.l+=1; Cycles = 1;
 }
-break;
+Z80_CASE_END
 case 0x0f4:
 {
 /* CALL cc,nnnn */
@@ -12299,7 +12310,7 @@ else
         R.R+=1;
  R.Flags |= Z80_CHECK_INTERRUPT_FLAG;
 }
-break;
+Z80_CASE_END
 case 0x0f5:
 {
 PUSH(R.AF.W);
@@ -12307,7 +12318,7 @@ PUSH(R.AF.W);
  		R.PC.W.l+=1; R.Flags |= Z80_CHECK_INTERRUPT_FLAG;
 Cycles = 4;
 }
-break;
+Z80_CASE_END
 case 0x0f6:
 {
 R.TempByte = Z80_RD_OPCODE_BYTE(1);
@@ -12316,7 +12327,7 @@ OR_A_X(R.TempByte);
  		R.PC.W.l+=2; R.Flags |= Z80_CHECK_INTERRUPT_FLAG;
 Cycles = 2;
 }
-break;
+Z80_CASE_END
 case 0x0f7:
 {
 /* RST 0x0030 */
@@ -12331,7 +12342,7 @@ R.PC.W.l = R.MemPtr.W;
  R.Flags |= Z80_CHECK_INTERRUPT_FLAG;
 Cycles = 4;
 }
-break;
+Z80_CASE_END
 case 0x0f8:
 {
 if (Z80_TEST_MINUS)
@@ -12346,7 +12357,7 @@ else
         R.R+=1;
  R.Flags |= Z80_CHECK_INTERRUPT_FLAG;
 }
-break;
+Z80_CASE_END
 case 0x0f9:
 {
 /* LD SP,HL */
@@ -12356,7 +12367,7 @@ case 0x0f9:
  		R.PC.W.l+=1; R.Flags |= Z80_CHECK_INTERRUPT_FLAG;
 Cycles = 2;
 }
-break;
+Z80_CASE_END
 case 0x0fa:
 {
 /* JP cc, nnnn */
@@ -12372,7 +12383,7 @@ Cycles=3;
         R.R+=1;
  R.Flags |= Z80_CHECK_INTERRUPT_FLAG;
 }
-break;
+Z80_CASE_END
 case 0x0fb:
 {
 /* EI */
@@ -12382,7 +12393,7 @@ case 0x0fb:
         R.R+=1;
  		R.PC.W.l+=1; Cycles = 1;
 }
-break;
+Z80_CASE_END
 case 0x0fc:
 {
 /* CALL cc,nnnn */
@@ -12400,12 +12411,12 @@ else
         R.R+=1;
  R.Flags |= Z80_CHECK_INTERRUPT_FLAG;
 }
-break;
+Z80_CASE_END
 case 0x0fd:
 {
 Cycles = Z80_FD_ExecuteInstruction();
 }
-break;
+Z80_CASE_END
 case 0x0fe:
 {
 R.TempByte = Z80_RD_OPCODE_BYTE(1);
@@ -12414,7 +12425,7 @@ CP_A_X(R.TempByte);
  		R.PC.W.l+=2; R.Flags |= Z80_CHECK_INTERRUPT_FLAG;
 Cycles = 2;
 }
-break;
+Z80_CASE_END
 case 0x0ff:
 {
 /* RST 0x0038 */
@@ -12429,7 +12440,7 @@ R.PC.W.l = R.MemPtr.W;
  R.Flags |= Z80_CHECK_INTERRUPT_FLAG;
 Cycles = 4;
 }
-break;
+Z80_CASE_END
 default:
 /* the following tells MSDEV 6 to not generate */
 /* code which checks if a input value to the  */
@@ -12442,7 +12453,7 @@ __assume(0);
 break;
 }
 /* check interrupts? */
-if ((R.Flags & (Z80_CHECK_INTERRUPT_FLAG | Z80_EXECUTE_INTERRUPT_HANDLER_FLAG))==(Z80_CHECK_INTERRUPT_FLAG | Z80_EXECUTE_INTERRUPT_HANDLER_FLAG))
+if (ARN_UNLIKELY((R.Flags & (Z80_CHECK_INTERRUPT_FLAG | Z80_EXECUTE_INTERRUPT_HANDLER_FLAG))==(Z80_CHECK_INTERRUPT_FLAG | Z80_EXECUTE_INTERRUPT_HANDLER_FLAG)))
 {
 Cycles+=Z80_ExecuteInterrupt();
 }
@@ -13735,3 +13746,72 @@ break;
 }
 return Cycles;
 }
+
+#ifndef NO_ASICTIME
+/* Amiga port (asictime, 21 Oct 2026): the NOP of the current instruction at
+ * which its memory write to Addr happens, for writes to the Plus ASIC page
+ * (cpc.c CPCPlus_WriteMemoryWithASICRamEnabled). Not on the hot path: it is
+ * called only for writes to &4000-&7FFF while the ASIC page is mapped in.
+ * R.PC still points at the instruction (the core adds to PC at its end).
+ * Values are CPCEC's (z80_delays: the NOPs that pass before its POKE).
+ * 0 = unknown (CALL/RST/interrupt pushes; CPCEC does not time those either):
+ * the write stays at the start of the instruction, as before. */
+int Z80_WriteNop(Z80_WORD Addr)
+{
+	unsigned int op = Z80_RD_OPCODE_BYTE(0), op2;
+	switch (op)
+	{
+	case 0x02: case 0x12:                         /* LD (BC),A / LD (DE),A */
+	case 0x70: case 0x71: case 0x72: case 0x73:   /* LD (HL),r */
+	case 0x74: case 0x75: case 0x77:
+		return 2;
+	case 0x34: case 0x35: case 0x36:              /* INC/DEC (HL), LD (HL),n */
+		return 3;
+	case 0x32:                                    /* LD (nn),A */
+		return 4;
+	case 0x22:                                    /* LD (nn),HL: low, then high */
+		return Addr == Z80_RD_OPCODE_WORD(1) ? 4 : 5;
+	case 0xc5: case 0xd5: case 0xe5: case 0xf5:   /* PUSH rr: high (SP+1), then low (SP) */
+		return Addr == (Z80_WORD)(R.SP.W + 1) ? 3 : 4;
+	case 0xe3:                                    /* EX (SP),HL: high (SP+1), then low (SP) */
+		return Addr == (Z80_WORD)(R.SP.W + 1) ? 5 : 6;
+	case 0xcb:                                    /* RLC..SET (HL); BIT does not write */
+		op2 = Z80_RD_OPCODE_BYTE(1);
+		return ((op2 & 7) == 6 && (op2 & 0xc0) != 0x40) ? 4 : 0;
+	case 0xed:
+		op2 = Z80_RD_OPCODE_BYTE(1);
+		switch (op2)
+		{
+		case 0x43: case 0x53: case 0x63: case 0x73:   /* LD (nn),rr */
+			return Addr == Z80_RD_OPCODE_WORD(2) ? 5 : 6;
+		case 0x67: case 0x6f:                         /* RRD / RLD */
+			return 5;
+		case 0xa0: case 0xa8: case 0xb0: case 0xb8:   /* LDI/LDD/LDIR/LDDR */
+			return 4;
+		case 0xa2: case 0xaa: case 0xb2: case 0xba:   /* INI/IND/INIR/INDR */
+			return 5;
+		}
+		return 0;
+	case 0xdd: case 0xfd:
+		op2 = Z80_RD_OPCODE_BYTE(1);
+		switch (op2)
+		{
+		case 0x70: case 0x71: case 0x72: case 0x73:   /* LD (IX+d),r */
+		case 0x74: case 0x75: case 0x77:
+			return 5;
+		case 0x34: case 0x35: case 0x36:              /* INC/DEC (IX+d), LD (IX+d),n */
+			return 6;
+		case 0x22:                                    /* LD (nn),IX */
+			return Addr == Z80_RD_OPCODE_WORD(2) ? 5 : 6;
+		case 0xe5:                                    /* PUSH IX */
+			return Addr == (Z80_WORD)(R.SP.W + 1) ? 4 : 5;
+		case 0xe3:                                    /* EX (SP),IX */
+			return Addr == (Z80_WORD)(R.SP.W + 1) ? 6 : 7;
+		case 0xcb:                                    /* RLC..SET (IX+d) */
+			return 7;
+		}
+		return 0;
+	}
+	return 0;
+}
+#endif

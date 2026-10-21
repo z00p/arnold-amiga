@@ -27,7 +27,7 @@
 #include <stdarg.h>
 
 unsigned long __stack = 256 * 1024;   /* libnix: enlarge the stack at start */
-static const char ver[] __attribute__((used)) = "$VER: Arnold 0.8 (20.10.2026) Amiga port, GPL-2.0";
+static const char ver[] __attribute__((used)) = "$VER: Arnold 0.9 (21.10.2026) Amiga port, GPL-2.0";
 
 /* ---- diagnostic log ---- */
 static FILE *logf;
@@ -240,12 +240,22 @@ static void c2p_line_n(const unsigned char *src, struct BitMap *bm, int y, int n
  * NO_SHADOW (define): every long of the used planes written, as step 1. */
 static ULONG *shadow[NBUF];          /* [row][plane][SW/32] */
 
+#ifndef NO_EMUBR
+#include "c2p_sh.h"
+#endif
 static void c2p_line_sh(const unsigned char *src, struct BitMap *bm, int y, int np, ULONG *sh, int known)
 {
 	int p, g, ng = SW >> 5;
 	UBYTE *plane[8];
 	unsigned long w = 0;
 	for (p = 0; p < 8; p++) plane[p] = bm->Planes[p] + (LONG)y * bm->BytesPerRow;
+#ifndef NO_EMUBR
+	if (__builtin_expect(known != 0, 1))
+	{
+		Sys_Perf.c2p_chip_longs += c2p_sh_known(src, plane, ng, sh);
+		return;
+	}
+#endif
 	for (g = 0; g < ng; g++) {
 		ULONG o[8];
 		int k;
@@ -312,6 +322,7 @@ static void c2p_line_sh(const unsigned char *src, struct BitMap *bm, int y, int 
 #define VS_DMAX 96
 #endif
 int Sys_VShiftOn, Sys_NoVShift, Sys_VShiftOn_Last;
+int Sys_TallScreen;
 static int TR;                       /* rows in each buffer's chip area (SH without vshift) */
 static int win_row[NBUF];            /* first row of the window shown */
 #ifdef VSHIFT
@@ -482,6 +493,27 @@ static void measure_vblank(ULONG modeid)
 	t1 = Sys_Micros();
 	if (t1 > t0) Sys_DisplayFrameUs = (t1 - t0) / 6;
 	measured_mode = modeid;
+#ifndef NO_PALBEAM
+	/* A PAL screen whose beam runs at 60 Hz (21 Oct 2026, John's A1200: 16.86 ms
+	 * VBlank for 0.8 and 0.9 alike, PAL DisplayFlags): another program wrote
+	 * BEAMCON0 = NTSC and left it (AmiMSX does for 60 Hz MSX games), and graphics
+	 * never rewrites it for a PAL view on a PAL machine. The 256-line screen then
+	 * sits in a 263-line frame: its bottom ~38 lines are lost and the picture
+	 * looks low. Put the PAL beam back (what the machine booted with). Not for an
+	 * NTSC mode (VIDEO=NTSC) or an NTSC machine. NO_PALBEAM: leave it. */
+	if (!Sys_Display50Hz() && (GfxBase->DisplayFlags & PAL)
+	 && ((modeid & MONITOR_ID_MASK) == PAL_MONITOR_ID || (modeid & MONITOR_ID_MASK) == DEFAULT_MONITOR_ID)) {
+		unsigned long was = Sys_DisplayFrameUs;
+		custom.beamcon0 = DISPLAYPAL;
+		WaitTOF(); WaitTOF();
+		t0 = Sys_Micros();
+		for (i = 0; i < 6; i++) WaitTOF();
+		t1 = Sys_Micros();
+		if (t1 > t0) Sys_DisplayFrameUs = (t1 - t0) / 6;
+		Sys_Log("display: PAL screen on a 60 Hz beam (VBlank %lu us; BEAMCON0 left NTSC by another program): PAL beam restored, VBlank now %lu us",
+			was, Sys_DisplayFrameUs);
+	}
+#endif
 	Sys_Log("display: VBlank every %lu us (%s), mode %08lx, viewport mode %08lx, gfx DisplayFlags %04x, E-clock %lu Hz",
 		Sys_DisplayFrameUs, Sys_Display50Hz() ? "50 Hz" : "not 50 Hz", (unsigned long)modeid,
 		(unsigned long)GetVPModeID(&scr->ViewPort), (unsigned)GfxBase->DisplayFlags, (unsigned long)SysBase->ex_EClockFrequency);
@@ -513,6 +545,10 @@ int Sys_OpenDisplay(int cw, int ch, int hires)
 	if (!QueryOverscan(modeid, &rect, OSCAN_STANDARD)) {
 		rect.MinX = 0; rect.MinY = 0; rect.MaxX = (hires ? 703 : 351); rect.MaxY = 271;
 	}
+	/* TALL (Pinball Dreams, 20 Oct 2026): PAL standard overscan is 256 lines, so
+	 * rows 8-263 of the 272 are shown; a game drawn from the top of the frame
+	 * (Pinball Dreams' score row starts at row 2) loses its first lines. Full
+	 * height takes the mode's full vertical overscan, up to all 272 rows. */
 	/* NTSC (19 Oct 2026, John): standard overscan is only about 200 lines, which
 	 * crops games drawn to the screen edges. Take the mode's full vertical
 	 * overscan (OSCAN_MAX, about 240 lines; at most 240 here, centred in it)
@@ -523,10 +559,10 @@ int Sys_OpenDisplay(int cw, int ch, int hires)
 		struct DimensionInfo dims;
 		struct Rectangle mx;
 		if (GetDisplayInfoData(NULL, (UBYTE *)&dims, sizeof dims, DTAG_DIMS, modeid) > 0
-		 && dims.Nominal.MaxY - dims.Nominal.MinY + 1 < 256
+		 && (dims.Nominal.MaxY - dims.Nominal.MinY + 1 < 256 || Sys_TallScreen)
 		 && QueryOverscan(modeid, &mx, OSCAN_MAX) && mx.MaxY - mx.MinY > rect.MaxY - rect.MinY) {
-			int h = mx.MaxY - mx.MinY + 1, cut = 0;
-			if (h > 240) { cut = (h - 240) / 2; h = 240; }
+			int h = mx.MaxY - mx.MinY + 1, cut = 0, hmax = Sys_TallScreen ? ch : 240;
+			if (h > hmax) { cut = (h - hmax) / 2; h = hmax; }
 			rect.MinY = mx.MinY + cut;
 			rect.MaxY = rect.MinY + h - 1;
 			ntsc_max = 1;
@@ -540,6 +576,13 @@ int Sys_OpenDisplay(int cw, int ch, int hires)
 		(int)rect.MinX, (int)rect.MinY, (int)rect.MaxX, (int)rect.MaxY, SW, SH, cw, ch, (unsigned long)AvailMem(MEMF_CHIP));
 	XOFF = (cw - SW) / 2;
 	YOFF = (ch - SH) / 2;
+#ifdef YOFF7   /* opt-in: moves every PAL picture (Sonic too) up one line */
+	/* PAL 256-line screen (21 Oct 2026): the usual full-height Plus picture
+	 * (Sonic GX, Bomb Jack GX, Goldorak, Frogger, Picrocs ...) is drawn on
+	 * chunky rows 7-262, so centring (rows 8-263) lost its top line (Bomb Jack's
+	 * SIDE-ONE text tops) and showed an empty row 263. Rows 7-262 instead. */
+	if (!ntsc_max && ch - SH == 16) YOFF = 7;
+#endif
 
 	scr = OpenScreenTags(NULL,
 		SA_Width, SW, SA_Height, SH, SA_Depth, 8,
@@ -1320,6 +1363,16 @@ void Sys_AudioQueue(const unsigned char *s16, int samples)
 		memset(aud_buf[0][slot] + samples, samples ? aud_buf[0][slot][samples - 1] : 0, aud_n - samples);
 		memset(aud_buf[1][slot] + samples, samples ? aud_buf[1][slot][samples - 1] : 0, aud_n - samples);
 	}
+#ifdef SOUNDQ_DUMP
+	/* soundq verification builds only: every block as Paula gets it (left then
+	   right, 8-bit signed) to PROGDIR:audio.raw, to compare with the headless WAV */
+	{ static BPTR fh; static int tried;
+	  if (!tried) { tried = 1; fh = Open((STRPTR)"PROGDIR:audio.raw", MODE_NEWFILE); }
+	  if (fh) { Write(fh, aud_buf[0][slot], samples); Write(fh, aud_buf[1][slot], samples); Flush(fh); }
+	  { static BPTR f16; static int tried16;   /* and the core's 16-bit block (big-endian) */
+	    if (!tried16) { tried16 = 1; f16 = Open((STRPTR)"PROGDIR:audio16.raw", MODE_NEWFILE); }
+	    if (f16) { Write(f16, (APTR)s16, samples * 4); Flush(f16); } } }
+#endif
 	Disable();
 	aud_wr = (aud_wr + 1) % ABUFS;
 	aud_count++;

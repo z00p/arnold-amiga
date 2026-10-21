@@ -246,6 +246,57 @@ on a PiStorm runs the core up to 7% faster or slower with the code layout.
 Pixel-exact (headless checksums of the test set and whole-run frame
 checksums); on an A1200 PiStorm Sonic GX's spring frames lose about 2.4 ms."
 
+post bb00f26 arnold/src/cpc/arnold.c arnold/src/cpc/cpc.c arnold/src/cpc/z80/z80.c arnold/src/cpc/z80/z80.h arnold/src/cpc/z80/z80funcs.h
+commit "CRTC: register writes at their I/O cycle, not at the start of the OUT" "The CRTC was run after each whole Z80 instruction, so an OUT reached it at the
+start of the instruction, 2-4 us before its I/O cycle on the CPC. Pinball
+Dreams rewrites R0/R4/R5/R7/R9 several times a frame with 1-line rows; its R0
+write landed before the end of the line it was meant to follow, HCC ran on to
+255 and the frame lost sync (rolling picture, then a crash at ball launch).
+Z80_IO_AT(n) before each OUT/IN: the host's CPC_IOCatchUp runs the CRTC to the
+I/O cycle (CPCEC's NOP positions), the rest of the instruction afterwards.
+Only CRTC register writes are timed by default; IOTIME_ALL times every port.
+NO_IOTIME_FIX restores I/O at the start of the instruction."
+
+post 1eacab0 arnold/src/cpc/asic.c arnold/src/cpc/audioevent.c arnold/src/cpc/psgplay.c
+commit "Sound: AY rendering closer to the chip" "Measured against a reference AY render (and CPCEC): tones were point-sampled
+(aliasing), hardware envelopes ran an octave high and one-shot shapes
+restarted every 32 steps, the noise clocked at twice its rate, levels 0-2 and
+3-5 collapsed, tones were bipolar (6 dB louder than volume-register sound),
+the 16-bit conversion indexed a 32-entry table with the mixed byte (crackle on
+the loud negative peaks) and the first block was uninitialised. Each fix has
+its switch: NO_SNDAA (sub-sample averaging), NO_SNDENV_FIX, NO_SNDNOISE_FIX,
+NO_SNDLEVELS (0..124 levels), NO_SNDUNIPOLAR, NO_SNDLUT_FIX."
+
+post c0b5bd8 arnold/src/cpc/asic.c arnold/src/cpc/asic.h arnold/src/cpc/cpc.c arnold/src/cpc/crtc.c arnold/src/cpc/z80/z80.c arnold/src/cpc/z80/z80.h arnold/src/cpc/z80/z80macros.h
+commit "Plus: ASIC register writes at their write cycle, DMA at HSYNC start" "Memory-mapped ASIC writes (&6000-&7FFF and sprite pixels &4000-&4FFF) now
+take effect at the instruction's memory-write NOP (Z80_WriteNop, CPCEC's
+positions; PUSH writes the high byte first) instead of its start, like the
+CRTC writes. The Plus DMA runs at the start of HSYNC with its interrupt
+DMAPHASE_DELAY cycles later, not at the end of HSYNC: Sonic GX's interrupt
+code ran about 10 characters late against the beam. NO_ASICTIME,
+NO_ASICTIME_SPR, NO_DMAPHASE restore the old timing."
+
+post HEAD arnold/src/cpc/arnold.c arnold/src/cpc/asic.c arnold/src/cpc/asic.h arnold/src/cpc/cpc.c arnold/src/cpc/crtc.c arnold/src/cpc/hint.h arnold/src/cpc/render5.c arnold/src/cpc/z80/z80.c
+commit "Speed-ups for the Emu68 JIT (pixel-exact); I/O lead carried over" "Emu68 (PiStorm) guesses every branch at translation time (forward = not
+taken, backward = taken only within 128 bytes) and a wrong guess leaves the
+translated block. Hot paths are shaped for that: Plus cells and border cells
+with the visible range worked out once and short loops (NO_EMUBR), sprite
+cells inline (NO_SPRINL) and each line's sprite pixels composed once
+(NO_SPRLINE), branch hints in the main loop (NO_HINTS), each Z80 opcode
+ending with its own interrupt check (NO_Z80TAIL). Pixel-exact (headless
+checksums, whole-run frame checksums). Also: when an I/O or ASIC write is
+timed later than Arnold's instruction is long (LD (HL),n), the CRTC's lead is
+carried into the next instruction instead of a negative cycle count
+(NO_IOAHEAD_DEBT restores that)."
+
+post HEAD arnold/src/cpc/fdd.c arnold/src/cpc/fdd.h arnold/src/cpc/diskimage/diskimg.c
+commit "Disk drives: an 80-track image gets an 80-track drive" "Drive A is a 43-track 3\" drive, so the head stopped at track 42 on 80-track
+(3.5\") images: Pinball Dreams' Beat Box and Nightmare tables never loaded
+(CPCEC loads them). FDD_FitDiskTracks, called when a .dsk or extended .dsk is
+inserted: an image with more tracks than the drive gets an 80-track drive (up
+to 86 tracks), an image that fits keeps the drive's own count (A 43, B 80).
+NO_DSK80 restores the old behaviour."
+
 post HEAD arnold/src/cpc
 commit "Core: remaining changes" "Small changes made after the fixes above."
 

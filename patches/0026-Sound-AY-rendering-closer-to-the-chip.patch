@@ -1,0 +1,521 @@
+From 94012b9b30d1f010686ce16aeb972431d96c2208 Mon Sep 17 00:00:00 2001
+From: John Stringer <jcec_1@yahoo.co.uk>
+Date: Wed, 21 Oct 2026 20:34:30 +0100
+Subject: [PATCH 26/31] Sound: AY rendering closer to the chip
+
+Measured against a reference AY render (and CPCEC): tones were point-sampled
+(aliasing), hardware envelopes ran an octave high and one-shot shapes
+restarted every 32 steps, the noise clocked at twice its rate, levels 0-2 and
+3-5 collapsed, tones were bipolar (6 dB louder than volume-register sound),
+the 16-bit conversion indexed a 32-entry table with the mixed byte (crackle on
+the loud negative peaks) and the first block was uninitialised. Each fix has
+its switch: NO_SNDAA (sub-sample averaging), NO_SNDENV_FIX, NO_SNDNOISE_FIX,
+NO_SNDLEVELS (0..124 levels), NO_SNDUNIPOLAR, NO_SNDLUT_FIX.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ src/cpc/asic.c       |   4 +
+ src/cpc/audioevent.c |  74 +++++++++++++
+ src/cpc/psgplay.c    | 244 +++++++++++++++++++++++++++++++++++++++----
+ 3 files changed, 299 insertions(+), 23 deletions(-)
+
+diff --git a/src/cpc/asic.c b/src/cpc/asic.c
+index 5efd865..bd0c155 100644
+--- a/src/cpc/asic.c
++++ b/src/cpc/asic.c
+@@ -1994,7 +1994,11 @@ void    ASIC_DMA_ExecuteCommand(int ChannelIndex)
+                 PSG_RegisterSelect(Register);
+ 
+                 /* write data */
++#ifdef SOUNDQ_TRACE
++                { extern int SoundQ_FromDMA; SoundQ_FromDMA = 1; PSG_WriteData(Data); SoundQ_FromDMA = 0; }
++#else
+                 PSG_WriteData(Data);
++#endif
+ 
+                 /* select previous register again - not to upset other code */
+                 PSG_RegisterSelect(PreviousRegisterSelected);
+diff --git a/src/cpc/audioevent.c b/src/cpc/audioevent.c
+index 5dc04c8..fea20d2 100644
+--- a/src/cpc/audioevent.c
++++ b/src/cpc/audioevent.c
+@@ -26,6 +26,10 @@
+ 
+ #include "host.h"
+ 
++#ifndef NO_SNDAA
++extern unsigned long PSG_RenderSpan(unsigned long Span, unsigned long *pRight);
++#endif
++
+ void	Digiblaster_Reset(void);
+ 
+ int SamplesToGenerate;
+@@ -181,6 +185,12 @@ void    Audio_Init(int newFrequency, int newBitsPerSample, int newNoOfChannels)
+ 		AudioBufferSize = AudioBufSize;
+ 
+         NoOfSamplesInSampleBuffer = (int)SamplesPerScreen;
++#ifndef NO_SNDLUT_FIX
++        /* soundq (21 Oct 2026): the first block was converted with SamplesToGenerate
++           still 0 (it is set after the conversion), so the host got the buffer's
++           uninitialised memory (0xDEDE in WinUAE: a click/thump at the start) */
++        SamplesToGenerate = NoOfSamplesInSampleBuffer;
++#endif
+ 
+ 
+         /* allocate memory for sample buffer */
+@@ -393,6 +403,10 @@ char *AudioEvent_UpdateCycle(char *pAudioPtr)
+ 	/* store outputs */
+ 	pAudioPtr[0] = LeftVolume;
+ 	pAudioPtr[1] = RightVolume;
++#ifndef NO_SNDLUT_FIX
++	pAudioPtr[2] = 0;   /* no fraction (see AudioEvent_ConvertToOutputFormat_16BitStereo) */
++	pAudioPtr[3] = 0;
++#endif
+ /*	pAudioPtr[2] = Digiblaster_Volume; */
+ 	pAudioPtr+=4;
+ 
+@@ -493,11 +507,25 @@ void	AudioEvent_ConvertToOutputFormat_16BitStereo(char *pSrcBuffer, char *pDestB
+ 		PSG_RightVolume = pSrcAudioPtr[0];
+ 		pSrcAudioPtr+=3;
+ 		
++#ifndef NO_SNDLUT_FIX
++		/* soundq (21 Oct 2026): the mixed bytes are 4..252 (AudioEvent_UpdateCycle),
++		   but VolumeLookup16Bit has 32 entries. On the Amiga indices >= 32 read the
++		   next table in .bss (Digiblaster_Lookup16Bit, (i-32)<<7, linear by luck),
++		   and indices < 32 gave i<<10: loud negative peaks turned into big positive
++		   spikes (crackle when two loud channels on a side are low together). Now
++		   linear for all: byte << 7, plus the 7-bit fraction the sub-sample PSG
++		   render leaves in the spare bytes 2 and 3 (0 without it). 0..32383. */
++		pDestAudioPtr[0] = (unsigned short)((PSG_LeftVolume << 7) | (pSrcAudioPtr[-2] & 0x7f));
++		pDestAudioPtr++;
++		pDestAudioPtr[0] = (unsigned short)((PSG_RightVolume << 7) | (pSrcAudioPtr[-1] & 0x7f));
++		pDestAudioPtr++;
++#else
+ 		/* mix 8-bit stereo */
+ 		pDestAudioPtr[0] = VolumeLookup16Bit[PSG_LeftVolume];
+ 		pDestAudioPtr++;
+ 		pDestAudioPtr[0] = VolumeLookup16Bit[PSG_RightVolume];
+ 		pDestAudioPtr++;
++#endif
+ 	}
+ }
+ 
+@@ -526,7 +554,11 @@ void	AudioEvent_ConvertToOutputFormat_16BitMono(char *pSrcBuffer, char *pDestBuf
+ 		/* mix it */
+ 		PSG_Volume = (PSG_LeftVolume + PSG_RightVolume)>>1;
+ 
++#ifndef NO_SNDLUT_FIX
++		pDestAudioPtr[0] = (unsigned short)(PSG_Volume << 7);   /* see the stereo one */
++#else
+ 		pDestAudioPtr[0] = VolumeLookup16Bit[PSG_Volume];	/* + Digiblaster_Vol; */
++#endif
+ 		pDestAudioPtr++;
+ 	}
+ }
+@@ -754,9 +786,20 @@ int     AudioEvent_TraverseAudioEventsAndBuildSampleData(int CPCNopCount, int No
+         }
+ 
+ 		{
++#ifndef NO_SNDAA
++			/* soundq (21 Oct 2026, psgplay.c NO_SNDAA): an event splits its sample;
++			   the PSG is rendered up to the event, then from it, and the sample is
++			   the time-weighted average. SpanRecip turns the NOPs (16.16, >> 8)
++			   from the sample's start into a 16.16 fraction of the sample. */
++			unsigned long SpanRecip = (1UL<<28) / (unsigned long)(NopsPerSampleScaled.FixedPoint.L>>8);
++#endif
+ 			/* for each sample in sample buffer */
+ 			for (i=0; i<NoOfSamplesInSampleBuffer; i++)
+ 			{
++#ifndef NO_SNDAA
++				unsigned long AccL = 0, AccR = 0, SpanPos = 0, OutL, OutR;
++				int Split = 0;
++#endif
+ 				/* compare current NopCount to NopCount of next event */
+ 				/* if it is equal or greater, then we must perform this
+ 				event */
+@@ -769,6 +812,19 @@ int     AudioEvent_TraverseAudioEventsAndBuildSampleData(int CPCNopCount, int No
+ 					{
+ 						do
+ 						{
++#ifndef NO_SNDAA
++							{
++								unsigned long Fe = (((unsigned long)((NopOffset<<16) - NopCountBefore) >> 8) * SpanRecip) >> 12;
++								if (Fe > 0x0ffff) Fe = 0x0ffff;
++								if (Fe > SpanPos)
++								{
++									unsigned long L, R, Sp = Fe - SpanPos;
++									L = PSG_RenderSpan(Sp, &R);
++									AccL += L * Sp; AccR += R * Sp;
++									SpanPos = Fe; Split = 1;
++								}
++							}
++#endif
+ 							/* we need to perform this event */
+ 							switch (pCurrentEvent->Type)
+ 							{
+@@ -822,7 +878,25 @@ int     AudioEvent_TraverseAudioEventsAndBuildSampleData(int CPCNopCount, int No
+ 					}
+ 				}
+ 			
++#ifndef NO_SNDAA
++				if (!Split)
++					OutL = PSG_RenderSpan(0x10000, &OutR);
++				else
++				{
++					unsigned long L, R, Sp = 0x10000 - SpanPos;
++					L = PSG_RenderSpan(Sp, &R);
++					OutL = (AccL + L * Sp) >> 16;
++					OutR = (AccR + R * Sp) >> 16;
++				}
++				/* the mix (0..252) in byte 0/1, its 7-bit fraction in 2/3 */
++				pAudioPtr[0] = (char)(OutL >> 7);
++				pAudioPtr[1] = (char)(OutR >> 7);
++				pAudioPtr[2] = (char)(OutL & 0x7f);
++				pAudioPtr[3] = (char)(OutR & 0x7f);
++				pAudioPtr += 4;
++#else
+ 				pAudioPtr = (char *)AudioEvent_UpdateCycle(pAudioPtr);
++#endif
+             
+ 				NopCount.FixedPoint.L += NopsPerSampleScaled.FixedPoint.L;    
+ 			}
+diff --git a/src/cpc/psgplay.c b/src/cpc/psgplay.c
+index 229b009..94ac84c 100644
+--- a/src/cpc/psgplay.c
++++ b/src/cpc/psgplay.c
+@@ -34,6 +34,44 @@ static unsigned long             VolumeLookup8Bit[32];
+ 
+ static int PSGPlay_ChannelOutputVolumes[3];
+ 
++/* soundq (21 Oct 2026). Sound fixes, each with its NO_x switch:
++ * NO_SNDLEVELS   the AY's 16 levels as amplitudes 0..124 (the ayumi DAC curve x 124,
++ *                rounded). Arnold's table above is the same curve x 31 rounded, so
++ *                levels 0-2 and 3-5 were equal: volume-register sound (digi) lost
++ *                detail at low levels.
++ * NO_SNDENV_FIX  hardware envelope: patterns built per the datasheet (the decay table
++ *                was overwritten with the attack one, the pattern pointer was
++ *                shape x 48 in a table of 32-byte patterns, so shapes 11-15 read past
++ *                it), one-shot and hold shapes stay at their end level instead of
++ *                restarting every 32 steps, and the steps run at 1 MHz / (16 EP)
++ *                (they ran at the tone toggle rate, an octave high).
++ * NO_SNDUNIPOLAR a channel outputs 0 or its level, as the AY does (it was +- level
++ *                around the middle: tones 6 dB louder than volume-register sound).
++ *                The host removes the DC as the CPC's output capacitor does.
++ * NO_SNDNOISE_FIX the noise generator shifts at 1 MHz / (16 NP), once a period (it ran
++ *                twice as fast, and only on an odd count of periods in a sample).
++ * NO_SNDAA       each output sample is the average of the PSG output over its 45 us
++ *                (the time each tone is high, and register writes at their own time
++ *                within the sample) instead of one point: square waves no longer
++ *                alias, line-rate (15.6 kHz) volume writes no longer jitter. */
++#ifndef NO_SNDLEVELS
++static const int PSG_LevelAmp[16] = { 0, 1, 2, 3, 4, 6, 8, 13, 16, 25, 36, 46, 61, 79, 100, 124 };
++#else
++static const int PSG_LevelAmp[16] = { 0, 0, 0, 4, 4, 4, 8, 12, 16, 24, 32, 40, 56, 76, 96, 124 };
++#endif
++#ifndef NO_SNDUNIPOLAR
++/* channel output, 0..252: 4 + 0 or 2 x level */
++#define PSG_CHANNEL_OUT(On, Amp) ((On) ? 4 + 2 * (Amp) : 4)
++#else
++#define PSG_CHANNEL_OUT(On, Amp) ((On) ? 0x080 + (Amp) : 0x080 - (Amp))
++#endif
++#ifndef NO_SNDENV_FIX
++/* envelope patterns hold levels 0..15 */
++#define PSG_ENV_AMP(v) PSG_LevelAmp[v]
++#else
++#define PSG_ENV_AMP(v) VolumeLookup8Bit[v]
++#endif
++
+ typedef struct
+ {
+ 	/* tone period for this channel. Period is time for 1/2
+@@ -355,6 +393,28 @@ void	PSG_InitialiseEnvelopeShapes(void)
+ 
+ 
+ 
++#ifndef NO_SNDENV_FIX
++/* soundq: patterns rebuilt (see the top): 16 steps of the first ramp, then 16 of
++   what follows (level 0, the hold level, the same ramp or the reverse one) */
++static void PSG_RebuildEnvelopeShapes(void)
++{
++	int i, j;
++	for (i=0; i<16; i++)
++	{
++		unsigned char *d = &EnvelopePatterns[i*32];
++		int Up = (i & PSG_ENVELOPE_ATTACK) != 0;
++		for (j=0; j<16; j++) d[j] = Up ? j : 15-j;
++		for (j=0; j<16; j++)
++		{
++			if (!(i & PSG_ENVELOPE_CONTINUE)) d[16+j] = 0;
++			else if (i & PSG_ENVELOPE_HOLD) d[16+j] = (Up ^ ((i & PSG_ENVELOPE_ALTERNATE) != 0)) ? 15 : 0;
++			else if (i & PSG_ENVELOPE_ALTERNATE) d[16+j] = Up ? 15-j : j;
++			else d[16+j] = d[j];
++		}
++	}
++}
++#endif
++
+ static int EnvelopePhase = 0;
+ 
+ static FIXED_POINT16 EnvelopePeriodPosition;
+@@ -364,6 +424,9 @@ static char *pEnvelope = (char *)Attack;
+ static int EnvelopeVolume = 0;
+ static int CurrentEnvelope;
+ static FIXED_POINT16	EnvelopeUpdate;
++#ifndef NO_SNDENV_FIX
++static int EnvelopeRepeats;
++#endif
+ 
+ void	PSG_Envelope_Initialise(void)
+ {
+@@ -371,7 +434,15 @@ void	PSG_Envelope_Initialise(void)
+ 	
+ 	CurrentEnvelope = PSGPlay_Registers[13];
+ 	EnvelopeTimes16 = (CurrentEnvelope & 0x0f)<<4;
++#ifndef NO_SNDENV_FIX
++	pEnvelope = (char *)&EnvelopePatterns[EnvelopeTimes16<<1];   /* 32 bytes a shape */
++	/* continue without hold: the 32 steps repeat; else stay in the second half */
++	EnvelopeRepeats = (CurrentEnvelope & (PSG_ENVELOPE_CONTINUE|PSG_ENVELOPE_HOLD)) == PSG_ENVELOPE_CONTINUE;
++	EnvelopePeriodPosition.FixedPoint.L = 0;
++	EnvelopeVolume = pEnvelope[0];
++#else
+ 	pEnvelope = (char *)&EnvelopePatterns[EnvelopeTimes16 + (EnvelopeTimes16<<1)];
++#endif
+ 	EnvelopePhase = 0;
+ 	PositionInEnvelope = 0;
+ }
+@@ -401,7 +472,12 @@ void	PSG_Envelope_SetPeriod(void)
+ 	{
+ 		Period = 1;
+ 	}
++#ifndef NO_SNDENV_FIX
++	/* the envelope steps at 1 MHz / (16 EP), half the tone toggle rate (1 MHz / (8 TP)) */
++	EnvelopeUpdate.FixedPoint.L = Update.FixedPoint.L/(Period<<1);
++#else
+ 	EnvelopeUpdate.FixedPoint.L = Update.FixedPoint.L/Period;
++#endif
+ }
+ 
+ 
+@@ -426,6 +502,9 @@ static INLINE void	Envelope_Update(FIXED_POINT16 *pUpdate)
+ 	/* update position in envelope */
+ 	PositionInEnvelope = (PositionInEnvelope + NoOfCycles);
+ 
++#ifndef NO_SNDENV_FIX
++	if (PositionInEnvelope > 31 && !EnvelopeRepeats) PositionInEnvelope = 31;
++#endif
+ 	PositionInEnvelope = PositionInEnvelope & 0x1f;
+ 
+ 	EnvelopeVolume = pEnvelope[(EnvelopePhase<<4) + PositionInEnvelope];
+@@ -488,6 +567,14 @@ void	UpdateNoise(FIXED_POINT16 *pUpdate)
+ 	
+ 	NoisePeriodPosition.FixedPoint.L &= 0x0ffff;
+ 	
++#ifndef NO_SNDNOISE_FIX
++	if (NoOfCycles)
++	{
++		do NoiseChooseOutput(); while (--NoOfCycles > 0);
++		NoisePeriod.FixedPoint.L = NewNoisePeriod<<16;
++		NoiseUpdate.FixedPoint.L = NewNoiseUpdate.FixedPoint.L;
++	}
++#else
+ 	/* if odd, invert state, else keep state the same */
+ 	if (NoOfCycles & 0x01)
+ 	{
+@@ -495,7 +582,7 @@ void	UpdateNoise(FIXED_POINT16 *pUpdate)
+ 		NoisePeriod.FixedPoint.L = NewNoisePeriod<<16;
+ 		NoiseUpdate.FixedPoint.L = NewNoiseUpdate.FixedPoint.L;
+ 	}
+-	
++#endif
+ }
+ 
+ void	InitNoisePeriod(void)
+@@ -508,7 +595,13 @@ void	InitNoisePeriod(void)
+ 	}
+ 
+ 	NewNoisePeriod = Period;
+-	NewNoiseUpdate.FixedPoint.L = Update.FixedPoint.L/Period; 
++#ifndef NO_SNDNOISE_FIX
++	/* soundq: the noise shift register is clocked at 1 MHz / (16 NP), half the tone
++	   toggle rate (it ran at the toggle rate, and only on an odd count of periods) */
++	NewNoiseUpdate.FixedPoint.L = Update.FixedPoint.L/(Period<<1);
++#else
++	NewNoiseUpdate.FixedPoint.L = Update.FixedPoint.L/Period;
++#endif
+ }
+ 
+ static INLINE int	GetMixedOutputForChannel(int ChannelIndex)
+@@ -572,31 +665,12 @@ static INLINE int	GetFinalVolumeForChannel(int ChannelIndex)
+ 	if ((ChannelVolume & 0x010)!=0)
+ 	{
+ 		/* envelope controls volume */
+-		if (ChannelOutput==0x00)
+-		{
+-
+-			ChannelOutputVolume = (0x080 - VolumeLookup8Bit[EnvelopeVolume]);	
+-		}
+-		else
+-		{
+-			ChannelOutputVolume = (0x080 + VolumeLookup8Bit[EnvelopeVolume]);	
+-		}
+-
++		ChannelOutputVolume = PSG_CHANNEL_OUT(ChannelOutput!=0x00, PSG_ENV_AMP(EnvelopeVolume));
+ 	}
+ 	else
+ 	{
+ 		/* volume used is the programmed volume */
+-	
+-		if (ChannelOutput==0x00)
+-		{
+-
+-			ChannelOutputVolume = (0x080 - VolumeLookup8Bit[AY_VolumeTranslation[ChannelVolume]]);
+-		}
+-		else
+-		{
+-			ChannelOutputVolume = (0x080 + VolumeLookup8Bit[AY_VolumeTranslation[ChannelVolume]]);
+-		}
+-	
++		ChannelOutputVolume = PSG_CHANNEL_OUT(ChannelOutput!=0x00, PSG_LevelAmp[ChannelVolume & 0x0f]);
+ 	}
+ 	
+ 	/* return volume for that channel */
+@@ -627,12 +701,136 @@ PSG_OUTPUT_VOLUME		PSG_UpdateChannels(FIXED_POINT16 *pPeriodUpdate)
+ }
+ 
+ 
++#ifndef NO_SNDAA
++/* soundq: a per-sample step (16.16) scaled to a span of the sample (16.16, 1..0x10000);
++   the steps are below 2^19 */
++static INLINE unsigned long PSG_SpanStep(unsigned long Step, unsigned long Span)
++{
++	if (Span >= 0x10000) return Step;
++	return (Step * (Span >> 4)) >> 12;
++}
++
++/* advance a tone over the span; returns the share of it the output was high (0..32768) */
++static INLINE unsigned long PSG_ToneSpan(CHANNEL_PERIOD *pChannelPeriod, unsigned long Span)
++{
++	unsigned long u = PSG_SpanStep(pChannelPeriod->ToneUpdate.FixedPoint.L, Span);
++	unsigned long x0 = pChannelPeriod->PeriodPosition.FixedPoint.L & 0x0ffff;
++	unsigned long x1 = x0 + u;
++	unsigned long k = x1 >> 16, High, m;
++	int s = pChannelPeriod->WaveFormState != 0;
++
++	pChannelPeriod->PeriodPosition.FixedPoint.L = x1 & 0x0ffff;
++	if (k == 0) return s ? 32768 : 0;
++	/* k half periods end in the span: the first piece (to the first toggle) has
++	   state s, then k-1 whole ones alternating, then the last partial one */
++	if (k & 1) pChannelPeriod->WaveFormState ^= 0x0ff;
++	m = k - 1;
++	High = s ? 0x10000 - x0 : 0;
++	if (s ^ (int)(k & 1)) High += x1 & 0x0ffff;
++	High += (s ? (m >> 1) : ((m + 1) >> 1)) << 16;
++	return (High << 15) / u;   /* High <= u < 2^17 */
++}
++
++/* render the PSG over a span of an output sample: left and right (0..32256, 1/128 of
++   the 0..252 mix units), the average over the span */
++unsigned long PSG_RenderSpan(unsigned long Span, unsigned long *pRight)
++{
++	unsigned long Mixer = PSGPlay_Registers[7];
++	long Out[3];
++	unsigned long NoiseHigh;
++	int c;
++
++	/* envelope and noise: as PSG_UpdateChannels, the state at the span's end */
++	{
++		int NoOfCycles;
++		EnvelopePeriodPosition.FixedPoint.L += PSG_SpanStep(EnvelopeUpdate.FixedPoint.L, Span);
++		NoOfCycles = (EnvelopePeriodPosition.FixedPoint.L>>16);
++		EnvelopePeriodPosition.FixedPoint.L &= 0x0ffff;
++		if (NoOfCycles)
++		{
++			PositionInEnvelope += NoOfCycles;
++#ifndef NO_SNDENV_FIX
++			if (PositionInEnvelope > 31 && !EnvelopeRepeats) PositionInEnvelope = 31;
++#endif
++			PositionInEnvelope &= 0x1f;
++		}
++		EnvelopeVolume = pEnvelope[(EnvelopePhase<<4) + PositionInEnvelope];
++	}
++#ifndef NO_SNDNOISE_FIX
++	/* noise: the share of the span its output is high (0..32768), as for a tone */
++	{
++		unsigned long u = PSG_SpanStep(NoiseUpdate.FixedPoint.L, Span);
++		unsigned long x0 = NoisePeriodPosition.FixedPoint.L & 0x0ffff, x1 = x0 + u;
++		unsigned long k = x1 >> 16;
++		NoisePeriodPosition.FixedPoint.L = x1 & 0x0ffff;
++		if (k == 0)
++			NoiseHigh = NoiseOutput ? 32768 : 0;
++		else
++		{
++			unsigned long High = NoiseOutput ? 0x10000 - x0 : 0;
++			while (--k > 0) { NoiseChooseOutput(); if (NoiseOutput) High += 0x10000; }
++			NoiseChooseOutput();
++			if (NoiseOutput) High += x1 & 0x0ffff;
++			NoisePeriod.FixedPoint.L = NewNoisePeriod<<16;
++			NoiseUpdate.FixedPoint.L = NewNoiseUpdate.FixedPoint.L;
++			/* High <= u; u reaches 2^18 at NP 1 (keep High << 15 in 32 bits) */
++			NoiseHigh = u < 0x20000 ? (High << 15) / u : (High << 13) / (u >> 2);
++		}
++	}
++#else
++	{
++		int NoOfCycles;
++		NoisePeriodPosition.FixedPoint.L += PSG_SpanStep(NoiseUpdate.FixedPoint.L, Span);
++		NoOfCycles = NoisePeriodPosition.FixedPoint.L>>16;
++		NoisePeriodPosition.FixedPoint.L &= 0x0ffff;
++		if (NoOfCycles & 0x01)
++		{
++			NoiseChooseOutput();
++			NoisePeriod.FixedPoint.L = NewNoisePeriod<<16;
++			NoiseUpdate.FixedPoint.L = NewNoiseUpdate.FixedPoint.L;
++		}
++		NoiseHigh = NoiseOutput ? 32768 : 0;
++	}
++#endif
++	for (c = 0; c < 3; c++)
++	{
++		unsigned long On = PSG_ToneSpan(&ChannelPeriods[c], Span);   /* always: keeps the phase */
++		int Vol = PSGPlay_Registers[8+c];
++		long Amp = (Vol & 0x010) ? PSG_ENV_AMP(EnvelopeVolume) : PSG_LevelAmp[Vol & 0x0f];
++		if (Mixer & (1<<c)) On = 32768;                           /* tone off: high */
++		if (!(Mixer & (8<<c))) On = (On * NoiseHigh) >> 15;       /* noise on: high together */
++#ifndef NO_SNDUNIPOLAR
++		Out[c] = (4<<7) + ((Amp * (long)On) >> 7);
++#else
++		Out[c] = (0x080<<7) + ((Amp * ((long)On * 2 - 32768)) >> 8);
++#endif
++	}
++	*pRight = (unsigned long)(Out[2] + Out[1]) >> 1;
++	return (unsigned long)(Out[0] + Out[1]) >> 1;
++}
++#endif
++
+ void PSGPlay_Initialise(void)
+ {
+ 	PSG_InitialiseEnvelopeShapes();
++#ifndef NO_SNDENV_FIX
++	PSG_RebuildEnvelopeShapes();
++#endif
+ }
+ 
++#ifdef SOUNDQ_TRACE
++/* soundq (21 Oct 2026, analysis builds only): every PSG register write with
++ * its NOP time and source (1 = Plus DMA) to the file in $PSGTRACE */
++#include <stdio.h>
++#include <stdlib.h>
++int SoundQ_FromDMA;
++extern unsigned long CPC_GetNopCount(void);
++#endif
+ void PSGPlay_Write(int Register, int Data)
+ {
++#ifdef SOUNDQ_TRACE
++	{ static FILE *f; static int tried; if (!tried) { tried = 1; if (getenv("PSGTRACE")) f = fopen(getenv("PSGTRACE"), "w"); }
++	  if (f) fprintf(f, "%lu %d %d %d\n", CPC_GetNopCount(), SoundQ_FromDMA, Register, Data); }
++#endif
+ 	AudioEvent_AddEventToBuffer(AUDIO_EVENT_PSG, Register, Data);
+ }
+-- 
+2.50.0.windows.2
+

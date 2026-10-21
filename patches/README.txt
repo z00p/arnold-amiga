@@ -1,16 +1,16 @@
-Arnold for Amiga 0.5 - patch set and Amiga build
+Arnold for Amiga 0.9 - patch set and Amiga build
 =================================================
-20 October 2026.  Arnold (c) Kevin Thacker, GPL-2.0.  Amiga port by John Stringer.
+21 October 2026.  Arnold (c) Kevin Thacker, GPL-2.0.  Amiga port by John Stringer.
 
 This package holds the changes made to Arnold while porting it to 68k AmigaOS 3.x (AGA),
 as patches against the upstream source, plus a ready-to-run Amiga build.
 
-  patches/   26 patches (git format-patch) against rofl0r's GitHub mirror of Arnold,
+  patches/   31 patches (git format-patch) against rofl0r's GitHub mirror of Arnold,
              https://github.com/rofl0r/arnold, master at e5dce08
              ("fix prototype of LoadFile()", 4 Sep 2026)
   amiga/     the Amiga build: drawer Arnold with the program, icons, presets, the Plus
              system cartridge and a user README
-  source/    the complete source of this build (the upstream tree with all 26 patches
+  source/    the complete source of this build (the upstream tree with all 31 patches
              applied), for the GPL
 
 
@@ -20,8 +20,8 @@ Applying the patches
   git checkout e5dce08
   git am /path/to/patches/*.patch
 
-Each patch stands on its own and builds. Patches 1-24 touch only src/cpc (the core);
-25 adds src/amiga and 26 adds src/headless. The core changes are all marked "Amiga port"
+Each patch stands on its own and builds. Patches 1-29 touch only src/cpc (the core);
+30 adds src/amiga and 31 adds src/headless. The core changes are all marked "Amiga port"
 in comments, and every behaviour change can be switched off with a define (below).
 
 
@@ -118,11 +118,41 @@ More speed for slow hosts (pixel-exact; RGB output identical on every test cart)
        sprites that cover the column are visited (about 3 instead of 16 tests).
        SPR_PAD pads the code (Emu68 timing moves with the code layout); NO_SPRPAD.
 
+Timing and sound (behaviour changes, checked against CPCEC and a reference AY):
+
+ 0025  CRTC: register writes at their I/O cycle, not at the start of the OUT
+                                                             NO_IOTIME_FIX, IOTIME_ALL
+       An OUT reached the CRTC at the start of its instruction, 2-4 us early. Pinball
+       Dreams' R0 write then missed the end of a line and the frame lost sync (rolling
+       picture, crash at ball launch). Now plays like CPCEC.
+ 0026  Sound: AY rendering closer to the chip      NO_SNDAA, NO_SNDENV_FIX, NO_SNDLEVELS,
+                                          NO_SNDNOISE_FIX, NO_SNDUNIPOLAR, NO_SNDLUT_FIX
+       Averaged over each output sample (no aliasing), envelope rate and hold shapes,
+       noise rate, 0..124 levels, unipolar output, the 16-bit lookup (crackle).
+ 0027  Plus: ASIC register writes at their write cycle, DMA at HSYNC start
+                                                 NO_ASICTIME, NO_ASICTIME_SPR, NO_DMAPHASE
+       Sonic GX's interrupt code ran about 10 characters late against the beam.
+
+More speed, for the Emu68 JIT on a PiStorm (pixel-exact):
+
+ 0028  Speed-ups for the Emu68 JIT; I/O lead carried over
+                         NO_EMUBR, NO_SPRINL, NO_SPRLINE, NO_HINTS, NO_Z80TAIL,
+                         NO_IOAHEAD_DEBT
+       Hot loops shaped for Emu68's static branch guess, sprite pixels composed once a
+       line. With a recorded profile (gcc -fprofile-use) Sonic GX's whole-run core
+       time on an A1200 PiStorm fell from 12.5 to 8.7 ms a frame.
+
+Disk drives:
+
+ 0029  An 80-track image gets an 80-track drive                         NO_DSK80
+       Drive A was a 43-track 3" drive, so 3.5" images stopped at track 42 (Pinball
+       Dreams' Beat Box and Nightmare tables never loaded).
+
 Tools:
 
  0010  Diagnostics for hardware tracing (TRACE_HW, PAL_COUNT; off by default)
- 0025  AmigaOS host: Arnold for Amiga (src/amiga, built with bebbo's amiga-gcc)
- 0026  Headless test host (src/headless: frame checksums, PPM, key scripts, WAV,
+ 0030  AmigaOS host: Arnold for Amiga (src/amiga, built with bebbo's amiga-gcc)
+ 0031  Headless test host (src/headless: frame checksums, PPM, key scripts, WAV,
        disk insert / write-back / sector dumps)
 
 
@@ -146,8 +176,8 @@ How it was tested
 - Sonic GX and Ghosts'n Goblins GX were compared frame by frame with CPCEC (cngsoft).
   Caprice32 and MAME show the same Sonic GX corruption the old code had.
 - Amiga: WinUAE regression runs, and real hardware. An A1200 with a PiStorm32 (Emu68)
-  runs at full speed using 39-58% of the frame budget with sound. Sonic GX runs at 49 fps
-  without frame skip (78% of the frame time). BigMig (MiSTer) was also tested.
+  runs at full speed using 39-58% of the frame budget with sound. Sonic GX runs at 50 fps
+  without frame skip (about 60% of the frame time). BigMig (MiSTer) was also tested.
 
 
 Amiga build

@@ -1,0 +1,81 @@
+From 296d0e7ac6ff2efd135f060d8ee106f4f031cd91 Mon Sep 17 00:00:00 2001
+From: John Stringer <jcec_1@yahoo.co.uk>
+Date: Wed, 21 Oct 2026 20:34:32 +0100
+Subject: [PATCH 29/31] Disk drives: an 80-track image gets an 80-track drive
+
+Drive A is a 43-track 3" drive, so the head stopped at track 42 on 80-track
+(3.5") images: Pinball Dreams' Beat Box and Nightmare tables never loaded
+(CPCEC loads them). FDD_FitDiskTracks, called when a .dsk or extended .dsk is
+inserted: an image with more tracks than the drive gets an 80-track drive (up
+to 86 tracks), an image that fits keeps the drive's own count (A 43, B 80).
+NO_DSK80 restores the old behaviour.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ src/cpc/diskimage/diskimg.c |  2 ++
+ src/cpc/fdd.c               | 16 ++++++++++++++++
+ src/cpc/fdd.h               |  2 ++
+ 3 files changed, 20 insertions(+)
+
+diff --git a/src/cpc/diskimage/diskimg.c b/src/cpc/diskimage/diskimg.c
+index 863f2f3..855bd50 100644
+--- a/src/cpc/diskimage/diskimg.c
++++ b/src/cpc/diskimage/diskimg.c
+@@ -91,6 +91,7 @@ int     DiskImage_InsertDisk(int DriveID, const unsigned char *pDiskImage, const
+ 		DiskImage_ImageRecognised(DriveID,DISK_IMAGE_TYPE_STANDARD);
+ 
+ 		ExtDskInternal_Dsk2ExtDskInternal(&Drives[DriveID],pDiskImage, DiskImageLength);
++		FDD_FitDiskTracks(DriveID, pDiskImage[0x30]);   /* tracks in the image header (both formats) */
+ 
+ 		FDD_InsertDisk(DriveID, TRUE);
+ 		return ARNOLD_STATUS_OK;
+@@ -104,6 +105,7 @@ int     DiskImage_InsertDisk(int DriveID, const unsigned char *pDiskImage, const
+ 		DiskImage_ImageRecognised(DriveID,DISK_IMAGE_TYPE_EXTENDED);
+ 
+ 		ExtDskInternal_ExtDsk2ExtDskInternal(&Drives[DriveID],pDiskImage, DiskImageLength);
++		FDD_FitDiskTracks(DriveID, pDiskImage[0x30]);   /* tracks in the image header (both formats) */
+ 
+ 		FDD_InsertDisk(DriveID, TRUE);
+ 		return ARNOLD_STATUS_OK;
+diff --git a/src/cpc/fdd.c b/src/cpc/fdd.c
+index 3bbe72b..f377661 100644
+--- a/src/cpc/fdd.c
++++ b/src/cpc/fdd.c
+@@ -44,6 +44,22 @@ void	FDD_InitialiseAll(void)
+ }
+ 
+ 
++/* An image with more tracks than the drive has (Pinball Dreams: an 80-track
++ * 3.5" disk, Beat Box and Nightmare live past track 42) gets an 80-track
++ * drive, as a CPC with a 3.5" drive A (CPCEC's drives reach every track of
++ * the image). Images that fit keep the drive's own track count (A: 43). */
++static const unsigned long FDD_BaseTracks[2] = { 43, 80 };
++void	FDD_FitDiskTracks(int DriveIndex, int DiskTracks)
++{
++#ifndef NO_DSK80
++	FDD *theDrive = &drive[DriveIndex];
++	unsigned long n = FDD_BaseTracks[DriveIndex];
++	if (DiskTracks > (int)n) n = DiskTracks < 80 ? 80 : (DiskTracks > 86 ? 86 : DiskTracks);
++	theDrive->NumberOfTracks = n;
++	if (theDrive->CurrentTrack >= n) theDrive->CurrentTrack = n - 1;
++#endif
++}
++
+ /* perform the actual step */
+ void	FDD_PerformStep(unsigned long DriveIndex, signed int StepDirection)
+ {
+diff --git a/src/cpc/fdd.h b/src/cpc/fdd.h
+index 4f18eb1..83f61f3 100644
+--- a/src/cpc/fdd.h
++++ b/src/cpc/fdd.h
+@@ -71,5 +71,7 @@ unsigned long FDD_GetFlags(int DriveIndex);
+ void	FDD_SetMotorState(int DriveIndex, int State);
+ 
+ void	FDD_PerformStep(unsigned long DriveIndex, signed int StepDirection);
++/* NO_DSK80 (define): drive A stays a 43-track 3" drive whatever the image. */
++void	FDD_FitDiskTracks(int DriveIndex, int DiskTracks);
+ 
+ #endif
+-- 
+2.50.0.windows.2
+

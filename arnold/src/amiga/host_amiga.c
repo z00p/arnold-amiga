@@ -139,7 +139,12 @@ static void perf_report(FILE *f)
 	framelog_report(f);
 }
 
-static void script_setkey(int key, int down) { if (down) CPC_SetKey(key); else CPC_ClearKey(key); }
+static void host_key(int code, int down, int qual);
+static void script_setkey(int key, int down)
+{
+	if (key & KS_AMIGA) { host_key(key & 0x7f, down, 0); return; }   /* A:<key>: as if typed on the Amiga */
+	if (down) CPC_SetKey(key); else CPC_ClearKey(key);
+}
 
 static void script_snap(void)
 {
@@ -315,6 +320,68 @@ static int joykey(int code, int down)
 	return only;
 }
 
+/* Key remap (20 Oct 2026, John): Amiga key -> CPC key, from remap= in the prefs
+ * or a game's .prefs, or REMAP= (ToolType or argument), e.g. "RSHIFT:M,RALT:SPACE".
+ * The CPC has one Shift in its matrix, so this is how Right Shift can be a
+ * different key (Pinball Dreams: right flipper = M). A remapped key gives only
+ * its new key (it comes before the joy keys); no cost when nothing is remapped. */
+static char remap_str[128], global_remap[128];
+static short remap_key[128];
+static int remap_on;
+static const struct { const char *name; unsigned char code; } amiga_keys[] = {
+	{"LSHIFT", 0x60}, {"RSHIFT", 0x61}, {"CAPS", 0x62}, {"CTRL", 0x63}, {"LALT", 0x64}, {"RALT", 0x65},
+	{"LAMIGA", 0x66}, {"RAMIGA", 0x67}, {"SPACE", 0x40}, {"BACKSPACE", 0x41}, {"TAB", 0x42},
+	{"ENTER", 0x43}, {"RETURN", 0x44}, {"ESC", 0x45}, {"DEL", 0x46},
+	{"UP", 0x4c}, {"DOWN", 0x4d}, {"RIGHT", 0x4e}, {"LEFT", 0x4f}, {NULL, 0} };
+static int amiga_key_code(const char *s)
+{
+	int i, id;
+	for (i = 0; amiga_keys[i].name; i++) if (!strcmp(amiga_keys[i].name, s)) return amiga_keys[i].code;
+	if (s[0] == 'F' && s[1] >= '1' && s[1] <= '9') { i = atoi(s + 1); if (i >= 1 && i <= 10) return 0x50 + i - 1; }
+	if (strlen(s) == 1 && ((s[0] >= 'A' && s[0] <= 'Z') || (s[0] >= '0' && s[0] <= '9'))) {
+		id = KeyScript_KeyId(s);   /* a letter or digit: where the Amiga has that CPC key */
+		for (i = 1; i < 0x40; i++) if (rawmap[i] == id) return i;
+	}
+	return -1;
+}
+static void remap_parse(const char *str)
+{
+	char buf[128], *p, *c;
+	int i, a, k;
+	for (i = 0; i < 128; i++) remap_key[i] = -1;
+	remap_on = 0;
+	strncpy(remap_str, str, sizeof remap_str - 1); remap_str[sizeof remap_str - 1] = 0;
+	strcpy(buf, remap_str);
+	for (p = buf; *p; p++) if (*p >= 'a' && *p <= 'z') *p -= 32;
+	for (p = strtok(buf, ", "); p; p = strtok(NULL, ", ")) {
+		c = strchr(p, ':'); if (!c) continue; *c++ = 0;
+		a = amiga_key_code(p); k = KeyScript_KeyId(c);
+		if (a < 0 || k < 0) { Sys_Log("remap: can't map '%s:%s'", p, c); continue; }
+		remap_key[a] = k; remap_on = 1;
+	}
+}
+
+static void host_key(int code, int down, int qual)
+{
+	if (keylog) { fprintf(keylog, "%02x %s q=%04x\n", code, down ? "down" : "up", qual); fflush(keylog); }
+	if (code == RAW_HELP) { if (down) Sys_RequestQuit(); return; }
+	if (code >= 128) return;
+	if (remap_on && remap_key[code] >= 0) { if (down) CPC_SetKey(remap_key[code]); else CPC_ClearKey(remap_key[code]); return; }
+	if (joykey(code, down)) return;
+	if (menu.running_model == SYS_MODEL_GX4000) return;   /* the console has no keyboard */
+	if (code == 0x0d) {
+		/* the Amiga's \ key: plain = the CPC's \, with Shift = the CPC's |
+		 * (Shift+@), which RSX commands such as |CPM and Orion Prime's loader
+		 * need (17 Oct 2026). Both cleared on release. */
+		if (down) CPC_SetKey((qual & 3) ? CPC_KEY_AT : CPC_KEY_BACKSLASH);
+		else { CPC_ClearKey(CPC_KEY_AT); CPC_ClearKey(CPC_KEY_BACKSLASH); }
+		return;
+	}
+	if (rawmap[code] >= 0) {
+		if (down) CPC_SetKey(rawmap[code]); else CPC_ClearKey(rawmap[code]);
+	}
+}
+
 BOOL Host_ProcessSystemEvents(void)
 {
 	int code, down, qual;
@@ -345,23 +412,7 @@ BOOL Host_ProcessSystemEvents(void)
 	}
 	if (help_after > 0 && --help_after == 0) Sys_RequestQuit();
 	if (Sys_Poll()) return TRUE;
-	while (Sys_GetKey(&code, &down, &qual)) {
-		if (keylog) { fprintf(keylog, "%02x %s q=%04x\n", code, down ? "down" : "up", qual); fflush(keylog); }
-		if (code == RAW_HELP) { if (down) Sys_RequestQuit(); continue; }
-		if (code < 128 && joykey(code, down)) continue;
-		if (menu.running_model == SYS_MODEL_GX4000) continue;   /* the console has no keyboard */
-		if (code == 0x0d) {
-			/* the Amiga's \ key: plain = the CPC's \, with Shift = the CPC's |
-			 * (Shift+@), which RSX commands such as |CPM and Orion Prime's loader
-			 * need (17 Oct 2026). Both cleared on release. */
-			if (down) CPC_SetKey((qual & 3) ? CPC_KEY_AT : CPC_KEY_BACKSLASH);
-			else { CPC_ClearKey(CPC_KEY_AT); CPC_ClearKey(CPC_KEY_BACKSLASH); }
-			continue;
-		}
-		if (code < 128 && rawmap[code] >= 0) {
-			if (down) CPC_SetKey(rawmap[code]); else CPC_ClearKey(rawmap[code]);
-		}
-	}
+	while (Sys_GetKey(&code, &down, &qual)) host_key(code, down, qual);
 	joy = Sys_ReadJoystick() | kb_joy;
 	diff = joy ^ joy_prev;
 	if (keylog && diff) { fprintf(keylog, "joy %02x raw %08lx\n", joy, Sys_JoyRaw(1)); fflush(keylog); }
@@ -418,7 +469,7 @@ static int has_ext(const char *n, const char *ext)
 	return 1;
 }
 
-/* Arnold [file ...] [NOSOUND] [HIRES] [MENU] [P=prefs] [SKIP=n] [REFRESH=n] [JOYKEYS=0|1|2]
+/* Arnold [file ...] [NOSOUND] [HIRES] [TALL] [MENU] [P=prefs] [SKIP=n] [REFRESH=n] [JOYKEYS=0|1|2]
  * [PAD=0|CD32] [SPEED=50|DISPLAY] [VIDEO=AUTO|PAL|NTSC] [MODEL=464|664|6128|PLUS|GX4000]: .cpr cartridge (default
  * PROGDIR:roms/system.cpr), .dsk disk in drive A (a second one in B), .sna
  * snapshot. Starts straight into the emulation unless MENU is given or
@@ -437,9 +488,11 @@ static void prefs_load(void)
 		v = strchr(line, '='); if (!v) continue; *v++ = 0;
 		if (!strcmp(line, "sound")) menu.sound = atoi(v);
 		else if (!strcmp(line, "hires")) menu.hires = atoi(v);
+		else if (!strcmp(line, "tall")) menu.tall = atoi(v);
 		else if (!strcmp(line, "skip")) skip_max = atoi(v);
 		else if (!strcmp(line, "refresh")) refresh = atoi(v);
 		else if (!strcmp(line, "joykeys")) joykeys = atoi(v);
+		else if (!strcmp(line, "remap")) remap_parse(v);
 		else if (!strcmp(line, "pad")) Sys_PadType = atoi(v) == 1;
 		else if (!strcmp(line, "speed")) { int k = Sys_ParseSpeed(v); if (k >= 0) menu.speed = k; }
 		else if (!strcmp(line, "video")) { int k = Sys_ParseVideo(v); if (k >= 0) menu.video = k; }
@@ -460,20 +513,31 @@ static void prefs_save(void)
 		menu.sound, menu.hires, skip_max, refresh, global_joykeys, Sys_PadType,
 		Sys_SpeedNames[menu.speed ? 1 : 0], Sys_VideoNames[menu.video >= 0 && menu.video <= 2 ? menu.video : 0],
 		Sys_ModelNames[menu.model >= 0 && menu.model < SYS_MODELS ? menu.model : SYS_MODEL_PLUS], menu.cart, menu.diska, menu.diskb);
+	fprintf(f, "tall=%d\n", menu.tall);
+	if (global_remap[0]) fprintf(f, "remap=%s\n", global_remap);
 	fclose(f);
 }
 
-/* Per-game settings: <cartridge>.prefs beside the file (sound, hires), applied
- * when that cartridge is powered on; the global prefs come back otherwise. */
-static int global_sound, global_hires;
-static void game_prefs_name(char *out) { sprintf(out, "%s.prefs", menu.cart); }
+/* Per-game settings: <cartridge>.prefs beside the file (sound, hires, joy keys,
+ * full height, key remap), applied when that game is powered on; the global
+ * prefs come back otherwise. A disk game (the Plus with the system cartridge,
+ * or a plain CPC, with a disk in drive A) uses <disk A>.prefs (20 Oct 2026). */
+static int global_sound, global_hires, global_tall;
+static void game_prefs_name(char *out)
+{
+	const char *c = menu.cart, *e = c + strlen(c);
+	int plus = menu.model == SYS_MODEL_PLUS || menu.model == SYS_MODEL_GX4000;
+	int system = e - c >= 10 && !kwcmp(e - 10, "SYSTEM.CPR");
+	sprintf(out, "%s.prefs", menu.diska[0] && (!plus || system) ? menu.diska : menu.cart);
+}
 
 static void game_prefs_apply(void)
 {
 	char name[SYS_PATH + 8], line[64], *v;
 	FILE *f;
-	menu.sound = global_sound; menu.hires = global_hires; menu.game_prefs = 0;
+	menu.sound = global_sound; menu.hires = global_hires; menu.game_prefs = 0; menu.tall = global_tall;
 	joykeys = global_joykeys;
+	if (strcmp(remap_str, global_remap)) remap_parse(global_remap);
 	game_prefs_name(name);
 	f = fopen(name, "r");
 	if (!f) return;
@@ -483,6 +547,8 @@ static void game_prefs_apply(void)
 		if (!strcmp(line, "sound")) menu.sound = atoi(v);
 		else if (!strcmp(line, "hires")) menu.hires = atoi(v);
 		else if (!strcmp(line, "joykeys")) joykeys = atoi(v);
+		else if (!strcmp(line, "tall")) menu.tall = atoi(v);
+		else if (!strcmp(line, "remap")) remap_parse(v);
 	}
 	fclose(f);
 	menu.game_prefs = 1;
@@ -495,7 +561,8 @@ static void game_prefs_save(void)
 	game_prefs_name(name);
 	f = fopen(name, "w");
 	if (!f) { sprintf(msg, "Can't write game settings\n%s", name); Sys_MenuError(msg); return; }
-	fprintf(f, "; Arnold game settings\nsound=%d\nhires=%d\njoykeys=%d\n", menu.sound, menu.hires, joykeys);
+	fprintf(f, "; Arnold game settings\nsound=%d\nhires=%d\njoykeys=%d\ntall=%d\n", menu.sound, menu.hires, joykeys, menu.tall);
+	if (remap_str[0]) fprintf(f, "remap=%s\n", remap_str);
 	fclose(f);
 	menu.game_prefs = 1;
 }
@@ -506,7 +573,8 @@ static void game_prefs_forget(void)
 	game_prefs_name(name);
 	remove(name);
 	menu.game_prefs = 0;
-	menu.sound = global_sound; menu.hires = global_hires; joykeys = global_joykeys;
+	menu.sound = global_sound; menu.hires = global_hires; joykeys = global_joykeys; menu.tall = global_tall;
+	remap_parse(global_remap);
 }
 
 static int load_media(const char *what, const char *name, unsigned char **pp, unsigned long *pl)
@@ -634,6 +702,7 @@ static int open_emulation(void)
 	/* HIRES: 768-pixel lines (CPC mode 2 at full width) on a hires screen; the
 	 * default halves them to 384 for a lores screen (modes 0 and 1 exact). */
 	if (display_open) { Sys_CloseDisplay(); display_open = 0; }
+	Sys_TallScreen = menu.tall;   /* TALL: all 272 lines (amiga_sys.c) */
 	Render_SetRenderingAccuracyForWindowedMode(menu.hires ? RENDERING_ACCURACY_HIGH : RENDERING_ACCURACY_LOW);
 	if (!Render_SetDisplayWindowed()) { Sys_MenuError("Can't open the AGA screen"); return 0; }
 	/* Timing (19 Oct 2026). A 50 Hz display: one CPC frame per VBlank and Paula
@@ -670,9 +739,10 @@ int main(int argc, char **argv)
 {
 	unsigned char *data; unsigned long len;
 	const char *sna = NULL;
-	int i, want_menu = 0, ndisk = 0, action, nosound = 0, hires = 0, media_given = 0;
+	int i, want_menu = 0, ndisk = 0, action, nosound = 0, hires = 0, tall = 0, media_given = 0;
 	struct SysStart st;
 
+	KeyScript_AmigaKey = amiga_key_code;   /* before KEYS= loads a script */
 	strcpy(menu.cart, "PROGDIR:roms/system.cpr");
 	strcpy(menu.prefs, "PROGDIR:Arnold.prefs");
 	menu.sound = 1;
@@ -685,9 +755,11 @@ int main(int argc, char **argv)
 		if (st.prefs[0]) strncpy(menu.prefs, st.prefs, SYS_PATH - 1);
 		want_menu = st.menu; nosound = st.nosound; hires = st.hires;
 		prefs_load();
+		if (st.tall) menu.tall = 1;
 		if (st.skip >= 0) skip_max = st.skip;
 		if (st.refresh > 0) refresh = st.refresh;
 		if (st.joykeys >= 0) joykeys = st.joykeys;
+		if (st.remap[0]) remap_parse(st.remap);
 		if (st.pad >= 0) Sys_PadType = st.pad;
 		if (st.speed >= 0) menu.speed = st.speed;
 		if (st.video >= 0) menu.video = st.video;
@@ -714,6 +786,7 @@ int main(int argc, char **argv)
 			else if (!kwncmp(argv[i], "SKIP=", 5)) skip_max = atoi(argv[i] + 5);
 			else if (!kwncmp(argv[i], "REFRESH=", 8)) refresh = atoi(argv[i] + 8);
 			else if (!kwncmp(argv[i], "JOYKEYS=", 8)) joykeys = atoi(argv[i] + 8);
+			else if (!kwncmp(argv[i], "REMAP=", 6)) remap_parse(argv[i] + 6);
 			else if (!kwcmp(argv[i], "CD32") || !kwcmp(argv[i], "PAD=CD32") || !kwcmp(argv[i], "PAD=1")) Sys_PadType = 1;
 			else if (!kwcmp(argv[i], "PAD=0") || !kwcmp(argv[i], "PAD=STANDARD")) Sys_PadType = 0;
 			else if (!kwncmp(argv[i], "SPEED=", 6)) { int k = Sys_ParseSpeed(argv[i] + 6); if (k >= 0) menu.speed = k; }
@@ -729,6 +802,7 @@ int main(int argc, char **argv)
 			else if (!kwncmp(argv[i], "KEYS=", 5)) { if (KeyScript_Load(argv[i] + 5) >= 0) script_on = 1; }
 			else if (!kwncmp(argv[i], "SNAPDIR=", 8)) strncpy(snapdir, argv[i] + 8, SYS_PATH - 1);
 			else if (!kwcmp(argv[i], "HIRES")) hires = 1;
+			else if (!kwcmp(argv[i], "TALL")) tall = 1;
 			else if (!kwcmp(argv[i], "MENU")) want_menu = 1;
 			else if (!kwncmp(argv[i], "HELPAFTER=", 10)) help_after = atol(argv[i] + 10);
 			else if (!kwncmp(argv[i], "P=", 2)) ;
@@ -743,7 +817,9 @@ int main(int argc, char **argv)
 	if (script_on) Sys_MakeDir(snapdir);
 	if (nosound) menu.sound = 0;
 	if (hires) menu.hires = 1;
+	if (tall) menu.tall = 1;
 	global_sound = menu.sound; global_hires = menu.hires; global_joykeys = joykeys;
+	global_tall = menu.tall; strcpy(global_remap, remap_str);
 	if (!CPCEmulation_CheckEndianness()) { Sys_MenuError("Endianness check failed"); return 10; }
 	CPC_Initialise();
 	/* the test-mode label's colour: an entry the core leaves alone */
@@ -768,8 +844,8 @@ int main(int argc, char **argv)
 			{ extern unsigned long Sys_AudioIrqs(void); Sys_Log("menu action %d (audio interrupts so far %lu)", action, Sys_AudioIrqs()); }
 			if (action != SYS_MENU_POWER && action != SYS_MENU_RESET && action != SYS_MENU_CONTINUE) Sys_MenuClose();
 			if (action == SYS_MENU_QUIT) break;
-			if (!menu.game_prefs) { global_sound = menu.sound; global_hires = menu.hires; global_joykeys = joykeys; }
-			if (action == SYS_MENU_SAVE) { int gs = menu.sound, gh = menu.hires; if (menu.game_prefs) { menu.sound = global_sound; menu.hires = global_hires; } else global_joykeys = joykeys; prefs_save(); menu.sound = gs; menu.hires = gh; continue; }
+			if (!menu.game_prefs) { global_sound = menu.sound; global_hires = menu.hires; global_joykeys = joykeys; global_tall = menu.tall; }
+			if (action == SYS_MENU_SAVE) { int gs = menu.sound, gh = menu.hires, gt = menu.tall; if (menu.game_prefs) { menu.sound = global_sound; menu.hires = global_hires; menu.tall = global_tall; } else global_joykeys = joykeys; prefs_save(); menu.sound = gs; menu.hires = gh; menu.tall = gt; continue; }
 			if (action == SYS_MENU_SAVEGAME) { game_prefs_save(); continue; }
 			if (action == SYS_MENU_FORGETGAME) { game_prefs_forget(); continue; }
 			if (action == SYS_MENU_SHOT) { screenshot(); continue; }

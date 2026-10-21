@@ -6,7 +6,9 @@
  * counted from power on; hold defaults to 5 frames. '#' starts a comment.
  * Keys: CPC names (SPACE LEFT RIGHT UP DOWN RETURN ENTER ESC TAB DEL CLR SHIFT
  * CTRL COPY CAPS F0-F9 FDOT, 0-9, A-Z, - ^ @ [ ] ; : , . / \) and the joystick
- * (JOYUP JOYDOWN JOYLEFT JOYRIGHT FIRE1 FIRE2). Plain C, no OS calls. */
+ * (JOYUP JOYDOWN JOYLEFT JOYRIGHT FIRE1 FIRE2). A:<name> is an Amiga key (A:RSHIFT),
+ * passed through the host's keyboard translation (key remap, joy keys) when
+ * the host sets KeyScript_AmigaKey. Plain C, no OS calls. */
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -40,9 +42,12 @@ static const int letters[26] = { CPC_KEY_A, CPC_KEY_B, CPC_KEY_C, CPC_KEY_D, CPC
 	CPC_KEY_P, CPC_KEY_Q, CPC_KEY_R, CPC_KEY_S, CPC_KEY_T, CPC_KEY_U, CPC_KEY_V, CPC_KEY_W, CPC_KEY_X,
 	CPC_KEY_Y, CPC_KEY_Z };
 
+int (*KeyScript_AmigaKey)(const char *name);   /* host: Amiga key name -> rawkey, -1 unknown */
+
 static int keyid(const char *s)
 {
 	int i;
+	if (s[0] == 'A' && s[1] == ':' && KeyScript_AmigaKey) { i = KeyScript_AmigaKey(s + 2); return i < 0 ? -1 : KS_AMIGA | i; }
 	if (strlen(s) == 1) {
 		if (isdigit((unsigned char)s[0])) return digits[s[0] - '0'];
 		if (isalpha((unsigned char)s[0])) return letters[toupper((unsigned char)s[0]) - 'A'];
@@ -50,6 +55,8 @@ static int keyid(const char *s)
 	for (i = 0; names[i].name; i++) if (!strcmp(names[i].name, s)) return names[i].key;
 	return -1;
 }
+
+int KeyScript_KeyId(const char *s) { return keyid(s); }
 
 static long timeval(const char *s)      /* "30s", "5.2s" or "1500" -> frames; no strtod (libnix) */
 {

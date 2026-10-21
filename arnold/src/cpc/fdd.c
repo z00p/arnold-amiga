@@ -44,6 +44,22 @@ void	FDD_InitialiseAll(void)
 }
 
 
+/* An image with more tracks than the drive has (Pinball Dreams: an 80-track
+ * 3.5" disk, Beat Box and Nightmare live past track 42) gets an 80-track
+ * drive, as a CPC with a 3.5" drive A (CPCEC's drives reach every track of
+ * the image). Images that fit keep the drive's own track count (A: 43). */
+static const unsigned long FDD_BaseTracks[2] = { 43, 80 };
+void	FDD_FitDiskTracks(int DriveIndex, int DiskTracks)
+{
+#ifndef NO_DSK80
+	FDD *theDrive = &drive[DriveIndex];
+	unsigned long n = FDD_BaseTracks[DriveIndex];
+	if (DiskTracks > (int)n) n = DiskTracks < 80 ? 80 : (DiskTracks > 86 ? 86 : DiskTracks);
+	theDrive->NumberOfTracks = n;
+	if (theDrive->CurrentTrack >= n) theDrive->CurrentTrack = n - 1;
+#endif
+}
+
 /* perform the actual step */
 void	FDD_PerformStep(unsigned long DriveIndex, signed int StepDirection)
 {

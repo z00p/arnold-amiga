@@ -50,8 +50,35 @@ unsigned char *ASIC_GetRamPtr(void);
 
 
 unsigned long ASIC_BuildDisplayReturnMaskWithPixels(int Line, int HCount, /*int MonitorHorizontalCount, int ActualY,*/ int *pPixels);
+#if defined(NO_SPREVEN) || defined(NO_SPRCOL) || defined(NO_C) || defined(SPREVEN_CHECK)
+#ifndef NO_SPRINL
+#define NO_SPRINL	/* needs the even merge, the column sets and the column mask */
+#endif
+#endif
+#ifndef NO_SPRINL
+void ASIC_SpriteCellEven(int Line, int HCount, unsigned char *pCell, const signed int *pRemap);
+#endif
+#if defined(NO_SPRINL) && !defined(NO_SPRLINE)
+#define NO_SPRLINE	/* builds on the inline sprite cells */
+#endif
+#ifndef NO_SPRLINE
+extern unsigned char ASIC_LineBuf[64 * 8];
+extern int ASIC_LineBufOK;
+extern unsigned long ASIC_LineBufLine;
+void ASIC_ComposeLine(unsigned long Line);
+#endif
 
 void    ASIC_DoDMA(void);
+#if (defined(NO_PRI_FIX) || defined(NO_DMA_STAGGER)) && !defined(NO_DMAPHASE)
+#define NO_DMAPHASE   /* needs the HSYNC-start hook and the stagger countdown */
+#endif
+#ifndef NO_DMAPHASE
+/* asictime: DMA interrupts are raised this many cycles after HSYNC starts (asic.c) */
+#ifndef DMAPHASE_DELAY
+#define DMAPHASE_DELAY 2
+#endif
+int     CRTC_HSyncCount(void);
+#endif
 #ifndef NO_DMA_STAGGER
 /* Amiga port: DMA interrupts raised a microsecond per lower channel later */
 extern int ASIC_DMA_IntPending;

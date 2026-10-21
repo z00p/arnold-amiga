@@ -1,7 +1,7 @@
-From 48b9a960f55aade65834df1d8390055876c8383d Mon Sep 17 00:00:00 2001
+From ef1ffe4af8cc0e1887813fe1b5a0def1c882efbd Mon Sep 17 00:00:00 2001
 From: John Stringer <jcec_1@yahoo.co.uk>
-Date: Tue, 20 Oct 2026 20:42:07 +0100
-Subject: [PATCH 02/26] render: optional hook telling the host which lines
+Date: Wed, 21 Oct 2026 20:34:17 +0100
+Subject: [PATCH 02/31] render: optional hook telling the host which lines
  changed
 
 Render_LineChangedHook (NULL by default: unchanged behaviour). When a host
