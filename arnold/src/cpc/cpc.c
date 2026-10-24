@@ -3225,3 +3225,7 @@ void	CPC_UpdateColours(void)
 	}
 }
 
+
+/* Amiga port (tape, 24 Oct 2026): the cassette motor bit as last written.
+   At the end of the file so the PGO profile still matches every other function. */
+int	CPC_GetTapeMotor(void) { return (PPI_CurrentPortC & 0x010)!=0; }

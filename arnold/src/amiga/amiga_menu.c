@@ -29,6 +29,7 @@
 #include <string.h>
 #include "amiga_sys.h"
 #include "amiga_logo.h"
+#include "keymaplogic.h"
 
 struct Library *GadToolsBase, *AslBase;
 int Sys_MenuKeyLog;   /* host sets it with KEYLOG: raw keys seen by the menu go to PROGDIR:menukeys.log */
@@ -36,13 +37,16 @@ static FILE *mkeylog;
 
 enum { G_CART, G_CARTLOAD, G_CARTEJECT, G_DISKA, G_DISKALOAD, G_DISKAEJECT,
        G_DISKB, G_DISKBLOAD, G_DISKBEJECT,
+       G_TAPE, G_TAPELOAD, G_TAPEEJECT, G_TAPEREW,
        G_POWER, G_RESET, G_CONTINUE, G_QUIT, G_MODEL, G_VIDEO, G_SPEED, G_COUNT };
 
 /* menu item ids (nm_UserData) */
 enum { M_NONE, M_LOADCART, M_LOADA, M_LOADB, M_EJECTALL, M_KEYS, M_SHOT, M_SAVE, M_SAVEGAME, M_FORGETGAME, M_QUIT,
        M_SOUND, M_HIRES, M_SKIP0, M_SKIP1, M_SKIP2, M_SKIP3, M_SKIP5, M_REF1, M_REF2, M_REF3, M_REF4,
        M_JOY0, M_JOY1, M_JOY2, M_PAD0, M_PAD1, M_SPEED50, M_SPEEDDISP,
-       M_VIDAUTO, M_VIDPAL, M_VIDNTSC, M_TALL, M_MODEL464, M_MODEL664, M_MODEL6128, M_MODELPLUS, M_MODELGX };
+       M_VIDAUTO, M_VIDPAL, M_VIDNTSC, M_TALL, M_WIDE, M_DISKWRITE, M_MODEL464, M_MODEL664, M_MODEL6128, M_MODELPLUS, M_MODELGX,
+       M_LOADTAPE, M_REWIND, M_FASTTAPE, M_KEYEDIT, M_KEYMAPSUB, M_PRESET0 };   /* M_PRESET0 last: the presets follow it */
+#define MAXPRESETS 12   /* menu entries for KeyMap_Presets (keymaplogic.c) */
 #define MENU_REOPEN (-2)   /* menu_pick: the video mode changed, open the screen again */
 
 /* Pens of the 16-colour menu screen (16 Oct 2026, styled after the OS 3.2
@@ -88,13 +92,15 @@ static struct NewMenu nm[] = {
 	{ NM_ITEM, (STRPTR)"Load cartridge...", (STRPTR)"C", 0, 0, (APTR)M_LOADCART },
 	{ NM_ITEM, (STRPTR)"Load disk A...", (STRPTR)"A", 0, 0, (APTR)M_LOADA },
 	{ NM_ITEM, (STRPTR)"Load disk B...", (STRPTR)"B", 0, 0, (APTR)M_LOADB },
+	{ NM_ITEM, (STRPTR)"Load tape...", (STRPTR)"T", 0, 0, (APTR)M_LOADTAPE },
+	{ NM_ITEM, (STRPTR)"Rewind tape", (STRPTR)"W", 0, 0, (APTR)M_REWIND },
 	{ NM_ITEM, (STRPTR)"Eject all", NULL, 0, 0, (APTR)M_EJECTALL },
 	{ NM_ITEM, NM_BARLABEL, NULL, 0, 0, NULL },
 	{ NM_ITEM, (STRPTR)"Keyboard map...", (STRPTR)"K", 0, 0, (APTR)M_KEYS },
 	{ NM_ITEM, (STRPTR)"Screenshot", (STRPTR)"X", 0, 0, (APTR)M_SHOT },
 	{ NM_ITEM, NM_BARLABEL, NULL, 0, 0, NULL },
 	{ NM_ITEM, (STRPTR)"Save Prefs", (STRPTR)"S", 0, 0, (APTR)M_SAVE },
-	{ NM_ITEM, (STRPTR)"Save for game", NULL, 0, 0, (APTR)M_SAVEGAME },
+	{ NM_ITEM, (STRPTR)"Save for game", (STRPTR)"G", 0, 0, (APTR)M_SAVEGAME },
 	{ NM_ITEM, (STRPTR)"Forget for game", NULL, 0, 0, (APTR)M_FORGETGAME },
 	{ NM_ITEM, NM_BARLABEL, NULL, 0, 0, NULL },
 	{ NM_ITEM, (STRPTR)"Quit", (STRPTR)"Q", 0, 0, (APTR)M_QUIT },
@@ -108,6 +114,8 @@ static struct NewMenu nm[] = {
 	{ NM_ITEM, NM_BARLABEL, NULL, 0, 0, NULL },
 	{ NM_ITEM, (STRPTR)"Sound (Paula)", NULL, CHECKIT | MENUTOGGLE, 0, (APTR)M_SOUND },
 	{ NM_ITEM, (STRPTR)"Hires screen", NULL, CHECKIT | MENUTOGGLE, 0, (APTR)M_HIRES },
+	{ NM_ITEM, (STRPTR)"Write disks back", NULL, CHECKIT | MENUTOGGLE, 0, (APTR)M_DISKWRITE },
+	{ NM_ITEM, (STRPTR)"Fast tape loading", NULL, CHECKIT | MENUTOGGLE, 0, (APTR)M_FASTTAPE },
 	{ NM_ITEM, NM_BARLABEL, NULL, 0, 0, NULL },
 	{ NM_ITEM, (STRPTR)"Frame skip", NULL, 0, 0, NULL },
 	{ NM_SUB, (STRPTR)"Off", NULL, CHECKIT, X(0), (APTR)M_SKIP0 },
@@ -128,18 +136,37 @@ static struct NewMenu nm[] = {
 	{ NM_ITEM, (STRPTR)"Pad in port 2", NULL, 0, 0, NULL },
 	{ NM_SUB, (STRPTR)"Normal joystick / 2-button pad", NULL, CHECKIT, X(0), (APTR)M_PAD0 },
 	{ NM_SUB, (STRPTR)"CD32 pad", NULL, CHECKIT, X(1), (APTR)M_PAD1 },
+	{ NM_ITEM, (STRPTR)"Key map", NULL, 0, 0, (APTR)M_KEYMAPSUB },   /* sub-items: the presets, added by build_menu_table */
+	{ NM_ITEM, (STRPTR)"Edit key map...", (STRPTR)"E", 0, 0, (APTR)M_KEYEDIT },
 	{ NM_TITLE, (STRPTR)"Display", NULL, 0, 0, NULL },
 	{ NM_ITEM, (STRPTR)"Video mode", NULL, 0, 0, NULL },
 	{ NM_SUB, (STRPTR)"Auto (as Workbench)", NULL, CHECKIT, X(0), (APTR)M_VIDAUTO },
 	{ NM_SUB, (STRPTR)"PAL", NULL, CHECKIT, X(1), (APTR)M_VIDPAL },
 	{ NM_SUB, (STRPTR)"NTSC", NULL, CHECKIT, X(2), (APTR)M_VIDNTSC },
 	{ NM_ITEM, (STRPTR)"Full height (all 272 lines)", NULL, CHECKIT | MENUTOGGLE, 0, (APTR)M_TALL },
+	{ NM_ITEM, (STRPTR)"Wide (all 384 columns)", NULL, CHECKIT | MENUTOGGLE, 0, (APTR)M_WIDE },
 	{ NM_ITEM, (STRPTR)"Game speed", NULL, 0, 0, NULL },
 	{ NM_SUB, (STRPTR)"50 Hz (correct)", NULL, CHECKIT, X(0), (APTR)M_SPEED50 },
 	{ NM_SUB, (STRPTR)"Follow display (NTSC: 20% fast)", NULL, CHECKIT, X(1), (APTR)M_SPEEDDISP },
 	{ NM_END, NULL, NULL, 0, 0, NULL }
 };
 #undef X
+/* the table CreateMenus gets: nm with the Key map presets (keymaplogic.c) expanded under "Key map" */
+static struct NewMenu nmx[sizeof nm / sizeof nm[0] + MAXPRESETS];
+static void build_menu_table(void)
+{
+	int i, j = 0, k, np = KeyMap_NPresets();
+	if (np > MAXPRESETS) np = MAXPRESETS;
+	for (i = 0; i < (int)(sizeof nm / sizeof nm[0]); i++) {
+		nmx[j++] = nm[i];
+		if ((int)(ULONG)nm[i].nm_UserData == M_KEYMAPSUB && nm[i].nm_Type == NM_ITEM)
+			for (k = 0; k < np; k++) {
+				struct NewMenu *e = &nmx[j++];
+				e->nm_Type = NM_SUB; e->nm_Label = (STRPTR)KeyMap_Presets[k].label; e->nm_CommKey = NULL;
+				e->nm_Flags = CHECKIT; e->nm_MutualExclude = ~(1UL << k); e->nm_UserData = (APTR)(M_PRESET0 + k);
+			}
+	}
+}
 
 /* Layout. Everything is in the window interior: OX/OY are its offsets from
  * the window corner (the borders and title bar), set before the gadgets.
@@ -158,9 +185,9 @@ static void layout(void)
 	ROW = GH + 2;
 	y_head = FH / 2;                         /* header: logo panel and the Settings group */
 	y_media = y_head + 3 * ROW + FH + 4;     /* Media group frame */
-	y_sum = y_media + 3 * ROW + FH + 6;      /* summary text line (top) */
-	y_buttons = y_sum + FH + 4;              /* Power ON / Reset / Continue / Exit */
-	y_status = y_buttons + GH + 1 + 4;       /* status field */
+	y_sum = y_media + 4 * ROW + FH + 4;      /* summary text line (top); the Media group has 4 rows since the Tape row (24 Oct 2026) */
+	y_buttons = y_sum + FH + 3;              /* Power ON / Reset / Continue / Exit */
+	y_status = y_buttons + GH + 1 + 3;       /* status field (gaps 1 line tighter each: ends on screen line 199) */
 	inner_h = y_status + FH + 4 + 2;
 }
 
@@ -220,15 +247,21 @@ static int video_of(struct SysMenu *m) { return m->video >= 0 && m->video <= 2 ?
  * so a shorter line wipes a longer one) */
 static void draw_settings(struct SysMenu *m)
 {
-	char l[96];
-	int n;
+	char l[96], mid[96], comp[96], out[96];
+	int n, jk = m->joykeys >= 0 && m->joykeys <= 2 ? m->joykeys : 0, rf = refresh_index(m->refresh);
 	sprintf(l, "Sound %s  Screen %s  Skip %s  Refresh %s  Joykeys %s  Pad %s",
 		m->sound ? "on" : "off", m->hires ? "hires" : "lores", skip_short[skip_index(m->skip)],
-		refresh_short[refresh_index(m->refresh)], joykey_short[m->joykeys >= 0 && m->joykeys <= 2 ? m->joykeys : 0],
-		pad_short[m->pad ? 1 : 0]);
-	for (n = strlen(l); n < 76; n++) l[n] = ' ';
-	l[n] = 0;
-	text_at(20, y_sum + mwin->RPort->TxBaseline, P_BLACK, l);
+		refresh_short[rf], joykey_short[jk], pad_short[m->pad ? 1 : 0]);
+	sprintf(mid, "Sound %s  Screen %s  Skip %s  Ref %s  Joy %s  Pad %s",
+		m->sound ? "on" : "off", m->hires ? "hires" : "lores", skip_short[skip_index(m->skip)],
+		refresh_short[rf], joykey_short[jk], pad_short[m->pad ? 1 : 0]);
+	sprintf(comp, "Snd %s Scr %s Skip %s Ref %s Joy %s Pad %s",
+		m->sound ? "on" : "off", m->hires ? "hires" : "lores", skip_short[skip_index(m->skip)],
+		refresh_short[rf], joykey_short[jk], pad_short[m->pad ? 1 : 0]);
+	KeyMap_FitLine(out, 74, l, mid, comp, m->remap);   /* 74 chars: the window ends at 8 px per char from x 20 */   /* adds "Keys: RShift=M" (or "Keys: 3 remapped") */
+	for (n = strlen(out); n < 74; n++) out[n] = ' ';
+	out[n] = 0;
+	text_at(20, y_sum + mwin->RPort->TxBaseline, P_BLACK, out);
 }
 
 /* ASL file requester; writes the full path into buf (SYS_PATH). 1 if chosen. */
@@ -254,7 +287,7 @@ static int ask_file(const char *title, char *buf)
 
 static struct Gadget *row(struct Gadget *g, struct NewGadget *ng, int y, const char *value, int idstr, int idload, int ideject)
 {
-	ng->ng_LeftEdge = OX + 120; ng->ng_TopEdge = OY + y; ng->ng_Width = 360; ng->ng_Height = GH;
+	ng->ng_LeftEdge = OX + 120; ng->ng_TopEdge = OY + y; ng->ng_Width = idstr == G_TAPE ? 290 : 360; ng->ng_Height = GH;
 	ng->ng_GadgetText = NULL; ng->ng_GadgetID = idstr; ng->ng_Flags = 0;
 	g = gad[idstr] = CreateGadget(STRING_KIND, g, ng, GTST_String, (ULONG)value, GTST_MaxChars, SYS_PATH - 1, TAG_DONE);
 	ng->ng_LeftEdge = OX + 488; ng->ng_Width = 64; ng->ng_GadgetText = (STRPTR)"Load..."; ng->ng_GadgetID = idload;
@@ -262,6 +295,16 @@ static struct Gadget *row(struct Gadget *g, struct NewGadget *ng, int y, const c
 	ng->ng_LeftEdge = OX + 558; ng->ng_Width = 62; ng->ng_GadgetText = (STRPTR)"Eject"; ng->ng_GadgetID = ideject;
 	g = gad[ideject] = CreateGadget(BUTTON_KIND, g, ng, TAG_DONE);
 	return g;
+}
+
+/* the Tape row: a shorter string gadget and a Rewind button before Load... / Eject */
+static struct Gadget *tape_row(struct Gadget *g, struct NewGadget *ng, int y, const char *value)
+{
+	g = row(g, ng, y, value, G_TAPE, G_TAPELOAD, G_TAPEEJECT);
+	if (!g) return NULL;
+	ng->ng_LeftEdge = OX + 418; ng->ng_TopEdge = OY + y; ng->ng_Width = 64; ng->ng_Height = GH;
+	ng->ng_GadgetText = (STRPTR)"Rewind"; ng->ng_GadgetID = G_TAPEREW; ng->ng_Flags = 0;
+	return gad[G_TAPEREW] = CreateGadget(BUTTON_KIND, g, ng, TAG_DONE);
 }
 
 static struct Gadget *button(struct Gadget *g, struct NewGadget *ng, int x, int y, int w, int h, int id, const char *label, int disabled)
@@ -299,10 +342,11 @@ static void draw_frame(struct SysMenu *m)
 	label(SET_GX, r0 + ROW, "Video:");
 	label(SET_GX, r0 + 2 * ROW, "Speed:");
 
-	box(12, y_media, 616, 3 * ROW + FH + 3, " Media ");
+	box(12, y_media, 616, 4 * ROW + FH + 3, " Media ");
 	label(120, y_media + FH + 1, "Cartridge:");
 	label(120, y_media + FH + 1 + ROW, "Drive A:");
 	label(120, y_media + FH + 1 + 2 * ROW, "Drive B:");
+	label(120, y_media + FH + 1 + 3 * ROW, "Tape:");
 	draw_settings(m);
 
 	/* the status line sits in a recessed field */
@@ -316,21 +360,26 @@ static void set_checks(struct SysMenu *m)
 	int on[] = { M_SKIP0 + skip_index(m->skip), M_REF1 + refresh_index(m->refresh),
 	             M_JOY0 + (m->joykeys >= 0 && m->joykeys <= 2 ? m->joykeys : 0), M_PAD0 + (m->pad ? 1 : 0),
 	             M_SPEED50 + (m->speed ? 1 : 0), M_VIDAUTO + video_of(m), M_MODEL464 + model_of(m) };
-	for (i = 0; nm[i].nm_Type != NM_END; i++) {
-		int id = (int)(ULONG)nm[i].nm_UserData, k, want = 0;
-		if (!(nm[i].nm_Flags & CHECKIT)) continue;
+	for (i = 0; nmx[i].nm_Type != NM_END; i++) {
+		int id = (int)(ULONG)nmx[i].nm_UserData, k, want = 0;
+		if (!(nmx[i].nm_Flags & CHECKIT)) continue;
 		for (k = 0; k < (int)(sizeof on / sizeof on[0]); k++) if (on[k] == id) want = 1;
+		if (id >= M_PRESET0 && id < M_PRESET0 + MAXPRESETS) want = KeyMap_PresetOf(m->remap) == id - M_PRESET0;
 		if (id == M_SOUND) want = m->sound ? 1 : 0;
 		if (id == M_HIRES) want = m->hires ? 1 : 0;
 		if (id == M_TALL) want = m->tall ? 1 : 0;
-		if (want) nm[i].nm_Flags |= CHECKED; else nm[i].nm_Flags &= ~CHECKED;
+		if (id == M_WIDE) want = m->wide ? 1 : 0;
+		if (id == M_DISKWRITE) want = m->diskwrite ? 1 : 0;
+		if (id == M_FASTTAPE) want = m->fasttape ? 1 : 0;
+		if (want) nmx[i].nm_Flags |= CHECKED; else nmx[i].nm_Flags &= ~CHECKED;
 	}
 }
 
 static int make_menus(struct SysMenu *m)
 {
+	build_menu_table();
 	set_checks(m);
-	menustrip = CreateMenus(nm, GTMN_FullMenu, TRUE, TAG_DONE);
+	menustrip = CreateMenus(nmx, GTMN_FullMenu, TRUE, TAG_DONE);
 	return menustrip && LayoutMenus(menustrip, vi, GTMN_NewLookMenus, TRUE, TAG_DONE);
 }
 
@@ -401,6 +450,7 @@ static int open_menu(struct SysMenu *m)
 	g = row(g, &ng, y_media + FH + 1, m->cart, G_CART, G_CARTLOAD, G_CARTEJECT);
 	g = row(g, &ng, y_media + FH + 1 + ROW, m->diska, G_DISKA, G_DISKALOAD, G_DISKAEJECT);
 	g = row(g, &ng, y_media + FH + 1 + 2 * ROW, m->diskb, G_DISKB, G_DISKBLOAD, G_DISKBEJECT);
+	g = tape_row(g, &ng, y_media + FH + 1 + 3 * ROW, m->tape);
 	g = button(g, &ng, 12, y_buttons, 148, GH + 1, G_POWER, "Power ON", 0);
 	g = button(g, &ng, 168, y_buttons, 148, GH + 1, G_RESET, "Reset", 0);
 	g = button(g, &ng, 324, y_buttons, 148, GH + 1, G_CONTINUE, "Continue", !m->can_continue);
@@ -408,7 +458,7 @@ static int open_menu(struct SysMenu *m)
 	if (!g) { close_menu(); return 0; }
 	if (!make_menus(m)) { close_menu(); return 0; }
 	/* version, credit and build time (date and hh:mm) in the title bar */
-	sprintf(wintitle, "Arnold v0.9 for Amiga - core: Kevin Thacker - built %.6s %.4s %.5s", __DATE__, __DATE__ + 7, __TIME__);
+	sprintf(wintitle, "Arnold v1.0 for Amiga - core: Kevin Thacker - built %.6s %.4s %.5s", __DATE__, __DATE__ + 7, __TIME__);
 	mwin = OpenWindowTags(NULL, WA_CustomScreen, (ULONG)mscr, WA_Left, 0, WA_Top, mscr->BarHeight + 1,
 		WA_Width, 640, WA_Height, wh,
 		WA_Title, (ULONG)wintitle,
@@ -423,8 +473,8 @@ static int open_menu(struct SysMenu *m)
 	GT_RefreshWindow(mwin, NULL);
 	{
 		char line[SYS_PATH + 32];
-		sprintf(line, "%s  Prefs: %s%s", m->status[0] ? m->status : (m->can_continue ? "Paused: Help returns here, Continue resumes." : "Ready."),
-			m->prefs[0] ? (char *)FilePart((STRPTR)m->prefs) : "(none)", m->game_prefs ? " +game" : "");
+		sprintf(line, "%s  %sPrefs: %s%s", m->status[0] ? m->status : (m->can_continue ? "Paused: Help returns here, Continue resumes." : "Ready."),
+			m->tapepos, m->prefs[0] ? (char *)FilePart((STRPTR)m->prefs) : "(none)", m->game_prefs ? " +game" : "");
 		m->status[0] = 0;
 		status(line);
 	}
@@ -436,6 +486,7 @@ static void take_strings(struct SysMenu *m)
 	strncpy(m->cart, (char *)((struct StringInfo *)gad[G_CART]->SpecialInfo)->Buffer, SYS_PATH - 1);
 	strncpy(m->diska, (char *)((struct StringInfo *)gad[G_DISKA]->SpecialInfo)->Buffer, SYS_PATH - 1);
 	strncpy(m->diskb, (char *)((struct StringInfo *)gad[G_DISKB]->SpecialInfo)->Buffer, SYS_PATH - 1);
+	strncpy(m->tape, (char *)((struct StringInfo *)gad[G_TAPE]->SpecialInfo)->Buffer, SYS_PATH - 1);
 }
 
 static void set_string(int id, const char *v) { GT_SetGadgetAttrs(gad[id], mwin, NULL, GTST_String, (ULONG)v, TAG_DONE); }
@@ -453,17 +504,49 @@ static void redraw_after_picture(struct SysMenu *m)
 	GT_RefreshWindow(mwin, NULL);
 }
 
+/* Rewind (button or Project menu): done by the host on Continue / Reset;
+ * Power ON always starts the tape from the beginning */
+static void rewind_tape(struct SysMenu *m)
+{
+	take_strings(m);
+	if (!m->tape[0]) { status("Rewind: no tape in the deck."); return; }
+	m->tape_rewind = 1;
+	status("Tape: rewound to the start (on Continue or Reset).");
+}
+
 /* one chosen menu item; returns a SYS_MENU_ result to leave with,
  * MENU_REOPEN, or -1 */
+static int menus_dirty;
+static void edit_keymap(struct SysMenu *m)
+{
+	if (Sys_KeyMapEdit(mscr, mwin, vi, m->remap)) {
+		status(m->remap[0] ? "Key map applied. Save for game keeps it." : "Key map cleared.");
+		menus_dirty = 1;   /* the preset checkmarks follow */
+	}
+	ActivateWindow(mwin);   /* the editor was the active window: give the keyboard back */
+	draw_settings(m);
+}
 static int menu_pick(struct SysMenu *m, struct MenuItem *item)
 {
 	int id = (int)(ULONG)GTMENUITEM_USERDATA(item);
 	int checked = (item->Flags & CHECKED) != 0;
+	if (id >= M_PRESET0 && id < M_PRESET0 + MAXPRESETS) {
+		char t[96];
+		const struct KeyPreset *kp = &KeyMap_Presets[id - M_PRESET0];
+		strcpy(m->remap, kp->remap);
+		sprintf(t, "Key map: %s.%s", kp->label, kp->remap[0] ? " Save for game keeps it." : "");
+		status(t);
+		draw_settings(m);
+		return -1;
+	}
 	switch (id) {
+	case M_KEYEDIT: edit_keymap(m); break;
 	case M_LOADCART: take_strings(m); if (ask_file("Insert cartridge (.cpr)", m->cart)) set_string(G_CART, m->cart); break;
 	case M_LOADA: take_strings(m); if (ask_file("Disk for drive A (.dsk)", m->diska)) set_string(G_DISKA, m->diska); break;
 	case M_LOADB: take_strings(m); if (ask_file("Disk for drive B (.dsk)", m->diskb)) set_string(G_DISKB, m->diskb); break;
-	case M_EJECTALL: set_string(G_CART, ""); set_string(G_DISKA, ""); set_string(G_DISKB, ""); break;
+	case M_LOADTAPE: take_strings(m); if (ask_file("Insert tape (.cdt)", m->tape)) set_string(G_TAPE, m->tape); break;
+	case M_REWIND: rewind_tape(m); break;
+	case M_EJECTALL: set_string(G_CART, ""); set_string(G_DISKA, ""); set_string(G_DISKB, ""); set_string(G_TAPE, ""); break;
 	case M_KEYS: Sys_ShowPicture(mscr, "PROGDIR:Keyboard.iff"); redraw_after_picture(m); break;
 	case M_SHOT: if (m->can_continue) return SYS_MENU_SHOT; status("Screenshot: nothing is running yet."); break;
 	case M_SAVE: return SYS_MENU_SAVE;
@@ -473,6 +556,13 @@ static int menu_pick(struct SysMenu *m, struct MenuItem *item)
 	case M_SOUND: m->sound = checked; break;
 	case M_HIRES: m->hires = checked; break;
 	case M_TALL: m->tall = checked; break;
+	case M_WIDE: m->wide = checked; break;
+	case M_DISKWRITE: m->diskwrite = checked;
+		status(checked ? "Disks: changes are written back to the .dsk files." : "Disks: changes are kept until Power ON or Exit only.");
+		break;
+	case M_FASTTAPE: m->fasttape = checked;
+		status(checked ? "Fast tape: loading runs flat out, picture and sound paused." : "Fast tape off: tapes load at real speed.");
+		break;
 	case M_SKIP0: case M_SKIP1: case M_SKIP2: case M_SKIP3: case M_SKIP5: m->skip = skip_values[id - M_SKIP0]; break;
 	case M_REF1: case M_REF2: case M_REF3: case M_REF4: m->refresh = id - M_REF1 + 1; break;
 	case M_JOY0: case M_JOY1: case M_JOY2: m->joykeys = id - M_JOY0; break;
@@ -524,11 +614,12 @@ int Sys_Menu(struct SysMenu *m)
 						else if (r >= 0) { result = r; done = 1; }
 						sel = item->NextSelect;
 					}
+					if (menus_dirty) { menus_dirty = 0; if (!done) refresh_menus(m); }
 				}
 				else if (cls == IDCMP_RAWKEY) {
 					if (Sys_MenuKeyLog) { if (!mkeylog) mkeylog = fopen("PROGDIR:menukeys.log", "w"); if (mkeylog) { fprintf(mkeylog, "%02x\n", code); fflush(mkeylog); } }
 					/* Shortcuts (rawkeys): Help/C Continue, P Power ON, R Reset, Q Quit,
-					 * S Save Prefs, K Keyboard picture, X Screenshot. */
+					 * S Save Prefs, G Save for game, E Edit key map, K Keyboard picture, X Screenshot. */
 					switch (code) {
 					case 0x5f: case 0x33: if (m->can_continue) { result = SYS_MENU_CONTINUE; done = 1; } break;
 					case 0x19: result = SYS_MENU_POWER; done = 1; break;
@@ -536,6 +627,8 @@ int Sys_Menu(struct SysMenu *m)
 					case 0x10: result = SYS_MENU_QUIT; done = 1; break;
 					case 0x21: result = SYS_MENU_SAVE; done = 1; break;
 					case 0x32: if (m->can_continue) { result = SYS_MENU_SHOT; done = 1; } break;
+					case 0x12: edit_keymap(m); if (menus_dirty) { menus_dirty = 0; refresh_menus(m); } break;
+					case 0x24: result = SYS_MENU_SAVEGAME; done = 1; break;
 					case 0x27: Sys_ShowPicture(mscr, "PROGDIR:Keyboard.iff"); redraw_after_picture(m); break;
 					}
 				}
@@ -547,6 +640,9 @@ int Sys_Menu(struct SysMenu *m)
 					case G_CARTEJECT: set_string(G_CART, ""); break;
 					case G_DISKAEJECT: set_string(G_DISKA, ""); break;
 					case G_DISKBEJECT: set_string(G_DISKB, ""); break;
+					case G_TAPELOAD: take_strings(m); if (ask_file("Insert tape (.cdt)", m->tape)) set_string(G_TAPE, m->tape); break;
+					case G_TAPEEJECT: set_string(G_TAPE, ""); break;
+					case G_TAPEREW: rewind_tape(m); break;
 					case G_POWER: result = SYS_MENU_POWER; done = 1; break;
 					case G_CONTINUE: if (m->can_continue) { result = SYS_MENU_CONTINUE; done = 1; } break;
 					case G_RESET: result = SYS_MENU_RESET; done = 1; break;

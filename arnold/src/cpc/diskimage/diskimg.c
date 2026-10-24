@@ -223,3 +223,12 @@ void    DiskImage_GenerateOutputData(unsigned char *pBuffer, int DriveID)
 	   ExtDskInternal_GenerateOutputData(pBuffer, pDrive);
 }
 
+
+/* Amiga port (disk write-back, 22 Oct 2026): dskwrite.c reads the drive's
+ * internal image and clears its dirty flag */
+BOOL	DiskImage_GetUnitPointer(int DriveID, DISKIMAGE_UNIT **ppUnit)
+{
+	if (DriveID < 0 || DriveID > 3) return FALSE;
+	*ppUnit = &Drives[DriveID];
+	return TRUE;
+}

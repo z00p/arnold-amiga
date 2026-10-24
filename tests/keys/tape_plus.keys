@@ -1,0 +1,16 @@
+# CPC 6128 Plus (system cartridge) tape load: f1 BASIC, |TAPE, RUN", any key (tape tests, 24 Oct 2026)
+150 F1
+300 SHIFT+@
+310 T
+320 A
+330 P
+340 E
+350 RETURN
+400 R
+410 U
+420 N
+430 SHIFT+2
+445 RETURN
+500 SPACE
+4900 SNAP
+4950 QUIT

@@ -1,7 +1,7 @@
-From 214f90b63a512e6fbefaf7cc6192a603c9d178c5 Mon Sep 17 00:00:00 2001
+From 6a54118ec83fb729d0b5627d730353cc49dbea40 Mon Sep 17 00:00:00 2001
 From: John Stringer <jcec_1@yahoo.co.uk>
-Date: Wed, 21 Oct 2026 20:34:16 +0100
-Subject: [PATCH 01/31] Build the core on big-endian hosts (m68k)
+Date: Sat, 24 Oct 2026 13:02:08 +0100
+Subject: [PATCH 01/34] Build the core on big-endian hosts (m68k)
 
 cpcdefs.h defined CPC_LSB_FIRST unconditionally, so a big-endian build had
 byte-swapped words throughout. Leave it to the build system (-DCPC_LSB_FIRST

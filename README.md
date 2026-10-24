@@ -21,13 +21,20 @@ and asked for it to keep the Arnold name.
   (see What to expect); the hot code is shaped for Emu68 and built with a recorded profile. Fast vertical scrolling moves the picture in a taller chip RAM buffer
   (about 0.5 MB more chip RAM; `NOVSHIFT` turns it off). Paula sound, 8-bit stereo. Frame skip for slower machines, with every
   drawn frame exact.
-- Menu on Help: media, sound, screen mode, full height (`TALL`, all 272 lines), frame skip,
+- Menu on Help: media, sound, screen mode, full height (`TALL`, all 272 lines), wide (`WIDE`, 362 of the 384 columns), frame skip,
   joystick-from-keyboard, per-game settings (also for disk games), keyboard map, IFF and PNG
-  screenshots. Workbench presets with ToolTypes. Per-game key remap (`REMAP=RSHIFT:M`).
+  screenshots. Workbench presets with ToolTypes. Per-game key remap (`REMAP=RSHIFT:M`; a
+  remapped key gives only its new key, so Right Shift then no longer works as Shift), with a
+  key-map editor and presets in the Controls menu.
 - Joystick in port 2, two-button and CD32 pads, keyboard as joystick.
 
-Not yet: writing changed disks back to the .dsk file (SAVE lasts until Power ON or Exit),
-tape (so the CPC 464 runs BASIC only). Known issues are listed in the drawer's README.txt
+Disks: changes a program makes (SAVE, high scores, FORMAT) are written back to the .dsk
+file, with the original kept once as `<name>.dsk.bak` (option "Write disks back",
+`DISKWRITE=0` to turn it off).
+
+Tapes: .cdt (TZX) images load on every model (`RUN"` on a 464, `|TAPE` first on the others),
+with fast tape loading (`FASTTAPE`) that leaves the machine exactly as at real speed. Saving to
+tape is not supported. Known issues are listed in the drawer's README.txt
 (NTSC cropping of edge-drawn games).
 
 ## What to expect

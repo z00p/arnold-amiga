@@ -20,6 +20,8 @@ unsigned long CPC_GetCassetteType(void);
 
 
 void	Tape_Remove(void);
+/* Amiga port: the cassette motor (PPI port C bit 4) is on */
+int	CPC_GetTapeMotor(void);
 
 
 #endif

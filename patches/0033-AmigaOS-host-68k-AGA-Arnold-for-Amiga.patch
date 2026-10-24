@@ -1,7 +1,7 @@
-From 2ecbdb7517c208639b9a93e138cea1a10b002b84 Mon Sep 17 00:00:00 2001
+From fc6adc52b31e884a61ba16a08ef4962bc38ff9b4 Mon Sep 17 00:00:00 2001
 From: John Stringer <jcec_1@yahoo.co.uk>
-Date: Wed, 21 Oct 2026 20:34:33 +0100
-Subject: [PATCH 30/31] AmigaOS host (68k AGA): Arnold for Amiga
+Date: Sat, 24 Oct 2026 13:02:25 +0100
+Subject: [PATCH 33/34] AmigaOS host (68k AGA): Arnold for Amiga
 
 src/amiga: the AmigaOS 3.x host (AGA screen with chunky-to-planar and triple
 buffering, Paula sound, rawkey keyboard matrix, joystick/CD32 pads and keys as
@@ -11,25 +11,29 @@ amiga-gcc (-noixemul): see src/amiga/Makefile.
 
 Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
 ---
- src/amiga/Makefile     |   38 +
- src/amiga/amiga_iff.c  |  100 +++
- src/amiga/amiga_logo.c |  153 ++++
- src/amiga/amiga_logo.h |    6 +
- src/amiga/amiga_menu.c |  579 +++++++++++++++
- src/amiga/amiga_sys.c  | 1551 ++++++++++++++++++++++++++++++++++++++++
- src/amiga/amiga_sys.h  |  121 ++++
- src/amiga/amiga_wb.c   |  136 ++++
- src/amiga/audio_conv.h |   46 ++
- src/amiga/c2p_sh.h     |   48 ++
- src/amiga/host_amiga.c |  878 +++++++++++++++++++++++
- src/amiga/keyscript.c  |  144 ++++
- src/amiga/keyscript.h  |   12 +
- src/amiga/padtest.c    |  125 ++++
- src/amiga/screenshot.c |  115 +++
- src/amiga/screenshot.h |    7 +
- 16 files changed, 4059 insertions(+)
+ src/amiga/Makefile       |   38 +
+ src/amiga/amiga_iff.c    |  100 +++
+ src/amiga/amiga_keymap.c |  238 ++++++
+ src/amiga/amiga_logo.c   |  153 ++++
+ src/amiga/amiga_logo.h   |    6 +
+ src/amiga/amiga_menu.c   |  675 ++++++++++++++++
+ src/amiga/amiga_sys.c    | 1572 ++++++++++++++++++++++++++++++++++++++
+ src/amiga/amiga_sys.h    |  131 ++++
+ src/amiga/amiga_wb.c     |  170 +++++
+ src/amiga/audio_conv.h   |   46 ++
+ src/amiga/c2p_sh.h       |   48 ++
+ src/amiga/host_amiga.c   | 1033 +++++++++++++++++++++++++
+ src/amiga/keymaplogic.c  |  135 ++++
+ src/amiga/keymaplogic.h  |   34 +
+ src/amiga/keyscript.c    |  144 ++++
+ src/amiga/keyscript.h    |   12 +
+ src/amiga/padtest.c      |  125 +++
+ src/amiga/screenshot.c   |  115 +++
+ src/amiga/screenshot.h   |    7 +
+ 19 files changed, 4782 insertions(+)
  create mode 100644 src/amiga/Makefile
  create mode 100644 src/amiga/amiga_iff.c
+ create mode 100644 src/amiga/amiga_keymap.c
  create mode 100644 src/amiga/amiga_logo.c
  create mode 100644 src/amiga/amiga_logo.h
  create mode 100644 src/amiga/amiga_menu.c
@@ -39,6 +43,8 @@ Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
  create mode 100644 src/amiga/audio_conv.h
  create mode 100644 src/amiga/c2p_sh.h
  create mode 100644 src/amiga/host_amiga.c
+ create mode 100644 src/amiga/keymaplogic.c
+ create mode 100644 src/amiga/keymaplogic.h
  create mode 100644 src/amiga/keyscript.c
  create mode 100644 src/amiga/keyscript.h
  create mode 100644 src/amiga/padtest.c
@@ -47,7 +53,7 @@ Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
 
 diff --git a/src/amiga/Makefile b/src/amiga/Makefile
 new file mode 100644
-index 0000000..6869e91
+index 0000000..181666e
 --- /dev/null
 +++ b/src/amiga/Makefile
 @@ -0,0 +1,38 @@
@@ -69,7 +75,7 @@ index 0000000..6869e91
 +# objects.mak may have CRLF line endings (Windows checkout): strip \r first.
 +CORE := $(addprefix ../,$(shell tr -d '\r' < ../objects.mak | sed -n '/^CPC_O=/,/^$$/p' | tr -d '\\' | sed 's/CPC_O=//;s/\.o/.c/g'))
 +OBJDIR ?= obj-$(CPU)
-+OBJS := $(patsubst ../%.c,$(OBJDIR)/%.o,$(CORE)) $(OBJDIR)/host_amiga.o $(OBJDIR)/amiga_sys.o $(OBJDIR)/amiga_menu.o $(OBJDIR)/amiga_wb.o $(OBJDIR)/amiga_iff.o $(OBJDIR)/amiga_logo.o $(OBJDIR)/screenshot.o $(OBJDIR)/keyscript.o
++OBJS := $(patsubst ../%.c,$(OBJDIR)/%.o,$(CORE)) $(OBJDIR)/host_amiga.o $(OBJDIR)/amiga_sys.o $(OBJDIR)/amiga_menu.o $(OBJDIR)/amiga_wb.o $(OBJDIR)/amiga_iff.o $(OBJDIR)/amiga_logo.o $(OBJDIR)/screenshot.o $(OBJDIR)/keyscript.o $(OBJDIR)/keymaplogic.o $(OBJDIR)/amiga_keymap.o
 +TARGET ?= $(if $(filter 68040,$(CPU)),Arnold,Arnold-$(subst 680,0,$(CPU)))
 +
 +all: $(TARGET)
@@ -194,6 +200,250 @@ index 0000000..934c57a
 +		CloseWindow(win);
 +	}
 +	FreeBitMap(bm);
++}
+diff --git a/src/amiga/amiga_keymap.c b/src/amiga/amiga_keymap.c
+new file mode 100644
+index 0000000..58584dd
+--- /dev/null
++++ b/src/amiga/amiga_keymap.c
+@@ -0,0 +1,238 @@
++/* Arnold on AmigaOS: the key map editor (24 Oct 2026, John: "key mapping presets
++ * with a simple UI to handle key mapping for a game").
++ * A small GadTools window on the menu screen: the list of "Amiga key -> CPC key"
++ * pairs, Add / Remove / Clear, the list of CPC keys, OK and Cancel. Add waits for
++ * an Amiga key press, then a click in the CPC list completes the pair. OK writes
++ * the map back as the remap= text (the same text the prefs files hold).
++ * OS side only: no Arnold headers (see amiga_sys.h). */
++#include <exec/types.h>
++#include <exec/lists.h>
++#include <exec/nodes.h>
++#include <intuition/intuition.h>
++#include <intuition/screens.h>
++#include <intuition/gadgetclass.h>
++#include <libraries/gadtools.h>
++#include <proto/exec.h>
++#include <proto/intuition.h>
++#include <proto/graphics.h>
++#include <proto/gadtools.h>
++#include <stdio.h>
++#include <string.h>
++#include "amiga_sys.h"
++#include "keymaplogic.h"
++
++extern struct Library *GadToolsBase;   /* opened by amiga_menu.c */
++
++enum { K_PAIRS, K_ADD, K_REMOVE, K_CLEAR, K_CPC, K_PRESET, K_PROMPT, K_OK, K_CANCEL, K_COUNT };
++#define MAXCPC 96
++#define IW 520            /* interior width */
++#define LV_Y 14
++#define LV_H 84           /* ten rows of topaz 8 plus the frame */
++#define RAW_HELP 0x5f
++#define PR_Y (LV_Y + LV_H + 4)   /* preset row */
++#define KeyPresetMax 16
++
++static struct TextAttr topaz8 = { (STRPTR)"topaz.font", 8, 0, 0 };
++static struct Gadget *gad[K_COUNT], *glist;
++static struct Window *win;
++static struct List plist, clist;
++static struct Node pnode[KM_MAXPAIRS], cnode[MAXCPC];
++static char ptxt[KM_MAXPAIRS][32];
++static struct KeyPair pr[KM_MAXPAIRS];
++static int npr, sel, capturing, OX, OY;
++static char pending[12], prompt[80];
++static STRPTR plabels[KeyPresetMax + 2];   /* the preset cycle: every preset, then "Custom" */
++static int npreset, npreset_active;
++
++static void say(const char *t)
++{
++	strncpy(prompt, t, sizeof prompt - 1); prompt[sizeof prompt - 1] = 0;
++	GT_SetGadgetAttrs(gad[K_PROMPT], win, NULL, GTTX_Text, (ULONG)prompt, TAG_DONE);
++}
++
++static void sync_preset(void);
++static void rebuild(void)
++{
++	int i;
++	char a[16], c[16];
++	GT_SetGadgetAttrs(gad[K_PAIRS], win, NULL, GTLV_Labels, (ULONG)~0, TAG_DONE);
++	NewList(&plist);
++	for (i = 0; i < npr; i++) {
++		KeyMap_ShowName(pr[i].a, a); KeyMap_ShowName(pr[i].c, c);
++		sprintf(ptxt[i], "%-9s -> %s", a, c);
++		pnode[i].ln_Name = ptxt[i]; pnode[i].ln_Type = 0; pnode[i].ln_Pri = 0;
++		AddTail(&plist, &pnode[i]);
++	}
++	sel = -1;
++	GT_SetGadgetAttrs(gad[K_PAIRS], win, NULL, GTLV_Labels, (ULONG)&plist, GTLV_Selected, (ULONG)~0, TAG_DONE);
++	sync_preset();
++}
++
++/* the preset cycle shows the preset the list equals, else "Custom" */
++static void sync_preset(void)
++{
++	char cur[KM_STR];
++	int k;
++	KeyMap_Format(pr, npr, cur, sizeof cur);
++	k = KeyMap_PresetOf(cur);
++	GT_SetGadgetAttrs(gad[K_PRESET], win, NULL, GTCY_Active, k >= 0 ? k : npreset, TAG_DONE);
++}
++
++static void text_at(int x, int y, const char *t)
++{
++	struct RastPort *rp = win->RPort;
++	SetAPen(rp, 1); SetBPen(rp, 0); SetDrMd(rp, JAM2);
++	Move(rp, OX + x, OY + y + rp->TxBaseline); Text(rp, (STRPTR)t, strlen(t));
++}
++
++static void draw(void)
++{
++	text_at(8, 3, "Amiga key -> CPC key");
++	text_at(308, 3, "CPC key (pick after Add)");
++	text_at(8, PR_Y + 3, "Preset:");
++}
++
++static struct Gadget *mk(struct Gadget *g, struct NewGadget *ng, int kind, int id, int x, int y, int w, int h, const char *label, ULONG tag1, ULONG v1, ULONG tag2, ULONG v2)
++{
++	ng->ng_LeftEdge = OX + x; ng->ng_TopEdge = OY + y; ng->ng_Width = w; ng->ng_Height = h;
++	ng->ng_GadgetText = (STRPTR)label; ng->ng_GadgetID = id; ng->ng_Flags = 0;
++	return gad[id] = CreateGadget(kind, g, ng, tag1, v1, tag2, v2, TAG_DONE);
++}
++
++/* remap: in = the current map, out = the edited map when OK. Returns 1 if OK was chosen. */
++int Sys_KeyMapEdit(void *screen, void *parent, void *visinfo, char *remap)
++{
++	struct Screen *scr = (struct Screen *)screen;
++	struct Window *pw = (struct Window *)parent;
++	struct NewGadget ng;
++	struct Gadget *g;
++	struct Requester req;
++	struct IntuiMessage *msg;
++	int i, ok = 0, done = 0, w, h, blocked = 0;
++	const int GH = 13;
++
++	if (!GadToolsBase || !scr || win) return 0;
++	npr = KeyMap_Parse(remap, pr, KM_MAXPAIRS);
++	sel = -1; capturing = 0; pending[0] = 0;
++	NewList(&clist);
++	for (i = 0; i < MAXCPC && KeyMap_CpcNames[i]; i++) {
++		cnode[i].ln_Name = (char *)KeyMap_CpcNames[i]; cnode[i].ln_Type = 0; cnode[i].ln_Pri = 0;
++		AddTail(&clist, &cnode[i]);
++	}
++	NewList(&plist);
++	npreset = KeyMap_NPresets();
++	if (npreset > KeyPresetMax) npreset = KeyPresetMax;
++	for (i = 0; i < npreset; i++) plabels[i] = (STRPTR)KeyMap_Presets[i].label;
++	plabels[npreset] = (STRPTR)"Custom"; plabels[npreset + 1] = NULL;
++	{ char cur[KM_STR]; i = KeyMap_PresetOf(remap); (void)cur; if (i < 0 || i >= npreset) i = npreset; npreset_active = i; }
++	OX = scr->WBorLeft;
++	OY = scr->WBorTop + scr->Font->ta_YSize + 1;
++	memset(&ng, 0, sizeof ng);
++	ng.ng_TextAttr = &topaz8; ng.ng_VisualInfo = visinfo;
++	g = CreateContext(&glist);
++	g = mk(g, &ng, LISTVIEW_KIND, K_PAIRS, 8, LV_Y, 208, LV_H, NULL, GTLV_Labels, (ULONG)&plist, GTLV_ShowSelected, 0);
++	g = mk(g, &ng, BUTTON_KIND, K_ADD, 224, LV_Y, 76, GH, "Add...", TAG_IGNORE, 0, TAG_IGNORE, 0);
++	g = mk(g, &ng, BUTTON_KIND, K_REMOVE, 224, LV_Y + 15, 76, GH, "Remove", TAG_IGNORE, 0, TAG_IGNORE, 0);
++	g = mk(g, &ng, BUTTON_KIND, K_CLEAR, 224, LV_Y + 30, 76, GH, "Clear", TAG_IGNORE, 0, TAG_IGNORE, 0);
++	g = mk(g, &ng, LISTVIEW_KIND, K_CPC, 308, LV_Y, 204, LV_H, NULL, GTLV_Labels, (ULONG)&clist, GTLV_ShowSelected, 0);
++	g = mk(g, &ng, CYCLE_KIND, K_PRESET, 84, PR_Y, 330, GH, NULL, GTCY_Labels, (ULONG)plabels, GTCY_Active, (ULONG)npreset_active);
++	g = mk(g, &ng, TEXT_KIND, K_PROMPT, 8, PR_Y + GH + 3, IW - 16, GH, NULL, GTTX_Border, TRUE, GTTX_CopyText, TRUE);
++	g = mk(g, &ng, BUTTON_KIND, K_OK, 8, PR_Y + 2 * GH + 8, 120, GH + 1, "OK", TAG_IGNORE, 0, TAG_IGNORE, 0);
++	g = mk(g, &ng, BUTTON_KIND, K_CANCEL, IW - 128, PR_Y + 2 * GH + 8, 120, GH + 1, "Cancel", TAG_IGNORE, 0, TAG_IGNORE, 0);
++	if (!g) { FreeGadgets(glist); glist = NULL; return 0; }
++	w = OX + IW + scr->WBorRight;
++	h = OY + PR_Y + 2 * GH + 8 + GH + 1 + 5 + scr->WBorBottom;
++	if (pw) {   /* modal: a requester blocks the menu window's gadgets and menus */
++		InitRequester(&req);
++		blocked = Request(&req, pw);
++	}
++	win = OpenWindowTags(NULL, WA_CustomScreen, (ULONG)scr, WA_Left, (640 - w) / 2, WA_Top, scr->BarHeight + 1 + 2,
++		WA_Width, w, WA_Height, h, WA_Title, (ULONG)"Edit key map",
++		WA_CloseGadget, TRUE, WA_DragBar, TRUE, WA_DepthGadget, FALSE, WA_Activate, TRUE, WA_SimpleRefresh, TRUE,
++		WA_Gadgets, (ULONG)glist,
++		WA_IDCMP, IDCMP_GADGETUP | IDCMP_CLOSEWINDOW | IDCMP_REFRESHWINDOW | IDCMP_RAWKEY | LISTVIEWIDCMP | BUTTONIDCMP | TEXTIDCMP,
++		TAG_DONE);
++	if (!win) {
++		if (blocked) EndRequest(&req, pw);
++		FreeGadgets(glist); glist = NULL;
++		return 0;
++	}
++	GT_RefreshWindow(win, NULL);
++	draw();
++	rebuild();
++	say(npr ? "Add: press an Amiga key, then pick its CPC key." : "No keys remapped. Add: press an Amiga key, then pick its CPC key.");
++
++	while (!done) {
++		WaitPort(win->UserPort);
++		while (!done && (msg = GT_GetIMsg(win->UserPort))) {
++			ULONG cls = msg->Class; UWORD code = msg->Code, qual = msg->Qualifier;
++			struct Gadget *gd = (struct Gadget *)msg->IAddress;
++			GT_ReplyIMsg(msg);
++			if (cls == IDCMP_CLOSEWINDOW) done = 1;
++			else if (cls == IDCMP_REFRESHWINDOW) { GT_BeginRefresh(win); draw(); GT_EndRefresh(win, TRUE); }
++			else if (cls == IDCMP_RAWKEY) {
++				char nb[12], a[16], t[80];
++				const char *nm;
++				if ((code & 0x80) || (qual & IEQUALIFIER_REPEAT)) continue;
++				if (!capturing) {   /* keys: A Add, P next preset, Return OK, Esc Cancel */
++					if (code == 0x44) { ok = 1; done = 1; }
++					else if (code == 0x45) done = 1;
++					else if (code == 0x20) { capturing = 1; pending[0] = 0; say("Press the Amiga key to remap now (Help cancels)..."); }
++					else if (code == 0x19) {
++						char cur[KM_STR];
++						KeyMap_Format(pr, npr, cur, sizeof cur);
++						i = KeyMap_PresetOf(cur); i = i < 0 ? 0 : (i + 1) % npreset;
++						npr = KeyMap_Parse(KeyMap_Presets[i].remap, pr, KM_MAXPAIRS); rebuild(); say(KeyMap_Presets[i].label);
++					}
++					continue;
++				}
++				if (code == RAW_HELP) { capturing = 0; say("Cancelled."); continue; }
++				nm = Host_AmigaKeyName(code, nb);
++				if (!nm) { say("That key can't be remapped. Press another (Help cancels)."); continue; }
++				strcpy(pending, nm); capturing = 0;
++				KeyMap_ShowName(pending, a);
++				sprintf(t, "Amiga key %s: now pick its CPC key in the list.", a);
++				say(t);
++			}
++			else if (cls == IDCMP_GADGETUP) {
++				switch (gd->GadgetID) {
++				case K_ADD: capturing = 1; pending[0] = 0; say("Press the Amiga key to remap now (Help cancels)..."); break;
++				case K_PAIRS: sel = code; break;
++				case K_PRESET:
++					if (code < npreset) { npr = KeyMap_Parse(KeyMap_Presets[code].remap, pr, KM_MAXPAIRS); rebuild(); say(KeyMap_Presets[code].label); }
++					break;
++				case K_REMOVE:
++					if (sel >= 0 && sel < npr) {
++						for (i = sel; i < npr - 1; i++) pr[i] = pr[i + 1];
++						npr--; rebuild(); say("Removed.");
++					} else say("Select a pair in the list first.");
++					break;
++				case K_CLEAR: npr = 0; rebuild(); say("Cleared."); break;
++				case K_CPC:
++					if (pending[0] && code < MAXCPC && KeyMap_CpcNames[code]) {
++						struct KeyPair keep[KM_MAXPAIRS];
++						int kn = npr, n2;
++						memcpy(keep, pr, sizeof pr);
++						n2 = KeyMap_Set(pr, npr, KM_MAXPAIRS, pending, KeyMap_CpcNames[code]);
++						if (n2 < 0 || !KeyMap_FitsString(pr, n2)) { memcpy(pr, keep, sizeof pr); npr = kn; say("The key map is full."); }
++						else {
++							char a[16], c[16], t[80];
++							npr = n2; rebuild();
++							KeyMap_ShowName(pending, a); KeyMap_ShowName(KeyMap_CpcNames[code], c);
++							sprintf(t, "Added %s -> %s. Add another, or OK.", a, c); say(t);
++							pending[0] = 0;
++						}
++					} else say("Choose Add first, then press an Amiga key.");
++					break;
++				case K_OK: ok = 1; done = 1; break;
++				case K_CANCEL: done = 1; break;
++				}
++			}
++		}
++	}
++	if (ok) KeyMap_Format(pr, npr, remap, KM_STR);
++	CloseWindow(win); win = NULL;
++	if (blocked) EndRequest(&req, pw);
++	FreeGadgets(glist); glist = NULL;
++	return ok;
 +}
 diff --git a/src/amiga/amiga_logo.c b/src/amiga/amiga_logo.c
 new file mode 100644
@@ -368,10 +618,10 @@ index 0000000..b22b3c7
 +#endif
 diff --git a/src/amiga/amiga_menu.c b/src/amiga/amiga_menu.c
 new file mode 100644
-index 0000000..cfa622d
+index 0000000..1bbb4a4
 --- /dev/null
 +++ b/src/amiga/amiga_menu.c
-@@ -0,0 +1,579 @@
+@@ -0,0 +1,675 @@
 +/* Arnold on AmigaOS: the menu screen (GadTools), styled after the OS 3.2 prefs
 + * editors. 17 Oct 2026 (John): the settings live in pull-down menus (Options,
 + * Controls, Display) and the window keeps what changes from game to game.
@@ -403,6 +653,7 @@ index 0000000..cfa622d
 +#include <string.h>
 +#include "amiga_sys.h"
 +#include "amiga_logo.h"
++#include "keymaplogic.h"
 +
 +struct Library *GadToolsBase, *AslBase;
 +int Sys_MenuKeyLog;   /* host sets it with KEYLOG: raw keys seen by the menu go to PROGDIR:menukeys.log */
@@ -410,13 +661,16 @@ index 0000000..cfa622d
 +
 +enum { G_CART, G_CARTLOAD, G_CARTEJECT, G_DISKA, G_DISKALOAD, G_DISKAEJECT,
 +       G_DISKB, G_DISKBLOAD, G_DISKBEJECT,
++       G_TAPE, G_TAPELOAD, G_TAPEEJECT, G_TAPEREW,
 +       G_POWER, G_RESET, G_CONTINUE, G_QUIT, G_MODEL, G_VIDEO, G_SPEED, G_COUNT };
 +
 +/* menu item ids (nm_UserData) */
 +enum { M_NONE, M_LOADCART, M_LOADA, M_LOADB, M_EJECTALL, M_KEYS, M_SHOT, M_SAVE, M_SAVEGAME, M_FORGETGAME, M_QUIT,
 +       M_SOUND, M_HIRES, M_SKIP0, M_SKIP1, M_SKIP2, M_SKIP3, M_SKIP5, M_REF1, M_REF2, M_REF3, M_REF4,
 +       M_JOY0, M_JOY1, M_JOY2, M_PAD0, M_PAD1, M_SPEED50, M_SPEEDDISP,
-+       M_VIDAUTO, M_VIDPAL, M_VIDNTSC, M_TALL, M_MODEL464, M_MODEL664, M_MODEL6128, M_MODELPLUS, M_MODELGX };
++       M_VIDAUTO, M_VIDPAL, M_VIDNTSC, M_TALL, M_WIDE, M_DISKWRITE, M_MODEL464, M_MODEL664, M_MODEL6128, M_MODELPLUS, M_MODELGX,
++       M_LOADTAPE, M_REWIND, M_FASTTAPE, M_KEYEDIT, M_KEYMAPSUB, M_PRESET0 };   /* M_PRESET0 last: the presets follow it */
++#define MAXPRESETS 12   /* menu entries for KeyMap_Presets (keymaplogic.c) */
 +#define MENU_REOPEN (-2)   /* menu_pick: the video mode changed, open the screen again */
 +
 +/* Pens of the 16-colour menu screen (16 Oct 2026, styled after the OS 3.2
@@ -462,13 +716,15 @@ index 0000000..cfa622d
 +	{ NM_ITEM, (STRPTR)"Load cartridge...", (STRPTR)"C", 0, 0, (APTR)M_LOADCART },
 +	{ NM_ITEM, (STRPTR)"Load disk A...", (STRPTR)"A", 0, 0, (APTR)M_LOADA },
 +	{ NM_ITEM, (STRPTR)"Load disk B...", (STRPTR)"B", 0, 0, (APTR)M_LOADB },
++	{ NM_ITEM, (STRPTR)"Load tape...", (STRPTR)"T", 0, 0, (APTR)M_LOADTAPE },
++	{ NM_ITEM, (STRPTR)"Rewind tape", (STRPTR)"W", 0, 0, (APTR)M_REWIND },
 +	{ NM_ITEM, (STRPTR)"Eject all", NULL, 0, 0, (APTR)M_EJECTALL },
 +	{ NM_ITEM, NM_BARLABEL, NULL, 0, 0, NULL },
 +	{ NM_ITEM, (STRPTR)"Keyboard map...", (STRPTR)"K", 0, 0, (APTR)M_KEYS },
 +	{ NM_ITEM, (STRPTR)"Screenshot", (STRPTR)"X", 0, 0, (APTR)M_SHOT },
 +	{ NM_ITEM, NM_BARLABEL, NULL, 0, 0, NULL },
 +	{ NM_ITEM, (STRPTR)"Save Prefs", (STRPTR)"S", 0, 0, (APTR)M_SAVE },
-+	{ NM_ITEM, (STRPTR)"Save for game", NULL, 0, 0, (APTR)M_SAVEGAME },
++	{ NM_ITEM, (STRPTR)"Save for game", (STRPTR)"G", 0, 0, (APTR)M_SAVEGAME },
 +	{ NM_ITEM, (STRPTR)"Forget for game", NULL, 0, 0, (APTR)M_FORGETGAME },
 +	{ NM_ITEM, NM_BARLABEL, NULL, 0, 0, NULL },
 +	{ NM_ITEM, (STRPTR)"Quit", (STRPTR)"Q", 0, 0, (APTR)M_QUIT },
@@ -482,6 +738,8 @@ index 0000000..cfa622d
 +	{ NM_ITEM, NM_BARLABEL, NULL, 0, 0, NULL },
 +	{ NM_ITEM, (STRPTR)"Sound (Paula)", NULL, CHECKIT | MENUTOGGLE, 0, (APTR)M_SOUND },
 +	{ NM_ITEM, (STRPTR)"Hires screen", NULL, CHECKIT | MENUTOGGLE, 0, (APTR)M_HIRES },
++	{ NM_ITEM, (STRPTR)"Write disks back", NULL, CHECKIT | MENUTOGGLE, 0, (APTR)M_DISKWRITE },
++	{ NM_ITEM, (STRPTR)"Fast tape loading", NULL, CHECKIT | MENUTOGGLE, 0, (APTR)M_FASTTAPE },
 +	{ NM_ITEM, NM_BARLABEL, NULL, 0, 0, NULL },
 +	{ NM_ITEM, (STRPTR)"Frame skip", NULL, 0, 0, NULL },
 +	{ NM_SUB, (STRPTR)"Off", NULL, CHECKIT, X(0), (APTR)M_SKIP0 },
@@ -502,18 +760,37 @@ index 0000000..cfa622d
 +	{ NM_ITEM, (STRPTR)"Pad in port 2", NULL, 0, 0, NULL },
 +	{ NM_SUB, (STRPTR)"Normal joystick / 2-button pad", NULL, CHECKIT, X(0), (APTR)M_PAD0 },
 +	{ NM_SUB, (STRPTR)"CD32 pad", NULL, CHECKIT, X(1), (APTR)M_PAD1 },
++	{ NM_ITEM, (STRPTR)"Key map", NULL, 0, 0, (APTR)M_KEYMAPSUB },   /* sub-items: the presets, added by build_menu_table */
++	{ NM_ITEM, (STRPTR)"Edit key map...", (STRPTR)"E", 0, 0, (APTR)M_KEYEDIT },
 +	{ NM_TITLE, (STRPTR)"Display", NULL, 0, 0, NULL },
 +	{ NM_ITEM, (STRPTR)"Video mode", NULL, 0, 0, NULL },
 +	{ NM_SUB, (STRPTR)"Auto (as Workbench)", NULL, CHECKIT, X(0), (APTR)M_VIDAUTO },
 +	{ NM_SUB, (STRPTR)"PAL", NULL, CHECKIT, X(1), (APTR)M_VIDPAL },
 +	{ NM_SUB, (STRPTR)"NTSC", NULL, CHECKIT, X(2), (APTR)M_VIDNTSC },
 +	{ NM_ITEM, (STRPTR)"Full height (all 272 lines)", NULL, CHECKIT | MENUTOGGLE, 0, (APTR)M_TALL },
++	{ NM_ITEM, (STRPTR)"Wide (all 384 columns)", NULL, CHECKIT | MENUTOGGLE, 0, (APTR)M_WIDE },
 +	{ NM_ITEM, (STRPTR)"Game speed", NULL, 0, 0, NULL },
 +	{ NM_SUB, (STRPTR)"50 Hz (correct)", NULL, CHECKIT, X(0), (APTR)M_SPEED50 },
 +	{ NM_SUB, (STRPTR)"Follow display (NTSC: 20% fast)", NULL, CHECKIT, X(1), (APTR)M_SPEEDDISP },
 +	{ NM_END, NULL, NULL, 0, 0, NULL }
 +};
 +#undef X
++/* the table CreateMenus gets: nm with the Key map presets (keymaplogic.c) expanded under "Key map" */
++static struct NewMenu nmx[sizeof nm / sizeof nm[0] + MAXPRESETS];
++static void build_menu_table(void)
++{
++	int i, j = 0, k, np = KeyMap_NPresets();
++	if (np > MAXPRESETS) np = MAXPRESETS;
++	for (i = 0; i < (int)(sizeof nm / sizeof nm[0]); i++) {
++		nmx[j++] = nm[i];
++		if ((int)(ULONG)nm[i].nm_UserData == M_KEYMAPSUB && nm[i].nm_Type == NM_ITEM)
++			for (k = 0; k < np; k++) {
++				struct NewMenu *e = &nmx[j++];
++				e->nm_Type = NM_SUB; e->nm_Label = (STRPTR)KeyMap_Presets[k].label; e->nm_CommKey = NULL;
++				e->nm_Flags = CHECKIT; e->nm_MutualExclude = ~(1UL << k); e->nm_UserData = (APTR)(M_PRESET0 + k);
++			}
++	}
++}
 +
 +/* Layout. Everything is in the window interior: OX/OY are its offsets from
 + * the window corner (the borders and title bar), set before the gadgets.
@@ -532,9 +809,9 @@ index 0000000..cfa622d
 +	ROW = GH + 2;
 +	y_head = FH / 2;                         /* header: logo panel and the Settings group */
 +	y_media = y_head + 3 * ROW + FH + 4;     /* Media group frame */
-+	y_sum = y_media + 3 * ROW + FH + 6;      /* summary text line (top) */
-+	y_buttons = y_sum + FH + 4;              /* Power ON / Reset / Continue / Exit */
-+	y_status = y_buttons + GH + 1 + 4;       /* status field */
++	y_sum = y_media + 4 * ROW + FH + 4;      /* summary text line (top); the Media group has 4 rows since the Tape row (24 Oct 2026) */
++	y_buttons = y_sum + FH + 3;              /* Power ON / Reset / Continue / Exit */
++	y_status = y_buttons + GH + 1 + 3;       /* status field (gaps 1 line tighter each: ends on screen line 199) */
 +	inner_h = y_status + FH + 4 + 2;
 +}
 +
@@ -594,15 +871,21 @@ index 0000000..cfa622d
 + * so a shorter line wipes a longer one) */
 +static void draw_settings(struct SysMenu *m)
 +{
-+	char l[96];
-+	int n;
++	char l[96], mid[96], comp[96], out[96];
++	int n, jk = m->joykeys >= 0 && m->joykeys <= 2 ? m->joykeys : 0, rf = refresh_index(m->refresh);
 +	sprintf(l, "Sound %s  Screen %s  Skip %s  Refresh %s  Joykeys %s  Pad %s",
 +		m->sound ? "on" : "off", m->hires ? "hires" : "lores", skip_short[skip_index(m->skip)],
-+		refresh_short[refresh_index(m->refresh)], joykey_short[m->joykeys >= 0 && m->joykeys <= 2 ? m->joykeys : 0],
-+		pad_short[m->pad ? 1 : 0]);
-+	for (n = strlen(l); n < 76; n++) l[n] = ' ';
-+	l[n] = 0;
-+	text_at(20, y_sum + mwin->RPort->TxBaseline, P_BLACK, l);
++		refresh_short[rf], joykey_short[jk], pad_short[m->pad ? 1 : 0]);
++	sprintf(mid, "Sound %s  Screen %s  Skip %s  Ref %s  Joy %s  Pad %s",
++		m->sound ? "on" : "off", m->hires ? "hires" : "lores", skip_short[skip_index(m->skip)],
++		refresh_short[rf], joykey_short[jk], pad_short[m->pad ? 1 : 0]);
++	sprintf(comp, "Snd %s Scr %s Skip %s Ref %s Joy %s Pad %s",
++		m->sound ? "on" : "off", m->hires ? "hires" : "lores", skip_short[skip_index(m->skip)],
++		refresh_short[rf], joykey_short[jk], pad_short[m->pad ? 1 : 0]);
++	KeyMap_FitLine(out, 74, l, mid, comp, m->remap);   /* 74 chars: the window ends at 8 px per char from x 20 */   /* adds "Keys: RShift=M" (or "Keys: 3 remapped") */
++	for (n = strlen(out); n < 74; n++) out[n] = ' ';
++	out[n] = 0;
++	text_at(20, y_sum + mwin->RPort->TxBaseline, P_BLACK, out);
 +}
 +
 +/* ASL file requester; writes the full path into buf (SYS_PATH). 1 if chosen. */
@@ -628,7 +911,7 @@ index 0000000..cfa622d
 +
 +static struct Gadget *row(struct Gadget *g, struct NewGadget *ng, int y, const char *value, int idstr, int idload, int ideject)
 +{
-+	ng->ng_LeftEdge = OX + 120; ng->ng_TopEdge = OY + y; ng->ng_Width = 360; ng->ng_Height = GH;
++	ng->ng_LeftEdge = OX + 120; ng->ng_TopEdge = OY + y; ng->ng_Width = idstr == G_TAPE ? 290 : 360; ng->ng_Height = GH;
 +	ng->ng_GadgetText = NULL; ng->ng_GadgetID = idstr; ng->ng_Flags = 0;
 +	g = gad[idstr] = CreateGadget(STRING_KIND, g, ng, GTST_String, (ULONG)value, GTST_MaxChars, SYS_PATH - 1, TAG_DONE);
 +	ng->ng_LeftEdge = OX + 488; ng->ng_Width = 64; ng->ng_GadgetText = (STRPTR)"Load..."; ng->ng_GadgetID = idload;
@@ -636,6 +919,16 @@ index 0000000..cfa622d
 +	ng->ng_LeftEdge = OX + 558; ng->ng_Width = 62; ng->ng_GadgetText = (STRPTR)"Eject"; ng->ng_GadgetID = ideject;
 +	g = gad[ideject] = CreateGadget(BUTTON_KIND, g, ng, TAG_DONE);
 +	return g;
++}
++
++/* the Tape row: a shorter string gadget and a Rewind button before Load... / Eject */
++static struct Gadget *tape_row(struct Gadget *g, struct NewGadget *ng, int y, const char *value)
++{
++	g = row(g, ng, y, value, G_TAPE, G_TAPELOAD, G_TAPEEJECT);
++	if (!g) return NULL;
++	ng->ng_LeftEdge = OX + 418; ng->ng_TopEdge = OY + y; ng->ng_Width = 64; ng->ng_Height = GH;
++	ng->ng_GadgetText = (STRPTR)"Rewind"; ng->ng_GadgetID = G_TAPEREW; ng->ng_Flags = 0;
++	return gad[G_TAPEREW] = CreateGadget(BUTTON_KIND, g, ng, TAG_DONE);
 +}
 +
 +static struct Gadget *button(struct Gadget *g, struct NewGadget *ng, int x, int y, int w, int h, int id, const char *label, int disabled)
@@ -673,10 +966,11 @@ index 0000000..cfa622d
 +	label(SET_GX, r0 + ROW, "Video:");
 +	label(SET_GX, r0 + 2 * ROW, "Speed:");
 +
-+	box(12, y_media, 616, 3 * ROW + FH + 3, " Media ");
++	box(12, y_media, 616, 4 * ROW + FH + 3, " Media ");
 +	label(120, y_media + FH + 1, "Cartridge:");
 +	label(120, y_media + FH + 1 + ROW, "Drive A:");
 +	label(120, y_media + FH + 1 + 2 * ROW, "Drive B:");
++	label(120, y_media + FH + 1 + 3 * ROW, "Tape:");
 +	draw_settings(m);
 +
 +	/* the status line sits in a recessed field */
@@ -690,21 +984,26 @@ index 0000000..cfa622d
 +	int on[] = { M_SKIP0 + skip_index(m->skip), M_REF1 + refresh_index(m->refresh),
 +	             M_JOY0 + (m->joykeys >= 0 && m->joykeys <= 2 ? m->joykeys : 0), M_PAD0 + (m->pad ? 1 : 0),
 +	             M_SPEED50 + (m->speed ? 1 : 0), M_VIDAUTO + video_of(m), M_MODEL464 + model_of(m) };
-+	for (i = 0; nm[i].nm_Type != NM_END; i++) {
-+		int id = (int)(ULONG)nm[i].nm_UserData, k, want = 0;
-+		if (!(nm[i].nm_Flags & CHECKIT)) continue;
++	for (i = 0; nmx[i].nm_Type != NM_END; i++) {
++		int id = (int)(ULONG)nmx[i].nm_UserData, k, want = 0;
++		if (!(nmx[i].nm_Flags & CHECKIT)) continue;
 +		for (k = 0; k < (int)(sizeof on / sizeof on[0]); k++) if (on[k] == id) want = 1;
++		if (id >= M_PRESET0 && id < M_PRESET0 + MAXPRESETS) want = KeyMap_PresetOf(m->remap) == id - M_PRESET0;
 +		if (id == M_SOUND) want = m->sound ? 1 : 0;
 +		if (id == M_HIRES) want = m->hires ? 1 : 0;
 +		if (id == M_TALL) want = m->tall ? 1 : 0;
-+		if (want) nm[i].nm_Flags |= CHECKED; else nm[i].nm_Flags &= ~CHECKED;
++		if (id == M_WIDE) want = m->wide ? 1 : 0;
++		if (id == M_DISKWRITE) want = m->diskwrite ? 1 : 0;
++		if (id == M_FASTTAPE) want = m->fasttape ? 1 : 0;
++		if (want) nmx[i].nm_Flags |= CHECKED; else nmx[i].nm_Flags &= ~CHECKED;
 +	}
 +}
 +
 +static int make_menus(struct SysMenu *m)
 +{
++	build_menu_table();
 +	set_checks(m);
-+	menustrip = CreateMenus(nm, GTMN_FullMenu, TRUE, TAG_DONE);
++	menustrip = CreateMenus(nmx, GTMN_FullMenu, TRUE, TAG_DONE);
 +	return menustrip && LayoutMenus(menustrip, vi, GTMN_NewLookMenus, TRUE, TAG_DONE);
 +}
 +
@@ -775,6 +1074,7 @@ index 0000000..cfa622d
 +	g = row(g, &ng, y_media + FH + 1, m->cart, G_CART, G_CARTLOAD, G_CARTEJECT);
 +	g = row(g, &ng, y_media + FH + 1 + ROW, m->diska, G_DISKA, G_DISKALOAD, G_DISKAEJECT);
 +	g = row(g, &ng, y_media + FH + 1 + 2 * ROW, m->diskb, G_DISKB, G_DISKBLOAD, G_DISKBEJECT);
++	g = tape_row(g, &ng, y_media + FH + 1 + 3 * ROW, m->tape);
 +	g = button(g, &ng, 12, y_buttons, 148, GH + 1, G_POWER, "Power ON", 0);
 +	g = button(g, &ng, 168, y_buttons, 148, GH + 1, G_RESET, "Reset", 0);
 +	g = button(g, &ng, 324, y_buttons, 148, GH + 1, G_CONTINUE, "Continue", !m->can_continue);
@@ -797,8 +1097,8 @@ index 0000000..cfa622d
 +	GT_RefreshWindow(mwin, NULL);
 +	{
 +		char line[SYS_PATH + 32];
-+		sprintf(line, "%s  Prefs: %s%s", m->status[0] ? m->status : (m->can_continue ? "Paused: Help returns here, Continue resumes." : "Ready."),
-+			m->prefs[0] ? (char *)FilePart((STRPTR)m->prefs) : "(none)", m->game_prefs ? " +game" : "");
++		sprintf(line, "%s  %sPrefs: %s%s", m->status[0] ? m->status : (m->can_continue ? "Paused: Help returns here, Continue resumes." : "Ready."),
++			m->tapepos, m->prefs[0] ? (char *)FilePart((STRPTR)m->prefs) : "(none)", m->game_prefs ? " +game" : "");
 +		m->status[0] = 0;
 +		status(line);
 +	}
@@ -810,6 +1110,7 @@ index 0000000..cfa622d
 +	strncpy(m->cart, (char *)((struct StringInfo *)gad[G_CART]->SpecialInfo)->Buffer, SYS_PATH - 1);
 +	strncpy(m->diska, (char *)((struct StringInfo *)gad[G_DISKA]->SpecialInfo)->Buffer, SYS_PATH - 1);
 +	strncpy(m->diskb, (char *)((struct StringInfo *)gad[G_DISKB]->SpecialInfo)->Buffer, SYS_PATH - 1);
++	strncpy(m->tape, (char *)((struct StringInfo *)gad[G_TAPE]->SpecialInfo)->Buffer, SYS_PATH - 1);
 +}
 +
 +static void set_string(int id, const char *v) { GT_SetGadgetAttrs(gad[id], mwin, NULL, GTST_String, (ULONG)v, TAG_DONE); }
@@ -827,17 +1128,49 @@ index 0000000..cfa622d
 +	GT_RefreshWindow(mwin, NULL);
 +}
 +
++/* Rewind (button or Project menu): done by the host on Continue / Reset;
++ * Power ON always starts the tape from the beginning */
++static void rewind_tape(struct SysMenu *m)
++{
++	take_strings(m);
++	if (!m->tape[0]) { status("Rewind: no tape in the deck."); return; }
++	m->tape_rewind = 1;
++	status("Tape: rewound to the start (on Continue or Reset).");
++}
++
 +/* one chosen menu item; returns a SYS_MENU_ result to leave with,
 + * MENU_REOPEN, or -1 */
++static int menus_dirty;
++static void edit_keymap(struct SysMenu *m)
++{
++	if (Sys_KeyMapEdit(mscr, mwin, vi, m->remap)) {
++		status(m->remap[0] ? "Key map applied. Save for game keeps it." : "Key map cleared.");
++		menus_dirty = 1;   /* the preset checkmarks follow */
++	}
++	ActivateWindow(mwin);   /* the editor was the active window: give the keyboard back */
++	draw_settings(m);
++}
 +static int menu_pick(struct SysMenu *m, struct MenuItem *item)
 +{
 +	int id = (int)(ULONG)GTMENUITEM_USERDATA(item);
 +	int checked = (item->Flags & CHECKED) != 0;
++	if (id >= M_PRESET0 && id < M_PRESET0 + MAXPRESETS) {
++		char t[96];
++		const struct KeyPreset *kp = &KeyMap_Presets[id - M_PRESET0];
++		strcpy(m->remap, kp->remap);
++		sprintf(t, "Key map: %s.%s", kp->label, kp->remap[0] ? " Save for game keeps it." : "");
++		status(t);
++		draw_settings(m);
++		return -1;
++	}
 +	switch (id) {
++	case M_KEYEDIT: edit_keymap(m); break;
 +	case M_LOADCART: take_strings(m); if (ask_file("Insert cartridge (.cpr)", m->cart)) set_string(G_CART, m->cart); break;
 +	case M_LOADA: take_strings(m); if (ask_file("Disk for drive A (.dsk)", m->diska)) set_string(G_DISKA, m->diska); break;
 +	case M_LOADB: take_strings(m); if (ask_file("Disk for drive B (.dsk)", m->diskb)) set_string(G_DISKB, m->diskb); break;
-+	case M_EJECTALL: set_string(G_CART, ""); set_string(G_DISKA, ""); set_string(G_DISKB, ""); break;
++	case M_LOADTAPE: take_strings(m); if (ask_file("Insert tape (.cdt)", m->tape)) set_string(G_TAPE, m->tape); break;
++	case M_REWIND: rewind_tape(m); break;
++	case M_EJECTALL: set_string(G_CART, ""); set_string(G_DISKA, ""); set_string(G_DISKB, ""); set_string(G_TAPE, ""); break;
 +	case M_KEYS: Sys_ShowPicture(mscr, "PROGDIR:Keyboard.iff"); redraw_after_picture(m); break;
 +	case M_SHOT: if (m->can_continue) return SYS_MENU_SHOT; status("Screenshot: nothing is running yet."); break;
 +	case M_SAVE: return SYS_MENU_SAVE;
@@ -847,6 +1180,13 @@ index 0000000..cfa622d
 +	case M_SOUND: m->sound = checked; break;
 +	case M_HIRES: m->hires = checked; break;
 +	case M_TALL: m->tall = checked; break;
++	case M_WIDE: m->wide = checked; break;
++	case M_DISKWRITE: m->diskwrite = checked;
++		status(checked ? "Disks: changes are written back to the .dsk files." : "Disks: changes are kept until Power ON or Exit only.");
++		break;
++	case M_FASTTAPE: m->fasttape = checked;
++		status(checked ? "Fast tape: loading runs flat out, picture and sound paused." : "Fast tape off: tapes load at real speed.");
++		break;
 +	case M_SKIP0: case M_SKIP1: case M_SKIP2: case M_SKIP3: case M_SKIP5: m->skip = skip_values[id - M_SKIP0]; break;
 +	case M_REF1: case M_REF2: case M_REF3: case M_REF4: m->refresh = id - M_REF1 + 1; break;
 +	case M_JOY0: case M_JOY1: case M_JOY2: m->joykeys = id - M_JOY0; break;
@@ -898,11 +1238,12 @@ index 0000000..cfa622d
 +						else if (r >= 0) { result = r; done = 1; }
 +						sel = item->NextSelect;
 +					}
++					if (menus_dirty) { menus_dirty = 0; if (!done) refresh_menus(m); }
 +				}
 +				else if (cls == IDCMP_RAWKEY) {
 +					if (Sys_MenuKeyLog) { if (!mkeylog) mkeylog = fopen("PROGDIR:menukeys.log", "w"); if (mkeylog) { fprintf(mkeylog, "%02x\n", code); fflush(mkeylog); } }
 +					/* Shortcuts (rawkeys): Help/C Continue, P Power ON, R Reset, Q Quit,
-+					 * S Save Prefs, K Keyboard picture, X Screenshot. */
++					 * S Save Prefs, G Save for game, E Edit key map, K Keyboard picture, X Screenshot. */
 +					switch (code) {
 +					case 0x5f: case 0x33: if (m->can_continue) { result = SYS_MENU_CONTINUE; done = 1; } break;
 +					case 0x19: result = SYS_MENU_POWER; done = 1; break;
@@ -910,6 +1251,8 @@ index 0000000..cfa622d
 +					case 0x10: result = SYS_MENU_QUIT; done = 1; break;
 +					case 0x21: result = SYS_MENU_SAVE; done = 1; break;
 +					case 0x32: if (m->can_continue) { result = SYS_MENU_SHOT; done = 1; } break;
++					case 0x12: edit_keymap(m); if (menus_dirty) { menus_dirty = 0; refresh_menus(m); } break;
++					case 0x24: result = SYS_MENU_SAVEGAME; done = 1; break;
 +					case 0x27: Sys_ShowPicture(mscr, "PROGDIR:Keyboard.iff"); redraw_after_picture(m); break;
 +					}
 +				}
@@ -921,6 +1264,9 @@ index 0000000..cfa622d
 +					case G_CARTEJECT: set_string(G_CART, ""); break;
 +					case G_DISKAEJECT: set_string(G_DISKA, ""); break;
 +					case G_DISKBEJECT: set_string(G_DISKB, ""); break;
++					case G_TAPELOAD: take_strings(m); if (ask_file("Insert tape (.cdt)", m->tape)) set_string(G_TAPE, m->tape); break;
++					case G_TAPEEJECT: set_string(G_TAPE, ""); break;
++					case G_TAPEREW: rewind_tape(m); break;
 +					case G_POWER: result = SYS_MENU_POWER; done = 1; break;
 +					case G_CONTINUE: if (m->can_continue) { result = SYS_MENU_CONTINUE; done = 1; } break;
 +					case G_RESET: result = SYS_MENU_RESET; done = 1; break;
@@ -953,10 +1299,10 @@ index 0000000..cfa622d
 +}
 diff --git a/src/amiga/amiga_sys.c b/src/amiga/amiga_sys.c
 new file mode 100644
-index 0000000..9f93366
+index 0000000..fae7dfd
 --- /dev/null
 +++ b/src/amiga/amiga_sys.c
-@@ -0,0 +1,1551 @@
+@@ -0,0 +1,1572 @@
 +/* Arnold on AmigaOS: screen, c2p, palette, keyboard and joystick.
 + * AmigaOS 3.x, AGA. Built with bebbo's m68k-amigaos-gcc, -noixemul. */
 +#include <exec/types.h>
@@ -1281,7 +1627,7 @@ index 0000000..9f93366
 +#define VS_DMAX 96
 +#endif
 +int Sys_VShiftOn, Sys_NoVShift, Sys_VShiftOn_Last;
-+int Sys_TallScreen;
++int Sys_TallScreen, Sys_WideScreen;
 +static int TR;                       /* rows in each buffer's chip area (SH without vshift) */
 +static int win_row[NBUF];            /* first row of the window shown */
 +#ifdef VSHIFT
@@ -1494,7 +1840,7 @@ index 0000000..9f93366
 +{
 +	struct Rectangle rect;
 +	ULONG modeid = Sys_ModeID(hires ? HIRES_KEY : LORES_KEY);
-+	int i, rw, rh, ntsc_max;
++	int i, rw, rh, ntsc_max, wide_max;
 +
 +	CW = cw; CH = ch;
 +	c2p_init();
@@ -1527,11 +1873,30 @@ index 0000000..9f93366
 +			ntsc_max = 1;
 +		}
 +	}
++	/* WIDE (24 Oct 2026): PAL standard overscan is 320..352 lores columns, so
++	 * 32 columns each side of the 384-wide CPC picture are lost (Sonic GX's ring
++	 * icon, Pinball Dreams' logo wingtip). Wide takes the mode's full horizontal
++	 * overscan (OSCAN_MAX: 362 lores pixels on PAL, hpos 93-455, the most the
++	 * beam shows) as the display clip, as TALL does vertically. The screen is the
++	 * whole 384 columns, wider than the clip, so Intuition starts the fetch (11
++	 * columns in, by the screen's negative left edge) and the picture is centred
++	 * in the window: columns 11-372 show. The hardware fetch (DDFSTRT, BPLCON1
++	 * scroll, 64-pixel FMODE 3 blocks) is left to graphics.library. Lores only;
++	 * hires screens keep their standard width. */
++	wide_max = 0;
++	if (Sys_WideScreen && !hires) {
++		struct Rectangle mx;
++		if (QueryOverscan(modeid, &mx, OSCAN_MAX) && mx.MaxX - mx.MinX > rect.MaxX - rect.MinX) {
++			rect.MinX = mx.MinX;
++			rect.MaxX = mx.MaxX;
++			wide_max = 1;
++		} else Sys_Log("display: WIDE: no wider overscan in mode %08lx, standard width", (unsigned long)modeid);
++	}
 +	rw = rect.MaxX - rect.MinX + 1;
 +	rh = rect.MaxY - rect.MinY + 1;
-+	SW = (rw < cw ? rw : cw) & ~31;
++	SW = (wide_max ? cw : rw < cw ? rw : cw) & ~31;   /* wide: the whole picture, centred in (and cropped by) the overscan window */
 +	SH = rh < ch ? rh : ch;
-+	Sys_Log("display: mode %08lx overscan%s %d,%d-%d,%d screen %dx%d chunky %dx%d chip free %lu", (unsigned long)modeid, ntsc_max ? " (full height)" : "",
++	Sys_Log("display: mode %08lx overscan%s %d,%d-%d,%d screen %dx%d chunky %dx%d chip free %lu", (unsigned long)modeid, ntsc_max ? (wide_max ? " (full height, wide)" : " (full height)") : (wide_max ? " (wide)" : ""),
 +		(int)rect.MinX, (int)rect.MinY, (int)rect.MaxX, (int)rect.MaxY, SW, SH, cw, ch, (unsigned long)AvailMem(MEMF_CHIP));
 +	XOFF = (cw - SW) / 2;
 +	YOFF = (ch - SH) / 2;
@@ -1546,12 +1911,14 @@ index 0000000..9f93366
 +	scr = OpenScreenTags(NULL,
 +		SA_Width, SW, SA_Height, SH, SA_Depth, 8,
 +		SA_DisplayID, modeid,
-+		ntsc_max ? SA_DClip : SA_Overscan, ntsc_max ? (ULONG)&rect : OSCAN_STANDARD,
-+		SA_Left, (ntsc_max ? rect.MinX : 0) + (rw - SW) / 2, SA_Top, (ntsc_max ? rect.MinY : 0) + (rh - SH) / 2,
++		(ntsc_max || wide_max) ? SA_DClip : SA_Overscan, (ntsc_max || wide_max) ? (ULONG)&rect : OSCAN_STANDARD,
++		SA_Left, ((ntsc_max || wide_max) ? rect.MinX : 0) + (rw - SW) / 2, SA_Top, ((ntsc_max || wide_max) ? rect.MinY : 0) + (rh - SH) / 2,
 +		SA_Quiet, TRUE, SA_ShowTitle, FALSE, SA_Title, (ULONG)"Arnold",
 +		SA_Interleaved, TRUE,
 +		TAG_DONE);
 +	if (!scr) { Sys_Log("display: OpenScreen failed"); return 0; }
++	Sys_Log("display: screen left %d top %d size %dx%d, viewport DxOffset %d DyOffset %d DWidth %d DHeight %d", (int)scr->LeftEdge, (int)scr->TopEdge, (int)scr->Width, (int)scr->Height,
++		(int)scr->ViewPort.DxOffset, (int)scr->ViewPort.DyOffset, (int)scr->ViewPort.DWidth, (int)scr->ViewPort.DHeight);
 +
 +	safeport = CreateMsgPort(); dispport = CreateMsgPort();
 +	if (!safeport || !dispport) { Sys_CloseDisplay(); return 0; }
@@ -2510,10 +2877,10 @@ index 0000000..9f93366
 +}
 diff --git a/src/amiga/amiga_sys.h b/src/amiga/amiga_sys.h
 new file mode 100644
-index 0000000..44f6f33
+index 0000000..57613b4
 --- /dev/null
 +++ b/src/amiga/amiga_sys.h
-@@ -0,0 +1,121 @@
+@@ -0,0 +1,131 @@
 +/* Arnold on AmigaOS: the OS-facing half of the host. No Arnold headers here
 + * (cpcglob.h has its own BOOL, which clashes with exec/types.h), so
 + * host_amiga.c talks to the Amiga through this small interface only. */
@@ -2566,6 +2933,7 @@ index 0000000..44f6f33
 +struct SysMenu {
 +	char cart[SYS_PATH], diska[SYS_PATH], diskb[SYS_PATH];
 +	int sound, hires;
++	int wide;                /* full-width screen: up to all 384 CPC columns (lores overscan), for games drawn to the left/right border */
 +	int tall;                /* full-height screen: all 272 CPC lines (PAL overscan), for games drawn into the top/bottom border */
 +	int skip, refresh;       /* frame skip (max in a row, 0 off) and fixed refresh (1 = every frame) */
 +	int joykeys;             /* keyboard as joystick: 0 off, 1 cursors, 2 QAOP */
@@ -2578,10 +2946,18 @@ index 0000000..44f6f33
 +	char prefs[SYS_PATH];    /* shown in the status line */
 +	int game_prefs;          /* the cartridge has its own <file>.prefs (shown) */
 +	char status[80];         /* one-off status line for the next menu (cleared) */
++	char remap[128];         /* the key map (remap= text): the host fills it before the menu, takes it back after */
++	int diskwrite;           /* write changed disks back to their .dsk files (22 Oct 2026) */
++	char tape[SYS_PATH];     /* tape (.cdt) in the cassette deck (24 Oct 2026) */
++	int fasttape;            /* Fast tape: no drawing or 50 Hz wait while the tape plays */
++	int tape_rewind;         /* set by the menu: rewind the tape on Continue / Reset */
++	char tapepos[32];        /* "Tape 3/5  " for the status line (host fills it) */
 +};
 +enum { SYS_MODEL_464 = 0, SYS_MODEL_664, SYS_MODEL_6128, SYS_MODEL_PLUS, SYS_MODEL_GX4000, SYS_MODELS };
 +enum { SYS_MENU_QUIT = 0, SYS_MENU_POWER, SYS_MENU_CONTINUE, SYS_MENU_RESET, SYS_MENU_SAVE,
 +       SYS_MENU_SAVEGAME, SYS_MENU_FORGETGAME, SYS_MENU_SHOT };
++int  Sys_KeyMapEdit(void *screen, void *parent, void *visinfo, char *remap);   /* amiga_keymap.c: the editor window; 1 = OK (remap updated) */
++const char *Host_AmigaKeyName(int rawkey, char *buf);   /* host_amiga.c: remap= name of an Amiga rawkey, NULL if none */
 +int  Sys_Menu(struct SysMenu *m);
 +void Sys_MenuClose(void);           /* closes the menu screen Sys_Menu leaves open (call after the emulation screen is up) */
 +void Sys_MenuError(const char *text);
@@ -2589,7 +2965,7 @@ index 0000000..44f6f33
 +
 +/* Workbench start (amiga_wb.c): fills st from the icon's ToolTypes and a
 + * project icon; returns 1 when started from Workbench. */
-+struct SysStart { char prefs[SYS_PATH], media[SYS_PATH], remap[128]; int menu, hires, tall, nosound, skip, refresh, joykeys, pad, speed, video, model; };   /* skip -1, refresh 0, others -1: not given */
++struct SysStart { char prefs[SYS_PATH], media[SYS_PATH], remap[128]; int menu, hires, tall, wide, nosound, skip, refresh, joykeys, pad, speed, video, model, diskwrite, fasttape; char tape[SYS_PATH]; };   /* skip -1, refresh 0, others -1: not given */
 +int Sys_ParseModel(const char *v);   /* "464" "664" "6128" "PLUS" "GX4000" (any case) -> SYS_MODEL_*, -1 if not one */
 +int Sys_ParseVideo(const char *v);   /* "AUTO" "PAL" "NTSC" or 0-2 -> 0-2, -1 if not one */
 +int Sys_ParseSpeed(const char *v);   /* "50" or 0 -> 0, "DISPLAY" or 1 -> 1, -1 if not one */
@@ -2609,6 +2985,7 @@ index 0000000..44f6f33
 +                 audit_frames, audit_bad_frames, audit_bad_groups, audit_cop_checks, audit_cop_bad; } SysPerf;
 +extern int Sys_Audit;      /* AUDIT argument: read every converted buffer back from chip RAM and check it, and the copper's plane pointer */
 +extern int Sys_VShiftOn;   /* 1 when the display opened with the vertical-shift windows (NO_VSHIFT / NOVSHIFT: 0) */
++extern int Sys_WideScreen;   /* the next Sys_OpenDisplay takes the full width (menu.wide) */
 +extern int Sys_TallScreen;   /* the next Sys_OpenDisplay takes the full height (menu.tall) */
 +extern int Sys_NoVShift;   /* NOVSHIFT argument: don't use them (A/B tests) */
 +extern int Sys_VShiftOn_Last;   /* as Sys_VShiftOn for the last display opened (kept after closing, for the perf report) */
@@ -2637,10 +3014,10 @@ index 0000000..44f6f33
 +#endif
 diff --git a/src/amiga/amiga_wb.c b/src/amiga/amiga_wb.c
 new file mode 100644
-index 0000000..a242627
+index 0000000..db49d19
 --- /dev/null
 +++ b/src/amiga/amiga_wb.c
-@@ -0,0 +1,136 @@
+@@ -0,0 +1,170 @@
 +/* Arnold on AmigaOS: Workbench start. With libnix, main() gets argc == 0 and
 + * argv == the WBStartup message. We read the PREFS ToolType from the icon we
 + * were started from (Arnold's own, or a preset project icon) and take a project icon
@@ -2652,6 +3029,9 @@ index 0000000..a242627
 +#include <proto/exec.h>
 +#include <proto/dos.h>
 +#include <proto/icon.h>
++#include <dos/dos.h>
++#include <dos/dosextens.h>
++#include <exec/memory.h>
 +#include <string.h>
 +#include <stdlib.h>
 +#include "amiga_sys.h"
@@ -2670,6 +3050,7 @@ index 0000000..a242627
 +	if (FindToolType((STRPTR *)dobj->do_ToolTypes, (STRPTR)"MENU")) st->menu = 1;
 +	if (FindToolType((STRPTR *)dobj->do_ToolTypes, (STRPTR)"HIRES")) st->hires = 1;
 +	if (FindToolType((STRPTR *)dobj->do_ToolTypes, (STRPTR)"TALL")) st->tall = 1;
++	if (FindToolType((STRPTR *)dobj->do_ToolTypes, (STRPTR)"WIDE")) st->wide = 1;
 +	if (FindToolType((STRPTR *)dobj->do_ToolTypes, (STRPTR)"NOSOUND")) st->nosound = 1;
 +	tt = (char *)FindToolType((STRPTR *)dobj->do_ToolTypes, (STRPTR)"SKIP");
 +	if (tt) st->skip = atoi(tt);
@@ -2687,8 +3068,33 @@ index 0000000..a242627
 +	if (tt) st->video = Sys_ParseVideo(tt);   /* VIDEO=AUTO|PAL|NTSC */
 +	tt = (char *)FindToolType((STRPTR *)dobj->do_ToolTypes, (STRPTR)"MODEL");
 +	if (tt) st->model = Sys_ParseModel(tt);   /* MODEL=464|664|6128|PLUS|GX4000 */
++	tt = (char *)FindToolType((STRPTR *)dobj->do_ToolTypes, (STRPTR)"DISKWRITE");
++	if (tt) st->diskwrite = atoi(tt) ? 1 : 0;   /* DISKWRITE=0|1: write changed disks back */
++	tt = (char *)FindToolType((STRPTR *)dobj->do_ToolTypes, (STRPTR)"FASTTAPE");
++	if (tt) st->fasttape = atoi(tt) ? 1 : 0;   /* FASTTAPE=0|1: fast tape loading (24 Oct 2026) */
++	tt = (char *)FindToolType((STRPTR *)dobj->do_ToolTypes, (STRPTR)"TAPE");
++	if (tt) strncpy(st->tape, tt, SYS_PATH - 1);   /* TAPE=<file.cdt> */
 +	FreeDiskObject(dobj);
 +	return 1;
++}
++
++/* Disk write-back (22 Oct 2026, cpc/diskimage/dskwrite.c): 0 if the file is
++ * protected against writing or deleting, or its volume is write-protected. */
++int Host_FileWritable(const char *name)
++{
++	struct FileInfoBlock *fib;
++	struct InfoData *id;
++	BPTR l = Lock((STRPTR)name, SHARED_LOCK);
++	int ok = 1;
++	if (!l) return 0;
++	fib = (struct FileInfoBlock *)AllocDosObject(DOS_FIB, NULL);
++	if (fib && Examine(l, fib) && (fib->fib_Protection & (FIBF_WRITE | FIBF_DELETE))) ok = 0;   /* RWED bits are set = not allowed */
++	if (fib) FreeDosObject(DOS_FIB, fib);
++	id = (struct InfoData *)AllocVec(sizeof *id, MEMF_PUBLIC);   /* longword aligned */
++	if (id && Info(l, id) && id->id_DiskState == ID_WRITE_PROTECTED) ok = 0;
++	if (id) FreeVec(id);
++	UnLock(l);
++	return ok;
 +}
 +
 +int Sys_WBStart(int argc, char **argv, struct SysStart *st)
@@ -2697,7 +3103,7 @@ index 0000000..a242627
 +	struct WBArg *wa;
 +	memset(st, 0, sizeof *st);
 +	st->skip = -1;
-+	st->joykeys = -1; st->pad = -1; st->speed = -1; st->video = -1; st->model = -1;
++	st->joykeys = -1; st->pad = -1; st->speed = -1; st->video = -1; st->model = -1; st->diskwrite = -1; st->fasttape = -1;
 +	if (argc != 0) return 0;
 +	wbs = (struct WBStartup *)argv;
 +	if (!wbs || wbs->sm_NumArgs < 1) return 0;
@@ -2714,7 +3120,8 @@ index 0000000..a242627
 +		struct SysStart pre;
 +		memset(&pre, 0, sizeof pre);
 +		pre.skip = -1;
-+		pre.joykeys = -1; pre.pad = -1; pre.speed = -1; pre.video = -1; pre.model = -1;
++		pre.joykeys = -1; pre.pad = -1; pre.speed = -1; pre.video = -1; pre.model = -1; pre.diskwrite = -1;
++		pre.fasttape = -1;
 +		if (IconBase && read_tooltypes(wa[1].wa_Name, &pre) && pre.prefs[0]) {
 +			char dir[SYS_PATH];
 +			if (strchr(pre.prefs, ':') == NULL && NameFromLock(wa[1].wa_Lock, (STRPTR)dir, SYS_PATH)) {
@@ -2725,6 +3132,7 @@ index 0000000..a242627
 +			if (pre.menu) st->menu = 1;
 +			if (pre.hires) st->hires = 1;
 +			if (pre.tall) st->tall = 1;
++			if (pre.wide) st->wide = 1;
 +			if (pre.nosound) st->nosound = 1;
 +			if (pre.skip >= 0) st->skip = pre.skip;
 +			if (pre.refresh > 0) st->refresh = pre.refresh;
@@ -2734,6 +3142,9 @@ index 0000000..a242627
 +			if (pre.speed >= 0) st->speed = pre.speed;
 +			if (pre.video >= 0) st->video = pre.video;
 +			if (pre.model >= 0) st->model = pre.model;
++			if (pre.diskwrite >= 0) st->diskwrite = pre.diskwrite;
++			if (pre.fasttape >= 0) st->fasttape = pre.fasttape;
++			if (pre.tape[0]) strcpy(st->tape, pre.tape);
 +		} else if (NameFromLock(wa[1].wa_Lock, (STRPTR)st->media, SYS_PATH))
 +			AddPart((STRPTR)st->media, wa[1].wa_Name, SYS_PATH);
 +		CurrentDir(old);
@@ -2885,10 +3296,10 @@ index 0000000..a598fc2
 +}
 diff --git a/src/amiga/host_amiga.c b/src/amiga/host_amiga.c
 new file mode 100644
-index 0000000..5c34480
+index 0000000..30e8a64
 --- /dev/null
 +++ b/src/amiga/host_amiga.c
-@@ -0,0 +1,878 @@
+@@ -0,0 +1,1033 @@
 +/* Arnold host for AmigaOS: implements src/cpc/host.h on top of amiga_sys.c.
 + * The core renders into an 8-bit chunky buffer (384 x 272, one byte per
 + * pixel, PaletteRemap indices); amiga_sys converts it to AGA bitplanes.
@@ -2901,9 +3312,13 @@ index 0000000..5c34480
 +#include "../cpc/asic.h"
 +#include "../cpc/snapshot.h"
 +#include "../cpc/diskimage/diskimg.h"
++#include "../cpc/diskimage/dskwrite.h"
++#include "../cpc/cassette.h"
++#include "../cpc/tzx.h"
 +#include "amiga_sys.h"
 +#include "screenshot.h"
 +#include "keyscript.h"
++#include "keymaplogic.h"
 +#include <stdio.h>
 +#include <stdlib.h>
 +#include <string.h>
@@ -2920,6 +3335,23 @@ index 0000000..5c34480
 +#define AUD_SAMPLES 444
 +static SOUND_PLAYBACK_FORMAT sf = {2, 16, 22240};
 +static struct SysMenu menu;
++static int global_diskwrite = 1;      /* Write disks back: prefs diskwrite=, DISKWRITE=; a game's own prefs can turn it off */
++static int global_fasttape = 1;       /* Fast tape: prefs fasttape=, FASTTAPE=; a game's own prefs can turn it off */
++/* Tapes (24 Oct 2026). The core plays a .cdt (cpc/tzxold.c) while the motor
++ * runs: port B bit 7 follows the pulses, timed by the Z80's cycles. Fast tape:
++ * while the motor runs and the tape has blocks left, frames are emulated but
++ * not drawn (one in TAPE_SHOW is, so the loading screen and the border show
++ * progress), there is no 50 Hz wait and Paula gets silence, so a tape that
++ * takes minutes loads in seconds. The emulation itself is the same frame for
++ * frame (only drawing and pacing change), so picky loaders still work. */
++#define TAPE_SHOW 25
++static char tape_in[SYS_PATH];        /* the tape the core has, by file name */
++static int tape_mute;                 /* this frame's sound block is replaced by silence */
++static unsigned long tape_fast_count, tape_fast_frames;
++static int tape_fast_active(void)
++{
++	return menu.fasttape && tape_in[0] && CPC_GetTapeMotor() && TapeImage_IsPlayable();
++}
 +static int display_open, audio_open;
 +static int aud_period, aud_int;       /* how the open audio was set up (reopened when the timing changes) */
 +unsigned char hostpal[256][3];
@@ -3155,14 +3587,27 @@ index 0000000..5c34480
 +	audio_tmp_len = size;
 +	return TRUE;
 +}
-+void Host_UnLockAudioBuffer(void) { Sys_AudioQueue(audio_tmp, audio_tmp_len / 4); }
++void Host_UnLockAudioBuffer(void)
++{
++	if (tape_mute) memset(audio_tmp, 0, audio_tmp_len);   /* fast tape: silence (the queue drops what can't be played) */
++	Sys_AudioQueue(audio_tmp, audio_tmp_len / 4);
++}
 +
 +/* Once a frame: the core mixes the frame's sound (Host_LockAudioBuffer /
 + * Host_UnLockAudioBuffer queue it for Paula), then the 50 Hz wait. The Windows
 + * host does the same; without the CPC_UpdateAudio call there is no sound. */
 +void Host_Throttle(void)
 +{
++	int fast = tape_in[0] && tape_fast_active();
++	if (fast != tape_mute) {   /* the log shows each fast stretch (only on changes) */
++		static unsigned long t0;
++		if (fast) { t0 = Sys_Micros(); Sys_Log("tape: fast on, block %d/%d", TapeImage_GetCurrentBlock() + 1, TapeImage_GetNumBlocks()); }
++		else Sys_Log("tape: fast off after %lu frames in %lu ms", tape_fast_frames, (Sys_Micros() - t0) / 1000);
++		tape_fast_frames = 0;
++	}
++	tape_mute = fast;
 +	if (audio_open) CPC_UpdateAudio();
++	if (fast) { behind_us = 0; tape_fast_frames++; return; }   /* fast tape: no 50 Hz wait */
 +	behind_us = turbo ? 0 : Sys_WaitFrame();   /* TURBO: run flat out */
 +}
 +
@@ -3170,6 +3615,8 @@ index 0000000..5c34480
 +{
 +	int fixed = refresh > 1 && (refresh_count++ % refresh) != 0;
 +	if (script_on && KeyScript_SnapAt(script_frame + 1)) { skip_run = 0; return 0; }
++	if (tape_in[0] && tape_fast_active()) { skip_run = 0; return (tape_fast_count++ % TAPE_SHOW) != 0; }
++	tape_fast_count = 0;
 +	if (fixed) { Sys_Perf.skipped_frames++; return 1; }
 +	if (skip_max <= 0 || behind_us <= 0 || skip_run >= skip_max) { skip_run = 0; return 0; }
 +	skip_run++;
@@ -3219,21 +3666,30 @@ index 0000000..5c34480
 +static char remap_str[128], global_remap[128];
 +static short remap_key[128];
 +static int remap_on;
-+static const struct { const char *name; unsigned char code; } amiga_keys[] = {
-+	{"LSHIFT", 0x60}, {"RSHIFT", 0x61}, {"CAPS", 0x62}, {"CTRL", 0x63}, {"LALT", 0x64}, {"RALT", 0x65},
-+	{"LAMIGA", 0x66}, {"RAMIGA", 0x67}, {"SPACE", 0x40}, {"BACKSPACE", 0x41}, {"TAB", 0x42},
-+	{"ENTER", 0x43}, {"RETURN", 0x44}, {"ESC", 0x45}, {"DEL", 0x46},
-+	{"UP", 0x4c}, {"DOWN", 0x4d}, {"RIGHT", 0x4e}, {"LEFT", 0x4f}, {NULL, 0} };
 +static int amiga_key_code(const char *s)
 +{
 +	int i, id;
-+	for (i = 0; amiga_keys[i].name; i++) if (!strcmp(amiga_keys[i].name, s)) return amiga_keys[i].code;
++	if ((i = KeyMap_AmigaNameCode(s)) >= 0) return i;
 +	if (s[0] == 'F' && s[1] >= '1' && s[1] <= '9') { i = atoi(s + 1); if (i >= 1 && i <= 10) return 0x50 + i - 1; }
 +	if (strlen(s) == 1 && ((s[0] >= 'A' && s[0] <= 'Z') || (s[0] >= '0' && s[0] <= '9'))) {
 +		id = KeyScript_KeyId(s);   /* a letter or digit: where the Amiga has that CPC key */
 +		for (i = 1; i < 0x40; i++) if (rawmap[i] == id) return i;
 +	}
 +	return -1;
++}
++/* rawkey -> name for the key map editor (names as remap= takes them); NULL if the key can't be remapped */
++const char *Host_AmigaKeyName(int code, char *buf)
++{
++	const char *n = KeyMap_AmigaCodeName(code);
++	int i;
++	if (n) return n;
++	if (code >= 0x50 && code <= 0x59) { sprintf(buf, "F%d", code - 0x50 + 1); return buf; }
++	if (code >= 0 && code < 0x40 && rawmap[code] >= 0)
++		for (i = 0; i < 36; i++) {
++			buf[0] = (char)(i < 26 ? 'A' + i : '0' + i - 26); buf[1] = 0;
++			if (KeyScript_KeyId(buf) == rawmap[code] && amiga_key_code(buf) == code) return buf;
++		}
++	return NULL;
 +}
 +static void remap_parse(const char *str)
 +{
@@ -3360,8 +3816,8 @@ index 0000000..5c34480
 +	return 1;
 +}
 +
-+/* Arnold [file ...] [NOSOUND] [HIRES] [TALL] [MENU] [P=prefs] [SKIP=n] [REFRESH=n] [JOYKEYS=0|1|2]
-+ * [PAD=0|CD32] [SPEED=50|DISPLAY] [VIDEO=AUTO|PAL|NTSC] [MODEL=464|664|6128|PLUS|GX4000]: .cpr cartridge (default
++/* Arnold [file ...] [NOSOUND] [HIRES] [TALL] [WIDE] [MENU] [P=prefs] [SKIP=n] [REFRESH=n] [JOYKEYS=0|1|2]
++ * [PAD=0|CD32] [SPEED=50|DISPLAY] [VIDEO=AUTO|PAL|NTSC] [MODEL=464|664|6128|PLUS|GX4000] [DISKWRITE=0|1]: .cpr cartridge (default
 + * PROGDIR:roms/system.cpr), .dsk disk in drive A (a second one in B), .sna
 + * snapshot. Starts straight into the emulation unless MENU is given or
 + * nothing could be loaded. Help brings up the menu; Continue resumes. */
@@ -3380,6 +3836,7 @@ index 0000000..5c34480
 +		if (!strcmp(line, "sound")) menu.sound = atoi(v);
 +		else if (!strcmp(line, "hires")) menu.hires = atoi(v);
 +		else if (!strcmp(line, "tall")) menu.tall = atoi(v);
++		else if (!strcmp(line, "wide")) menu.wide = atoi(v);
 +		else if (!strcmp(line, "skip")) skip_max = atoi(v);
 +		else if (!strcmp(line, "refresh")) refresh = atoi(v);
 +		else if (!strcmp(line, "joykeys")) joykeys = atoi(v);
@@ -3391,6 +3848,9 @@ index 0000000..5c34480
 +		else if (!strcmp(line, "cart") && v[0]) strncpy(menu.cart, v, SYS_PATH - 1);
 +		else if (!strcmp(line, "diska")) strncpy(menu.diska, v, SYS_PATH - 1);
 +		else if (!strcmp(line, "diskb")) strncpy(menu.diskb, v, SYS_PATH - 1);
++		else if (!strcmp(line, "diskwrite")) menu.diskwrite = atoi(v) ? 1 : 0;
++		else if (!strcmp(line, "fasttape")) menu.fasttape = atoi(v) ? 1 : 0;
++		else if (!strcmp(line, "tape")) strncpy(menu.tape, v, SYS_PATH - 1);
 +	}
 +	fclose(f);
 +}
@@ -3404,7 +3864,9 @@ index 0000000..5c34480
 +		menu.sound, menu.hires, skip_max, refresh, global_joykeys, Sys_PadType,
 +		Sys_SpeedNames[menu.speed ? 1 : 0], Sys_VideoNames[menu.video >= 0 && menu.video <= 2 ? menu.video : 0],
 +		Sys_ModelNames[menu.model >= 0 && menu.model < SYS_MODELS ? menu.model : SYS_MODEL_PLUS], menu.cart, menu.diska, menu.diskb);
-+	fprintf(f, "tall=%d\n", menu.tall);
++	fprintf(f, "tall=%d\nwide=%d\n", menu.tall, menu.wide);
++	fprintf(f, "diskwrite=%d\n", global_diskwrite);
++	fprintf(f, "fasttape=%d\ntape=%s\n", global_fasttape, menu.tape);
 +	if (global_remap[0]) fprintf(f, "remap=%s\n", global_remap);
 +	fclose(f);
 +}
@@ -3413,12 +3875,15 @@ index 0000000..5c34480
 + * full height, key remap), applied when that game is powered on; the global
 + * prefs come back otherwise. A disk game (the Plus with the system cartridge,
 + * or a plain CPC, with a disk in drive A) uses <disk A>.prefs (20 Oct 2026). */
-+static int global_sound, global_hires, global_tall;
++static int global_sound, global_hires, global_tall, global_wide;
 +static void game_prefs_name(char *out)
 +{
 +	const char *c = menu.cart, *e = c + strlen(c);
 +	int plus = menu.model == SYS_MODEL_PLUS || menu.model == SYS_MODEL_GX4000;
 +	int system = e - c >= 10 && !kwcmp(e - 10, "SYSTEM.CPR");
++	/* a tape game (24 Oct 2026): <tape>.prefs when there is a tape and no disk
++	 * in drive A (or a 464, which has no drive) */
++	if (menu.tape[0] && (!plus || system) && (!menu.diska[0] || menu.model == SYS_MODEL_464)) { sprintf(out, "%s.prefs", menu.tape); return; }
 +	sprintf(out, "%s.prefs", menu.diska[0] && (!plus || system) ? menu.diska : menu.cart);
 +}
 +
@@ -3426,7 +3891,9 @@ index 0000000..5c34480
 +{
 +	char name[SYS_PATH + 8], line[64], *v;
 +	FILE *f;
-+	menu.sound = global_sound; menu.hires = global_hires; menu.game_prefs = 0; menu.tall = global_tall;
++	menu.sound = global_sound; menu.hires = global_hires; menu.game_prefs = 0; menu.tall = global_tall; menu.wide = global_wide;
++	menu.diskwrite = global_diskwrite;
++	menu.fasttape = global_fasttape;
 +	joykeys = global_joykeys;
 +	if (strcmp(remap_str, global_remap)) remap_parse(global_remap);
 +	game_prefs_name(name);
@@ -3439,7 +3906,10 @@ index 0000000..5c34480
 +		else if (!strcmp(line, "hires")) menu.hires = atoi(v);
 +		else if (!strcmp(line, "joykeys")) joykeys = atoi(v);
 +		else if (!strcmp(line, "tall")) menu.tall = atoi(v);
++		else if (!strcmp(line, "wide")) menu.wide = atoi(v);
 +		else if (!strcmp(line, "remap")) remap_parse(v);
++		else if (!strcmp(line, "diskwrite")) menu.diskwrite = atoi(v) ? 1 : 0;
++		else if (!strcmp(line, "fasttape")) menu.fasttape = atoi(v) ? 1 : 0;
 +	}
 +	fclose(f);
 +	menu.game_prefs = 1;
@@ -3452,8 +3922,10 @@ index 0000000..5c34480
 +	game_prefs_name(name);
 +	f = fopen(name, "w");
 +	if (!f) { sprintf(msg, "Can't write game settings\n%s", name); Sys_MenuError(msg); return; }
-+	fprintf(f, "; Arnold game settings\nsound=%d\nhires=%d\njoykeys=%d\ntall=%d\n", menu.sound, menu.hires, joykeys, menu.tall);
++	fprintf(f, "; Arnold game settings\nsound=%d\nhires=%d\njoykeys=%d\ntall=%d\nwide=%d\n", menu.sound, menu.hires, joykeys, menu.tall, menu.wide);
 +	if (remap_str[0]) fprintf(f, "remap=%s\n", remap_str);
++	if (menu.diskwrite != global_diskwrite) fprintf(f, "diskwrite=%d\n", menu.diskwrite);
++	if (menu.fasttape != global_fasttape) fprintf(f, "fasttape=%d\n", menu.fasttape);
 +	fclose(f);
 +	menu.game_prefs = 1;
 +}
@@ -3464,7 +3936,9 @@ index 0000000..5c34480
 +	game_prefs_name(name);
 +	remove(name);
 +	menu.game_prefs = 0;
-+	menu.sound = global_sound; menu.hires = global_hires; joykeys = global_joykeys; menu.tall = global_tall;
++	menu.sound = global_sound; menu.hires = global_hires; joykeys = global_joykeys; menu.tall = global_tall; menu.wide = global_wide;
++	menu.diskwrite = global_diskwrite;
++	menu.fasttape = global_fasttape;
 +	remap_parse(global_remap);
 +}
 +
@@ -3484,14 +3958,46 @@ index 0000000..5c34480
 + * (before 16 Oct 2026 an ejected disk stayed in, and the loaded file was
 + * never freed). The core keeps its own copy of the image. */
 +static char disk_in[2][SYS_PATH];
++/* Disk write-back (22 Oct 2026): the file as loaded (or as last written) is
++ * kept per drive as the template for cpc/diskimage/dskwrite.c. A drive the
++ * machine changed is written back when the menu opens (Help), on Eject, when
++ * another disk goes in, on Power ON and on Exit, if "Write disks back" is on.
++ * A write that fails (write-protected file or volume, disk full) is logged and
++ * shown once in the menu status line; the changes then stay in memory only. */
++static unsigned char *disk_img[2];
++static unsigned long disk_len[2];
++static int disk_wbfail[2];
++static void flush_disk(int drive, const char *when)
++{
++	char msg[DSKWRITE_MSG];
++	int r;
++	if (!menu.diskwrite || !disk_in[drive][0] || !disk_img[drive] || disk_wbfail[drive]) return;
++	if (!DiskImage_IsImageDirty(drive)) return;
++	r = DskWrite_Flush(drive, disk_in[drive], &disk_img[drive], &disk_len[drive], msg);
++	if (r == 0) return;
++	Sys_Log("drive %c (%s): '%s' %s", 'A' + drive, when, disk_in[drive], msg);
++	if (r < 0) {
++		disk_wbfail[drive] = 1;
++		sprintf(menu.status, "Disk %c not saved: ", 'A' + drive);
++		strncat(menu.status, msg + 13, sizeof menu.status - strlen(menu.status) - 1);   /* past "not written: " */
++	}
++}
++static void flush_disks(const char *when) { flush_disk(0, when); flush_disk(1, when); }
++static void drop_image(int drive)
++{
++	if (disk_img[drive]) free(disk_img[drive]);
++	disk_img[drive] = NULL; disk_len[drive] = 0; disk_wbfail[drive] = 0;
++}
 +static void apply_disk(int drive, const char *name)
 +{
 +	unsigned char *data; unsigned long len;
 +	char msg[SYS_PATH + 40];
 +	if (!strcmp(disk_in[drive], name)) return;
++	flush_disk(drive, name[0] ? "disk change" : "eject");
 +	if (!name[0]) {
 +		DiskImage_RemoveDisk(drive);
 +		disk_in[drive][0] = 0;
++		drop_image(drive);
 +		Sys_Log("drive %c: ejected", 'A' + drive);
 +		return;
 +	}
@@ -3499,13 +4005,49 @@ index 0000000..5c34480
 +	if (DiskImage_InsertDisk(drive, data, len) != ARNOLD_STATUS_OK) {
 +		sprintf(msg, "Not a CPC disk image\n%s", name);
 +		Sys_MenuError(msg);
++		free(data);
 +	} else {
 +		strncpy(disk_in[drive], name, SYS_PATH - 1);
++		drop_image(drive);
++		disk_img[drive] = data; disk_len[drive] = len;   /* kept: the write-back template */
 +		Sys_Log("drive %c: '%s', %lu bytes", 'A' + drive, name, len);
 +	}
-+	free(data);
 +}
 +static void apply_disks(void) { apply_disk(0, menu.diska); apply_disk(1, menu.diskb); }
++
++/* The tape in the deck, by file name, applied like the disks: on Power ON
++ * (always from the start), and on Continue / Reset when the menu changed it
++ * (a new tape, Eject) or asked for Rewind. Reset keeps the tape position, as
++ * on the real machine. Only .cdt (TZX) images; tape writing is not supported. */
++static void tape_pos(void)
++{
++	if (tape_in[0]) sprintf(menu.tapepos, "Tape %d/%d  ", TapeImage_GetCurrentBlock() + (TapeImage_IsPlayable() ? 1 : 0), TapeImage_GetNumBlocks());
++	else menu.tapepos[0] = 0;
++}
++static void apply_tape(int force)
++{
++	unsigned char *data; unsigned long len;
++	char msg[SYS_PATH + 40];
++	const char *name = menu.tape;
++	if (!force && !strcmp(tape_in, name)) {
++		if (menu.tape_rewind && tape_in[0]) { TapeImage_RewindToStart(); Sys_Log("tape: rewound"); }
++		menu.tape_rewind = 0;
++		return;
++	}
++	menu.tape_rewind = 0;
++	if (tape_in[0]) { TapeImage_Remove(); CPC_SetCassetteType(CASSETTE_TYPE_NONE); tape_in[0] = 0; }
++	if (!name[0]) { Sys_Log("tape: ejected"); return; }
++	if (!load_media("tape", name, &data, &len)) return;
++	if (TapeImage_Insert(data, len) != ARNOLD_STATUS_OK) {
++		CPC_SetCassetteType(CASSETTE_TYPE_NONE);
++		sprintf(msg, "Not a CPC tape image (.cdt)\n%s", name);
++		Sys_MenuError(msg);
++	} else {
++		strncpy(tape_in, name, SYS_PATH - 1);
++		Sys_Log("tape: '%s', %lu bytes, %d blocks", name, len, TapeImage_GetNumBlocks());
++	}
++	free(data);   /* the core keeps its own copy */
++}
 +
 +/* System ROMs of the plain CPCs (19 Oct 2026), from the drawer like
 + * system.cpr: roms/cpc464, cpc664, cpc6128 (os.rom, basic.rom) and
@@ -3547,6 +4089,7 @@ index 0000000..5c34480
 +	unsigned char *data = NULL; unsigned long len = 0;
 +	int model = menu.model >= 0 && menu.model < SYS_MODELS ? menu.model : SYS_MODEL_PLUS;
 +	int plus = model == SYS_MODEL_PLUS || model == SYS_MODEL_GX4000;
++	flush_disks("power on");   /* before the next game's prefs can change diskwrite */
 +	if (plus) {
 +		/* no cartridge chosen (John ejected it to boot a disk, 17 Oct 2026): the
 +		 * Plus needs one, so the system cartridge (BASIC + AMSDOS) goes in */
@@ -3581,7 +4124,9 @@ index 0000000..5c34480
 +	/* power cycle: both drives reloaded from their files */
 +	DiskImage_RemoveDisk(0); DiskImage_RemoveDisk(1);
 +	disk_in[0][0] = disk_in[1][0] = 0;
++	drop_image(0); drop_image(1);
 +	apply_disks();
++	apply_tape(1);   /* the tape from the start */
 +	return 1;
 +}
 +
@@ -3593,6 +4138,7 @@ index 0000000..5c34480
 +	/* HIRES: 768-pixel lines (CPC mode 2 at full width) on a hires screen; the
 +	 * default halves them to 384 for a lores screen (modes 0 and 1 exact). */
 +	if (display_open) { Sys_CloseDisplay(); display_open = 0; }
++	Sys_WideScreen = menu.wide;
 +	Sys_TallScreen = menu.tall;   /* TALL: all 272 lines (amiga_sys.c) */
 +	Render_SetRenderingAccuracyForWindowedMode(menu.hires ? RENDERING_ACCURACY_HIGH : RENDERING_ACCURACY_LOW);
 +	if (!Render_SetDisplayWindowed()) { Sys_MenuError("Can't open the AGA screen"); return 0; }
@@ -3630,13 +4176,15 @@ index 0000000..5c34480
 +{
 +	unsigned char *data; unsigned long len;
 +	const char *sna = NULL;
-+	int i, want_menu = 0, ndisk = 0, action, nosound = 0, hires = 0, tall = 0, media_given = 0;
++	int i, want_menu = 0, ndisk = 0, action, nosound = 0, hires = 0, tall = 0, wide = 0, media_given = 0;
 +	struct SysStart st;
 +
 +	KeyScript_AmigaKey = amiga_key_code;   /* before KEYS= loads a script */
 +	strcpy(menu.cart, "PROGDIR:roms/system.cpr");
 +	strcpy(menu.prefs, "PROGDIR:Arnold.prefs");
 +	menu.sound = 1;
++	menu.diskwrite = 1;
++	menu.fasttape = 1;
 +	menu.model = SYS_MODEL_PLUS; menu.running_model = -1;
 +	Sys_LogOpen();
 +	Sys_LogStart(argc);
@@ -3647,6 +4195,7 @@ index 0000000..5c34480
 +		want_menu = st.menu; nosound = st.nosound; hires = st.hires;
 +		prefs_load();
 +		if (st.tall) menu.tall = 1;
++		if (st.wide) menu.wide = 1;
 +		if (st.skip >= 0) skip_max = st.skip;
 +		if (st.refresh > 0) refresh = st.refresh;
 +		if (st.joykeys >= 0) joykeys = st.joykeys;
@@ -3655,9 +4204,13 @@ index 0000000..5c34480
 +		if (st.speed >= 0) menu.speed = st.speed;
 +		if (st.video >= 0) menu.video = st.video;
 +		if (st.model >= 0) menu.model = st.model;
++		if (st.diskwrite >= 0) menu.diskwrite = st.diskwrite;
++		if (st.fasttape >= 0) menu.fasttape = st.fasttape;
++		if (st.tape[0]) strncpy(menu.tape, st.tape, SYS_PATH - 1);
 +		if (has_ext(st.media, ".cpr")) { strncpy(menu.cart, st.media, SYS_PATH - 1); media_given = 1; }
 +		else if (has_ext(st.media, ".dsk")) { strncpy(menu.diska, st.media, SYS_PATH - 1); menu.diskb[0] = 0; media_given = 1; }
 +		else if (has_ext(st.media, ".sna")) { sna = st.media; media_given = 1; }
++		else if (has_ext(st.media, ".cdt")) { strncpy(menu.tape, st.media, SYS_PATH - 1); media_given = 1; }
 +		if (!media_given) want_menu = 1;          /* a bare preset icon: start in the menu */
 +	} else {
 +		for (i = 1; i < argc; i++)
@@ -3683,6 +4236,9 @@ index 0000000..5c34480
 +			else if (!kwncmp(argv[i], "SPEED=", 6)) { int k = Sys_ParseSpeed(argv[i] + 6); if (k >= 0) menu.speed = k; }
 +			else if (!kwncmp(argv[i], "VIDEO=", 6)) { int k = Sys_ParseVideo(argv[i] + 6); if (k >= 0) menu.video = k; }
 +			else if (!kwncmp(argv[i], "MODEL=", 6)) { int k = Sys_ParseModel(argv[i] + 6); if (k >= 0) menu.model = k; }
++			else if (!kwncmp(argv[i], "DISKWRITE=", 10)) menu.diskwrite = atoi(argv[i] + 10) ? 1 : 0;
++			else if (!kwncmp(argv[i], "FASTTAPE=", 9)) menu.fasttape = atoi(argv[i] + 9) ? 1 : 0;
++			else if (!kwncmp(argv[i], "TAPE=", 5)) { strncpy(menu.tape, argv[i] + 5, SYS_PATH - 1); media_given = 1; }
 +			else if (!kwcmp(argv[i], "BENCH")) {
 +				/* machine timings to the Shell and PROGDIR:bench.txt, then exit */
 +				FILE *bf = fopen("PROGDIR:bench.txt", "w");
@@ -3694,12 +4250,14 @@ index 0000000..5c34480
 +			else if (!kwncmp(argv[i], "SNAPDIR=", 8)) strncpy(snapdir, argv[i] + 8, SYS_PATH - 1);
 +			else if (!kwcmp(argv[i], "HIRES")) hires = 1;
 +			else if (!kwcmp(argv[i], "TALL")) tall = 1;
++			else if (!kwcmp(argv[i], "WIDE")) wide = 1;
 +			else if (!kwcmp(argv[i], "MENU")) want_menu = 1;
 +			else if (!kwncmp(argv[i], "HELPAFTER=", 10)) help_after = atol(argv[i] + 10);
 +			else if (!kwncmp(argv[i], "P=", 2)) ;
 +			else if (has_ext(argv[i], ".cpr")) { strncpy(menu.cart, argv[i], SYS_PATH - 1); media_given = 1; }
 +			else if (has_ext(argv[i], ".dsk")) { if (!ndisk) menu.diskb[0] = 0; strncpy(ndisk++ ? menu.diskb : menu.diska, argv[i], SYS_PATH - 1); media_given = 1; }
 +			else if (has_ext(argv[i], ".sna")) { sna = argv[i]; media_given = 1; }
++			else if (has_ext(argv[i], ".cdt")) { strncpy(menu.tape, argv[i], SYS_PATH - 1); media_given = 1; }
 +		}
 +	}
 +	Sys_Log("prefs '%s': sound %d hires %d skip %d refresh %d model %s video %s speed %s cart '%s'", menu.prefs, menu.sound, menu.hires, skip_max, refresh,
@@ -3709,8 +4267,10 @@ index 0000000..5c34480
 +	if (nosound) menu.sound = 0;
 +	if (hires) menu.hires = 1;
 +	if (tall) menu.tall = 1;
++	if (wide) menu.wide = 1;
 +	global_sound = menu.sound; global_hires = menu.hires; global_joykeys = joykeys;
-+	global_tall = menu.tall; strcpy(global_remap, remap_str);
++	global_tall = menu.tall; global_wide = menu.wide; strcpy(global_remap, remap_str); global_diskwrite = menu.diskwrite;
++	global_fasttape = menu.fasttape;
 +	if (!CPCEmulation_CheckEndianness()) { Sys_MenuError("Endianness check failed"); return 10; }
 +	CPC_Initialise();
 +	/* the test-mode label's colour: an entry the core leaves alone */
@@ -3727,22 +4287,26 @@ index 0000000..5c34480
 +
 +	for (;;) {
 +		if (want_menu) {
++			flush_disks("menu");   /* Help: what the game saved goes to the file now */
 +			{ extern unsigned long Sys_AudioIrqs(void); Sys_Log("menu (audio interrupts so far %lu)", Sys_AudioIrqs()); }
 +			menu.skip = skip_max; menu.refresh = refresh; menu.joykeys = joykeys; menu.pad = Sys_PadType;
++			strcpy(menu.remap, remap_str);
++			tape_pos();
 +			action = Sys_Menu(&menu);
++			if (strcmp(menu.remap, remap_str)) remap_parse(menu.remap);   /* key map editor / preset */
 +			skip_max = menu.skip; refresh = menu.refresh > 0 ? menu.refresh : 1; joykeys = menu.joykeys; Sys_PadType = menu.pad;
 +			Sys_VideoMode = menu.video;
 +			{ extern unsigned long Sys_AudioIrqs(void); Sys_Log("menu action %d (audio interrupts so far %lu)", action, Sys_AudioIrqs()); }
 +			if (action != SYS_MENU_POWER && action != SYS_MENU_RESET && action != SYS_MENU_CONTINUE) Sys_MenuClose();
 +			if (action == SYS_MENU_QUIT) break;
-+			if (!menu.game_prefs) { global_sound = menu.sound; global_hires = menu.hires; global_joykeys = joykeys; global_tall = menu.tall; }
-+			if (action == SYS_MENU_SAVE) { int gs = menu.sound, gh = menu.hires, gt = menu.tall; if (menu.game_prefs) { menu.sound = global_sound; menu.hires = global_hires; menu.tall = global_tall; } else global_joykeys = joykeys; prefs_save(); menu.sound = gs; menu.hires = gh; menu.tall = gt; continue; }
++			if (!menu.game_prefs) { strcpy(global_remap, remap_str); global_sound = menu.sound; global_hires = menu.hires; global_joykeys = joykeys; global_tall = menu.tall; global_wide = menu.wide; global_diskwrite = menu.diskwrite; global_fasttape = menu.fasttape; }
++			if (action == SYS_MENU_SAVE) { int gs = menu.sound, gh = menu.hires, gt = menu.tall, gw = menu.wide; if (menu.game_prefs) { menu.sound = global_sound; menu.hires = global_hires; menu.tall = global_tall; menu.wide = global_wide; } else global_joykeys = joykeys; prefs_save(); menu.sound = gs; menu.hires = gh; menu.tall = gt; menu.wide = gw; continue; }
 +			if (action == SYS_MENU_SAVEGAME) { game_prefs_save(); continue; }
 +			if (action == SYS_MENU_FORGETGAME) { game_prefs_forget(); continue; }
 +			if (action == SYS_MENU_SHOT) { screenshot(); continue; }
 +			if (action == SYS_MENU_POWER && !power_on()) continue;
 +			if (action == SYS_MENU_RESET) { if (!menu.can_continue && !power_on()) continue; CPC_Reset(); }
-+			if (action == SYS_MENU_CONTINUE || action == SYS_MENU_RESET) apply_disks();   /* disk swap */
++			if (action == SYS_MENU_CONTINUE || action == SYS_MENU_RESET) { apply_disks(); apply_tape(0); }   /* disk swap, tape change or rewind */
 +		}
 +		{ int ok = open_emulation(); Sys_MenuClose(); if (!ok) { want_menu = 1; continue; } }
 +		menu.can_continue = 1;
@@ -3753,6 +4317,7 @@ index 0000000..5c34480
 +		Sys_CloseDisplay(); display_open = 0;
 +		if (script_quit) {
 +			char name[SYS_PATH + 8]; FILE *d;
++			flush_disks("exit");   /* before "done": a test runner may stop the machine then */
 +			sprintf(name, "%s/done", snapdir);
 +			d = fopen(name, "w");
 +			if (d) { fprintf(d, "frames=%ld\n", script_frame); perf_report(d); fclose(d); }
@@ -3761,12 +4326,194 @@ index 0000000..5c34480
 +		}
 +		want_menu = 1;
 +	}
++	flush_disks("exit");
 +	if (audio_open) Sys_AudioClose();
 +	if (display_open) Sys_CloseDisplay();
 +	Sys_Log("exit");
 +	Sys_LogClose();
 +	return 0;
 +}
+diff --git a/src/amiga/keymaplogic.c b/src/amiga/keymaplogic.c
+new file mode 100644
+index 0000000..bf05b7a
+--- /dev/null
++++ b/src/amiga/keymaplogic.c
+@@ -0,0 +1,135 @@
++/* Key map logic: see keymaplogic.h. Plain C. */
++#include <stdio.h>
++#include <string.h>
++#include <ctype.h>
++#include "keymaplogic.h"
++
++/* Presets: Controls > Key map. A preset just fills the remap list. */
++const struct KeyPreset KeyMap_Presets[] = {
++	{ "None",                                "" },
++	{ "Pinball (Right Shift = M)",           "RSHIFT:M" },
++	{ "Cursors to joystick, Space = fire",   "UP:JOYUP,DOWN:JOYDOWN,LEFT:JOYLEFT,RIGHT:JOYRIGHT,SPACE:FIRE1" },
++	{ "Q A O P to joystick, Space = fire",   "Q:JOYUP,A:JOYDOWN,O:JOYLEFT,P:JOYRIGHT,SPACE:FIRE1" },
++	{ "Right Alt / Right Amiga = fire 2",    "RALT:FIRE2,RAMIGA:FIRE2" },
++	{ NULL, NULL }
++};
++int KeyMap_NPresets(void) { int n = 0; while (KeyMap_Presets[n].label) n++; return n; }
++int KeyMap_PresetOf(const char *remap)
++{
++	int i;
++	for (i = 0; KeyMap_Presets[i].label; i++) if (!strcmp(KeyMap_Presets[i].remap, remap)) return i;
++	return -1;
++}
++
++static const struct { const char *name; unsigned char code; } amiga_keys[] = {
++	{"LSHIFT", 0x60}, {"RSHIFT", 0x61}, {"CAPS", 0x62}, {"CTRL", 0x63}, {"LALT", 0x64}, {"RALT", 0x65},
++	{"LAMIGA", 0x66}, {"RAMIGA", 0x67}, {"SPACE", 0x40}, {"BACKSPACE", 0x41}, {"TAB", 0x42},
++	{"ENTER", 0x43}, {"RETURN", 0x44}, {"ESC", 0x45}, {"DEL", 0x46},
++	{"UP", 0x4c}, {"DOWN", 0x4d}, {"RIGHT", 0x4e}, {"LEFT", 0x4f}, {NULL, 0} };
++int KeyMap_AmigaNameCode(const char *s)
++{
++	int i;
++	for (i = 0; amiga_keys[i].name; i++) if (!strcmp(amiga_keys[i].name, s)) return amiga_keys[i].code;
++	return -1;
++}
++const char *KeyMap_AmigaCodeName(int code)
++{
++	int i;
++	for (i = 0; amiga_keys[i].name; i++) if (amiga_keys[i].code == code) return amiga_keys[i].name;
++	return NULL;
++}
++
++const char *const KeyMap_CpcNames[] = {
++	"JOYUP", "JOYDOWN", "JOYLEFT", "JOYRIGHT", "FIRE1", "FIRE2",
++	"SPACE", "RETURN", "ENTER", "SHIFT", "CTRL", "ESC", "TAB", "DEL", "CLR", "COPY", "CAPS",
++	"LEFT", "RIGHT", "UP", "DOWN",
++	"A", "B", "C", "D", "E", "F", "G", "H", "I", "J", "K", "L", "M", "N", "O", "P", "Q", "R", "S", "T", "U", "V", "W", "X", "Y", "Z",
++	"0", "1", "2", "3", "4", "5", "6", "7", "8", "9",
++	"F0", "F1", "F2", "F3", "F4", "F5", "F6", "F7", "F8", "F9", "FDOT",
++	"-", "^", "@", "[", "]", ";", ":", ",", ".", "/", "\\", NULL };
++int KeyMap_NCpcNames(void) { int n = 0; while (KeyMap_CpcNames[n]) n++; return n; }
++
++int KeyMap_Parse(const char *remap, struct KeyPair *p, int max)
++{
++	char buf[KM_STR], *t, *c;
++	int n = 0;
++	strncpy(buf, remap, KM_STR - 1); buf[KM_STR - 1] = 0;
++	for (t = buf; *t; t++) *t = (char)toupper((unsigned char)*t);
++	for (t = strtok(buf, ", "); t && n < max; t = strtok(NULL, ", ")) {
++		c = strchr(t, ':'); if (!c) continue; *c++ = 0;
++		if (!*t || !*c || strlen(t) >= sizeof p[0].a || strlen(c) >= sizeof p[0].c) continue;
++		strcpy(p[n].a, t); strcpy(p[n].c, c); n++;
++	}
++	return n;
++}
++
++void KeyMap_Format(const struct KeyPair *p, int n, char *out, int outsz)
++{
++	int i, len = 0;
++	out[0] = 0;
++	for (i = 0; i < n; i++) {
++		int l = (int)(strlen(p[i].a) + strlen(p[i].c) + 1 + (i ? 1 : 0));
++		if (len + l >= outsz) break;
++		len += sprintf(out + len, "%s%s:%s", i ? "," : "", p[i].a, p[i].c);
++	}
++}
++
++int KeyMap_FitsString(const struct KeyPair *p, int n)
++{
++	char b[KM_STR * 2];
++	int i, len = 0;
++	for (i = 0; i < n; i++) len += (int)(strlen(p[i].a) + strlen(p[i].c) + 1 + (i ? 1 : 0));
++	(void)b;
++	return len < KM_STR;
++}
++
++int KeyMap_Set(struct KeyPair *p, int n, int max, const char *a, const char *c)
++{
++	int i;
++	for (i = 0; i < n; i++) if (!strcmp(p[i].a, a)) { strcpy(p[i].c, c); return n; }
++	if (n >= max) return -1;
++	strcpy(p[n].a, a); strcpy(p[n].c, c);
++	return n + 1;
++}
++
++void KeyMap_ShowName(const char *s, char *out)
++{
++	static const char *const nice[] = { "LSHIFT", "LShift", "RSHIFT", "RShift", "LALT", "LAlt", "RALT", "RAlt",
++		"LAMIGA", "LAmiga", "RAMIGA", "RAmiga", "CTRL", "Ctrl", "CAPS", "Caps", "BACKSPACE", "BkSp", "RETURN", "Return", "ENTER", "Enter",
++		"SPACE", "Space", "TAB", "Tab", "ESC", "Esc", "DEL", "Del", NULL };
++	int i;
++	for (i = 0; nice[i]; i += 2) if (!strcmp(nice[i], s)) { strcpy(out, nice[i + 1]); return; }
++	strcpy(out, s);
++}
++
++void KeyMap_Summary(const char *remap, int maxlen, char *out)
++{
++	struct KeyPair p[KM_MAXPAIRS];
++	int n = KeyMap_Parse(remap, p, KM_MAXPAIRS), i, len;
++	char a[16], c[16];
++	out[0] = 0;
++	if (n == 0) return;
++	len = sprintf(out, "Keys: ");
++	for (i = 0; i < n; i++) {
++		KeyMap_ShowName(p[i].a, a); KeyMap_ShowName(p[i].c, c);
++		if (len + (int)strlen(a) + (int)strlen(c) + 2 > maxlen) { sprintf(out, "Keys: %d remapped", n); return; }
++		len += sprintf(out + len, "%s%s=%s", i ? "," : "", a, c);
++	}
++}
++
++void KeyMap_FitLine(char *out, int width, const char *full, const char *mid, const char *compact, const char *remap)
++{
++	char k[96], cnt[32];
++	struct KeyPair p[KM_MAXPAIRS];
++	int n = KeyMap_Parse(remap, p, KM_MAXPAIRS);
++	if (n == 0) { strncpy(out, full, width); out[width] = 0; return; }
++	KeyMap_Summary(remap, 90, k);
++	sprintf(cnt, "Keys: %d remapped", n);
++	if ((int)(strlen(full) + 2 + strlen(k)) <= width) sprintf(out, "%s  %s", full, k);
++	else if ((int)(strlen(full) + 2 + strlen(cnt)) <= width) sprintf(out, "%s  %s", full, cnt);
++	else if ((int)(strlen(mid) + 1 + strlen(k)) <= width) sprintf(out, "%s %s", mid, k);
++	else if ((int)(strlen(mid) + 1 + strlen(cnt)) <= width) sprintf(out, "%s %s", mid, cnt);
++	else if ((int)(strlen(compact) + 1 + strlen(k)) <= width) sprintf(out, "%s %s", compact, k);
++	else sprintf(out, "%s %s", compact, cnt);
++	out[width] = 0;
++}
+diff --git a/src/amiga/keymaplogic.h b/src/amiga/keymaplogic.h
+new file mode 100644
+index 0000000..b1edbfd
+--- /dev/null
++++ b/src/amiga/keymaplogic.h
+@@ -0,0 +1,34 @@
++#ifndef KEYMAPLOGIC_H
++#define KEYMAPLOGIC_H
++/* Key map logic shared by the host, the menu and the editor (24 Oct 2026).
++ * Plain C, no OS calls. A key map is the remap= string: "RSHIFT:M,UP:JOYUP". */
++#define KM_STR 128          /* size of a remap string (the host's remap_str) */
++#define KM_MAXPAIRS 16
++
++/* THE preset table (keymaplogic.c): add a line there and the menu gets the entry */
++struct KeyPreset { const char *label; const char *remap; };
++extern const struct KeyPreset KeyMap_Presets[];
++int KeyMap_NPresets(void);
++int KeyMap_PresetOf(const char *remap);   /* index of the preset equal to this map, -1 for a custom map */
++
++/* named Amiga keys (not letters, digits, F-keys) */
++int KeyMap_AmigaNameCode(const char *upper);   /* name -> rawkey, -1 */
++const char *KeyMap_AmigaCodeName(int code);    /* rawkey -> name, NULL */
++/* CPC key names offered by the editor, in picker order */
++extern const char *const KeyMap_CpcNames[];
++int KeyMap_NCpcNames(void);
++
++/* pairs: Amiga name / CPC name text */
++struct KeyPair { char a[12], c[10]; };
++int  KeyMap_Parse(const char *remap, struct KeyPair *p, int max);   /* count; names upper-cased */
++void KeyMap_Format(const struct KeyPair *p, int n, char *out, int outsz);
++int  KeyMap_Set(struct KeyPair *p, int n, int max, const char *a, const char *c);   /* add or replace by Amiga key; new count, -1 if full */
++int  KeyMap_FitsString(const struct KeyPair *p, int n);   /* the formatted map fits KM_STR */
++
++/* display */
++void KeyMap_ShowName(const char *upper, char *out);   /* RSHIFT -> RShift */
++/* "Keys: RShift=M", or "Keys: 3 remapped" when it doesn't fit; "" for no map */
++void KeyMap_Summary(const char *remap, int maxlen, char *out);
++/* the settings line: full, medium (Ref/Joy) or compact (Snd/Scr/Ref/Joy) text plus the keys part, in at most width chars */
++void KeyMap_FitLine(char *out, int width, const char *full, const char *mid, const char *compact, const char *remap);
++#endif
 diff --git a/src/amiga/keyscript.c b/src/amiga/keyscript.c
 new file mode 100644
 index 0000000..af349d5

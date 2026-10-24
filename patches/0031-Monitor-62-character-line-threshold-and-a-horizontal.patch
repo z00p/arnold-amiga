@@ -1,0 +1,149 @@
+From 2f43616b69a60bb947a3378a229ef81633b587e0 Mon Sep 17 00:00:00 2001
+From: John Stringer <jcec_1@yahoo.co.uk>
+Date: Sat, 24 Oct 2026 13:02:23 +0100
+Subject: [PATCH 31/34] Monitor: 62-character line threshold and a horizontal
+ flywheel
+
+Pinball Dreams' 21st Century logo alternates 66- and 62-character lines. The
+monitor emulation started a new line only after 63 characters past hsync, so
+pairs of lines merged and the logo was half its height (106 lines against
+CPCEC's 226). A new monitor line now starts at 62 (NO_MONLINE_FIX keeps 63).
+Horizontal flywheel: a real monitor's line oscillator averages the hsync
+position, so a per-line hsync change does not shift alternate lines sideways.
+A steady hsync gives exactly the old position; a mode change or a short-line
+trick locks to the new length. The renderer starts the row the given number
+of characters off its left edge. NO_HFLYWHEEL restores the old placement.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ src/cpc/crtc.c    | 63 ++++++++++++++++++++++++++++++++++++++++++++++-
+ src/cpc/render5.c | 11 +++++++++
+ 2 files changed, 73 insertions(+), 1 deletion(-)
+
+diff --git a/src/cpc/crtc.c b/src/cpc/crtc.c
+index 340d644..24978c8 100644
+--- a/src/cpc/crtc.c
++++ b/src/cpc/crtc.c
+@@ -34,6 +34,13 @@ void	CRTC_MonitorReset(void);
+ 
+ #define SIMPLE_MONITOR_EMULATION
+ #define HD6845S
++/* shortest line (CRTC chars after hsync) that starts a new monitor line; Pinball Dreams'
++   logo alternates 66/62 char lines. NO_MONLINE_FIX keeps Kevin's old 63. */
++#ifdef NO_MONLINE_FIX
++#define MON_MIN_LINE 63
++#else
++#define MON_MIN_LINE 62
++#endif
+ /*#define WIP */
+ 
+ #include "crtc.h"
+@@ -3253,6 +3260,54 @@ goes onto next line ok */
+ void	CRTC_Monitor_NewFrame(void);
+ 
+ #ifdef SIMPLE_MONITOR_EMULATION
++
++#ifndef NO_HFLYWHEEL
++/* Horizontal flywheel (Arnold for Amiga). A real monitor's line oscillator averages the
++   hsync timing over many lines instead of restarting on every pulse, so a game that
++   alternates the hsync position each line (Pinball Dreams' 21st Century logo: lines of
++   66 and 62 chars) still gets a straight picture. The beam period HFlyP and the phase
++   HFlyU (beam start relative to the hsync, 1/16 char) follow the pulses with a limited
++   step per line, like CPCEC. Drawing moves in whole chars (HFlyCells, with hysteresis).
++   A steady hsync gives HFlyU near 0 and HFlyCells 0: exactly the old position. */
++extern int Render_HShiftLine(int cells);
++static int HFlyP = 64*16, HFlyU = 0, HFlyCells = 0;
++
++static void CRTC_HFlyLine(int Chars)
++{
++	int Lu = Chars << 4;
++	int d = Lu - HFlyP;
++	int e, corr;
++
++	if (d > 48 || d < -48)
++	{
++		/* not a steady line length (mode change, short-line trick): lock to it */
++		HFlyP = Lu;
++		HFlyU = 0;
++		HFlyCells = 0;
++		return;
++	}
++	HFlyP += (d + 4) >> 3;
++	e = HFlyU + Lu - HFlyP;
++	corr = e > 15 ? 5 : e > 5 ? 3 : e > 0 ? 1 : e < -15 ? -5 : e < -5 ? -3 : e < 0 ? -1 : 0;
++	e -= corr;
++	if (e > 64) e = 64; else if (e < -64) e = -64;
++	HFlyU = e;
++	if (e - (HFlyCells << 4) > 12 || e - (HFlyCells << 4) < -12)
++		HFlyCells = (e + 8) >> 4;
++}
++
++static void CRTC_HFlyApply(void)
++{
++	int cells = HFlyCells;
++	if (cells)
++	{
++		if (!Render_HShiftLine(cells))
++			cells = 0;              /* very first row: nothing to the left of it */
++		CRTC_InternalState.Monitor_State.MonitorHorizontalCount = (unsigned char)(cells & 0x3f);
++	}
++}
++#endif
++
+ void    CRTC_NextMonitorLine()
+ {
+     /* for monitor sync */
+@@ -3268,6 +3323,9 @@ void    CRTC_NextMonitorLine()
+     {
+ 		CRTC_Monitor_NewFrame();
+ 	}
++#ifndef NO_HFLYWHEEL
++	CRTC_HFlyApply();
++#endif
+ }
+ #else
+ 
+@@ -3325,6 +3383,9 @@ void	CRTC_DoMonitorHsync(void)
+ {
+ /*	CRTC_InternalState.Monitor_State.MonitorFlags&=~MONITOR_IN_HSYNC; */
+ 
++#ifndef NO_HFLYWHEEL
++	CRTC_HFlyLine(CRTC_InternalState.Monitor_State.CharsAfterHsync);
++#endif
+ 	CRTC_InternalState.Monitor_State.CharsAfterHsync=0;
+ 
+ 	CRTC_NextMonitorLine();
+@@ -3870,7 +3931,7 @@ static __inline__ void CRTC_DoOneCycle(void)
+ 				   /* has count just been cut? or has it run it's natural course? */
+                         if ((CRTC_InternalState.HorizontalSyncCount==CRTC_InternalState.GA_State.GA_HSyncWidth))			/*|| (CRTC_InternalState.GA_State.GA_HSyncWidth==0))*/
+                         {
+-							if (CRTC_InternalState.Monitor_State.CharsAfterHsync >= 63)
++							if (CRTC_InternalState.Monitor_State.CharsAfterHsync >= MON_MIN_LINE)
+ 							{
+ 								CRTC_DoMonitorHsync();
+ 							}
+diff --git a/src/cpc/render5.c b/src/cpc/render5.c
+index 3cc072e..e01a419 100644
+--- a/src/cpc/render5.c
++++ b/src/cpc/render5.c
+@@ -2086,6 +2086,17 @@ int Render_SkipCellIfHidden_Unused(void)   /* kept for reference; crtc.c has the
+ 	return 1;
+ }
+ 
++/* Amiga port: horizontal flywheel - start the row `cells` chars off its left edge.
++ * Returns 0 (and does nothing) if that would be before the start of the buffer. */
++int Render_HShiftLine(int cells)
++{
++	unsigned char *p = pScreenLine + cells * Render_CellBytes;
++	if (p < pScreenBase)
++		return 0;
++	pScreenLine = p;
++	return 1;
++}
++
+ void    Render_FirstLine(void)
+ {
+         RenderLine = 0;
+-- 
+2.50.0.windows.2
+

@@ -226,8 +226,15 @@ static unsigned long TapeImage_ScaleTStates(unsigned long TStateCount)
 /* convert a time in milliseconds to a t-state value */
 static unsigned long TapeImage_MillisecondsToTStates(unsigned long Milliseconds)
 {
+#ifndef NO_TAPE_FIX
+	/* Amiga port (tape, 24 Oct 2026): the pulse lengths are scaled to the CPC's
+	   4 MHz (T_SCALE), so pauses must be in CPC T-states too: 4000 a millisecond
+	   (the Spectrum figure made every pause 12.5% short) */
+	return (4000*Milliseconds);
+#else
 	/* Spectrum clock specifies T states per second. 1000 milliseconds in a second */
 	return ((SPECTRUM_CLOCK_HZ/1000)*Milliseconds);
+#endif
 }
 
 enum
@@ -1792,6 +1799,12 @@ static int		TapeImage_GetBlockLength(unsigned char *pBlock)
 		break;
 
 	}
+}
+
+/* Amiga port: TRUE when a tape is in and has blocks left to play */
+int		TapeImage_IsPlayable(void)
+{
+	return pTapeImage!=NULL && pCurrentBlockPtr!=NULL;
 }
 
 int		TapeImage_GetCurrentBlock(void)

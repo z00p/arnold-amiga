@@ -276,7 +276,7 @@ DMAPHASE_DELAY cycles later, not at the end of HSYNC: Sonic GX's interrupt
 code ran about 10 characters late against the beam. NO_ASICTIME,
 NO_ASICTIME_SPR, NO_DMAPHASE restore the old timing."
 
-post HEAD arnold/src/cpc/arnold.c arnold/src/cpc/asic.c arnold/src/cpc/asic.h arnold/src/cpc/cpc.c arnold/src/cpc/crtc.c arnold/src/cpc/hint.h arnold/src/cpc/render5.c arnold/src/cpc/z80/z80.c
+post a9048c3 arnold/src/cpc/arnold.c arnold/src/cpc/asic.c arnold/src/cpc/asic.h arnold/src/cpc/cpc.c arnold/src/cpc/crtc.c arnold/src/cpc/hint.h arnold/src/cpc/render5.c arnold/src/cpc/z80/z80.c
 commit "Speed-ups for the Emu68 JIT (pixel-exact); I/O lead carried over" "Emu68 (PiStorm) guesses every branch at translation time (forward = not
 taken, backward = taken only within 128 bytes) and a wrong guess leaves the
 translated block. Hot paths are shaped for that: Plus cells and border cells
@@ -289,13 +289,42 @@ timed later than Arnold's instruction is long (LD (HL),n), the CRTC's lead is
 carried into the next instruction instead of a negative cycle count
 (NO_IOAHEAD_DEBT restores that)."
 
-post HEAD arnold/src/cpc/fdd.c arnold/src/cpc/fdd.h arnold/src/cpc/diskimage/diskimg.c
+post a9048c3 arnold/src/cpc/fdd.c arnold/src/cpc/fdd.h arnold/src/cpc/diskimage/diskimg.c
 commit "Disk drives: an 80-track image gets an 80-track drive" "Drive A is a 43-track 3\" drive, so the head stopped at track 42 on 80-track
 (3.5\") images: Pinball Dreams' Beat Box and Nightmare tables never loaded
 (CPCEC loads them). FDD_FitDiskTracks, called when a .dsk or extended .dsk is
 inserted: an image with more tracks than the drive gets an 80-track drive (up
 to 86 tracks), an image that fits keeps the drive's own count (A 43, B 80).
 NO_DSK80 restores the old behaviour."
+
+post HEAD arnold/src/cpc/diskimage/diskimg.c arnold/src/cpc/diskimage/dskwrite.c arnold/src/cpc/diskimage/dskwrite.h arnold/src/objects.mak
+commit "Disk images: write changes back to the .dsk file" "dskwrite.c builds a new image for a drive from the file it was loaded from and
+the drive's changes: unchanged tracks are copied from the file byte for byte
+and only changed sectors patched in, so a standard DSK stays standard where it
+can and weak sectors, gaps and odd stored lengths are kept. It saves safely:
+name.tmp first, the original kept once as name.bak, then the rename. A host
+calls DskWrite_Flush, e.g. on eject, disk swap, Power ON, the menu and exit.
+DiskImage_GetUnitPointer gives it the drive's internal image. Nothing changes
+unless a host calls it."
+
+post 1943fe5 arnold/src/cpc/crtc.c arnold/src/cpc/render5.c
+commit "Monitor: 62-character line threshold and a horizontal flywheel" "Pinball Dreams' 21st Century logo alternates 66- and 62-character lines. The
+monitor emulation started a new line only after 63 characters past hsync, so
+pairs of lines merged and the logo was half its height (106 lines against
+CPCEC's 226). A new monitor line now starts at 62 (NO_MONLINE_FIX keeps 63).
+Horizontal flywheel: a real monitor's line oscillator averages the hsync
+position, so a per-line hsync change does not shift alternate lines sideways.
+A steady hsync gives exactly the old position; a mode change or a short-line
+trick locks to the new length. The renderer starts the row the given number
+of characters off its left edge. NO_HFLYWHEEL restores the old placement."
+
+post HEAD arnold/src/cpc/cassette.h arnold/src/cpc/cpc.c arnold/src/cpc/tzx.h arnold/src/cpc/tzxold.c
+commit "Tape: pause timing at 4 MHz; accessors for a host" "The TZX player scales pulse lengths to the CPC's 4 MHz, but converted pauses
+at the Spectrum's 3500 T-states a millisecond, so every pause was 12.5% short.
+Pauses are now 4000 T-states a millisecond (NO_TAPE_FIX restores the old
+figure). With it, a tape's motor time matches the file to 0.2 s. For a host:
+CPC_GetTapeMotor (the cassette motor bit), TapeImage_IsPlayable (a tape is in
+and has blocks left), and TapeImage_SetBlockByIndex declared in tzx.h."
 
 post HEAD arnold/src/cpc
 commit "Core: remaining changes" "Small changes made after the fixes above."

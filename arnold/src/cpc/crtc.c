@@ -34,6 +34,13 @@ void	CRTC_MonitorReset(void);
 
 #define SIMPLE_MONITOR_EMULATION
 #define HD6845S
+/* shortest line (CRTC chars after hsync) that starts a new monitor line; Pinball Dreams'
+   logo alternates 66/62 char lines. NO_MONLINE_FIX keeps Kevin's old 63. */
+#ifdef NO_MONLINE_FIX
+#define MON_MIN_LINE 63
+#else
+#define MON_MIN_LINE 62
+#endif
 /*#define WIP */
 
 #include "crtc.h"
@@ -3253,6 +3260,54 @@ goes onto next line ok */
 void	CRTC_Monitor_NewFrame(void);
 
 #ifdef SIMPLE_MONITOR_EMULATION
+
+#ifndef NO_HFLYWHEEL
+/* Horizontal flywheel (Arnold for Amiga). A real monitor's line oscillator averages the
+   hsync timing over many lines instead of restarting on every pulse, so a game that
+   alternates the hsync position each line (Pinball Dreams' 21st Century logo: lines of
+   66 and 62 chars) still gets a straight picture. The beam period HFlyP and the phase
+   HFlyU (beam start relative to the hsync, 1/16 char) follow the pulses with a limited
+   step per line, like CPCEC. Drawing moves in whole chars (HFlyCells, with hysteresis).
+   A steady hsync gives HFlyU near 0 and HFlyCells 0: exactly the old position. */
+extern int Render_HShiftLine(int cells);
+static int HFlyP = 64*16, HFlyU = 0, HFlyCells = 0;
+
+static void CRTC_HFlyLine(int Chars)
+{
+	int Lu = Chars << 4;
+	int d = Lu - HFlyP;
+	int e, corr;
+
+	if (d > 48 || d < -48)
+	{
+		/* not a steady line length (mode change, short-line trick): lock to it */
+		HFlyP = Lu;
+		HFlyU = 0;
+		HFlyCells = 0;
+		return;
+	}
+	HFlyP += (d + 4) >> 3;
+	e = HFlyU + Lu - HFlyP;
+	corr = e > 15 ? 5 : e > 5 ? 3 : e > 0 ? 1 : e < -15 ? -5 : e < -5 ? -3 : e < 0 ? -1 : 0;
+	e -= corr;
+	if (e > 64) e = 64; else if (e < -64) e = -64;
+	HFlyU = e;
+	if (e - (HFlyCells << 4) > 12 || e - (HFlyCells << 4) < -12)
+		HFlyCells = (e + 8) >> 4;
+}
+
+static void CRTC_HFlyApply(void)
+{
+	int cells = HFlyCells;
+	if (cells)
+	{
+		if (!Render_HShiftLine(cells))
+			cells = 0;              /* very first row: nothing to the left of it */
+		CRTC_InternalState.Monitor_State.MonitorHorizontalCount = (unsigned char)(cells & 0x3f);
+	}
+}
+#endif
+
 void    CRTC_NextMonitorLine()
 {
     /* for monitor sync */
@@ -3268,6 +3323,9 @@ void    CRTC_NextMonitorLine()
     {
 		CRTC_Monitor_NewFrame();
 	}
+#ifndef NO_HFLYWHEEL
+	CRTC_HFlyApply();
+#endif
 }
 #else
 
@@ -3325,6 +3383,9 @@ void	CRTC_DoMonitorHsync(void)
 {
 /*	CRTC_InternalState.Monitor_State.MonitorFlags&=~MONITOR_IN_HSYNC; */
 
+#ifndef NO_HFLYWHEEL
+	CRTC_HFlyLine(CRTC_InternalState.Monitor_State.CharsAfterHsync);
+#endif
 	CRTC_InternalState.Monitor_State.CharsAfterHsync=0;
 
 	CRTC_NextMonitorLine();
@@ -3870,7 +3931,7 @@ static __inline__ void CRTC_DoOneCycle(void)
 				   /* has count just been cut? or has it run it's natural course? */
                         if ((CRTC_InternalState.HorizontalSyncCount==CRTC_InternalState.GA_State.GA_HSyncWidth))			/*|| (CRTC_InternalState.GA_State.GA_HSyncWidth==0))*/
                         {
-							if (CRTC_InternalState.Monitor_State.CharsAfterHsync >= 63)
+							if (CRTC_InternalState.Monitor_State.CharsAfterHsync >= MON_MIN_LINE)
 							{
 								CRTC_DoMonitorHsync();
 							}

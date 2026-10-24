@@ -27,7 +27,7 @@
 #include <stdarg.h>
 
 unsigned long __stack = 256 * 1024;   /* libnix: enlarge the stack at start */
-static const char ver[] __attribute__((used)) = "$VER: Arnold 0.9 (21.10.2026) Amiga port, GPL-2.0";
+static const char ver[] __attribute__((used)) = "$VER: Arnold 1.0 (24.10.2026) Amiga port, GPL-2.0";
 
 /* ---- diagnostic log ---- */
 static FILE *logf;
@@ -322,7 +322,7 @@ static void c2p_line_sh(const unsigned char *src, struct BitMap *bm, int y, int 
 #define VS_DMAX 96
 #endif
 int Sys_VShiftOn, Sys_NoVShift, Sys_VShiftOn_Last;
-int Sys_TallScreen;
+int Sys_TallScreen, Sys_WideScreen;
 static int TR;                       /* rows in each buffer's chip area (SH without vshift) */
 static int win_row[NBUF];            /* first row of the window shown */
 #ifdef VSHIFT
@@ -535,7 +535,7 @@ int Sys_OpenDisplay(int cw, int ch, int hires)
 {
 	struct Rectangle rect;
 	ULONG modeid = Sys_ModeID(hires ? HIRES_KEY : LORES_KEY);
-	int i, rw, rh, ntsc_max;
+	int i, rw, rh, ntsc_max, wide_max;
 
 	CW = cw; CH = ch;
 	c2p_init();
@@ -568,11 +568,30 @@ int Sys_OpenDisplay(int cw, int ch, int hires)
 			ntsc_max = 1;
 		}
 	}
+	/* WIDE (24 Oct 2026): PAL standard overscan is 320..352 lores columns, so
+	 * 32 columns each side of the 384-wide CPC picture are lost (Sonic GX's ring
+	 * icon, Pinball Dreams' logo wingtip). Wide takes the mode's full horizontal
+	 * overscan (OSCAN_MAX: 362 lores pixels on PAL, hpos 93-455, the most the
+	 * beam shows) as the display clip, as TALL does vertically. The screen is the
+	 * whole 384 columns, wider than the clip, so Intuition starts the fetch (11
+	 * columns in, by the screen's negative left edge) and the picture is centred
+	 * in the window: columns 11-372 show. The hardware fetch (DDFSTRT, BPLCON1
+	 * scroll, 64-pixel FMODE 3 blocks) is left to graphics.library. Lores only;
+	 * hires screens keep their standard width. */
+	wide_max = 0;
+	if (Sys_WideScreen && !hires) {
+		struct Rectangle mx;
+		if (QueryOverscan(modeid, &mx, OSCAN_MAX) && mx.MaxX - mx.MinX > rect.MaxX - rect.MinX) {
+			rect.MinX = mx.MinX;
+			rect.MaxX = mx.MaxX;
+			wide_max = 1;
+		} else Sys_Log("display: WIDE: no wider overscan in mode %08lx, standard width", (unsigned long)modeid);
+	}
 	rw = rect.MaxX - rect.MinX + 1;
 	rh = rect.MaxY - rect.MinY + 1;
-	SW = (rw < cw ? rw : cw) & ~31;
+	SW = (wide_max ? cw : rw < cw ? rw : cw) & ~31;   /* wide: the whole picture, centred in (and cropped by) the overscan window */
 	SH = rh < ch ? rh : ch;
-	Sys_Log("display: mode %08lx overscan%s %d,%d-%d,%d screen %dx%d chunky %dx%d chip free %lu", (unsigned long)modeid, ntsc_max ? " (full height)" : "",
+	Sys_Log("display: mode %08lx overscan%s %d,%d-%d,%d screen %dx%d chunky %dx%d chip free %lu", (unsigned long)modeid, ntsc_max ? (wide_max ? " (full height, wide)" : " (full height)") : (wide_max ? " (wide)" : ""),
 		(int)rect.MinX, (int)rect.MinY, (int)rect.MaxX, (int)rect.MaxY, SW, SH, cw, ch, (unsigned long)AvailMem(MEMF_CHIP));
 	XOFF = (cw - SW) / 2;
 	YOFF = (ch - SH) / 2;
@@ -587,12 +606,14 @@ int Sys_OpenDisplay(int cw, int ch, int hires)
 	scr = OpenScreenTags(NULL,
 		SA_Width, SW, SA_Height, SH, SA_Depth, 8,
 		SA_DisplayID, modeid,
-		ntsc_max ? SA_DClip : SA_Overscan, ntsc_max ? (ULONG)&rect : OSCAN_STANDARD,
-		SA_Left, (ntsc_max ? rect.MinX : 0) + (rw - SW) / 2, SA_Top, (ntsc_max ? rect.MinY : 0) + (rh - SH) / 2,
+		(ntsc_max || wide_max) ? SA_DClip : SA_Overscan, (ntsc_max || wide_max) ? (ULONG)&rect : OSCAN_STANDARD,
+		SA_Left, ((ntsc_max || wide_max) ? rect.MinX : 0) + (rw - SW) / 2, SA_Top, ((ntsc_max || wide_max) ? rect.MinY : 0) + (rh - SH) / 2,
 		SA_Quiet, TRUE, SA_ShowTitle, FALSE, SA_Title, (ULONG)"Arnold",
 		SA_Interleaved, TRUE,
 		TAG_DONE);
 	if (!scr) { Sys_Log("display: OpenScreen failed"); return 0; }
+	Sys_Log("display: screen left %d top %d size %dx%d, viewport DxOffset %d DyOffset %d DWidth %d DHeight %d", (int)scr->LeftEdge, (int)scr->TopEdge, (int)scr->Width, (int)scr->Height,
+		(int)scr->ViewPort.DxOffset, (int)scr->ViewPort.DyOffset, (int)scr->ViewPort.DWidth, (int)scr->ViewPort.DHeight);
 
 	safeport = CreateMsgPort(); dispport = CreateMsgPort();
 	if (!safeport || !dispport) { Sys_CloseDisplay(); return 0; }

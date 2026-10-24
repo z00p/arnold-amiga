@@ -1,0 +1,94 @@
+From 7ec9bb5b59d218cae7b4d23e5c625816878aeadd Mon Sep 17 00:00:00 2001
+From: John Stringer <jcec_1@yahoo.co.uk>
+Date: Sat, 24 Oct 2026 13:02:23 +0100
+Subject: [PATCH 32/34] Tape: pause timing at 4 MHz; accessors for a host
+
+The TZX player scales pulse lengths to the CPC's 4 MHz, but converted pauses
+at the Spectrum's 3500 T-states a millisecond, so every pause was 12.5% short.
+Pauses are now 4000 T-states a millisecond (NO_TAPE_FIX restores the old
+figure). With it, a tape's motor time matches the file to 0.2 s. For a host:
+CPC_GetTapeMotor (the cassette motor bit), TapeImage_IsPlayable (a tape is in
+and has blocks left), and TapeImage_SetBlockByIndex declared in tzx.h.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ src/cpc/cassette.h |  2 ++
+ src/cpc/cpc.c      |  4 ++++
+ src/cpc/tzx.h      |  2 ++
+ src/cpc/tzxold.c   | 13 +++++++++++++
+ 4 files changed, 21 insertions(+)
+
+diff --git a/src/cpc/cassette.h b/src/cpc/cassette.h
+index 7582535..e383d2d 100644
+--- a/src/cpc/cassette.h
++++ b/src/cpc/cassette.h
+@@ -20,6 +20,8 @@ unsigned long CPC_GetCassetteType(void);
+ 
+ 
+ void	Tape_Remove(void);
++/* Amiga port: the cassette motor (PPI port C bit 4) is on */
++int	CPC_GetTapeMotor(void);
+ 
+ 
+ #endif
+diff --git a/src/cpc/cpc.c b/src/cpc/cpc.c
+index fb46b91..03f3616 100644
+--- a/src/cpc/cpc.c
++++ b/src/cpc/cpc.c
+@@ -3225,3 +3225,7 @@ void	CPC_UpdateColours(void)
+ 	}
+ }
+ 
++
++/* Amiga port (tape, 24 Oct 2026): the cassette motor bit as last written.
++   At the end of the file so the PGO profile still matches every other function. */
++int	CPC_GetTapeMotor(void) { return (PPI_CurrentPortC & 0x010)!=0; }
+diff --git a/src/cpc/tzx.h b/src/cpc/tzx.h
+index 5c7ee48..966c558 100644
+--- a/src/cpc/tzx.h
++++ b/src/cpc/tzx.h
+@@ -40,6 +40,8 @@ const char *TapeImage_GetBlockDescription(int BlockID);
+ int		TapeImage_GetCurrentBlock(void);
+ int		TapeImage_GetNumBlocks(void);
+ int		TapeImage_GetBlockID(int BlockIndex);
++int		TapeImage_IsPlayable(void);
++void	TapeImage_SetBlockByIndex(int Index);
+ 
+ 
+ typedef struct 
+diff --git a/src/cpc/tzxold.c b/src/cpc/tzxold.c
+index 78641fd..c1bee6e 100644
+--- a/src/cpc/tzxold.c
++++ b/src/cpc/tzxold.c
+@@ -226,8 +226,15 @@ static unsigned long TapeImage_ScaleTStates(unsigned long TStateCount)
+ /* convert a time in milliseconds to a t-state value */
+ static unsigned long TapeImage_MillisecondsToTStates(unsigned long Milliseconds)
+ {
++#ifndef NO_TAPE_FIX
++	/* Amiga port (tape, 24 Oct 2026): the pulse lengths are scaled to the CPC's
++	   4 MHz (T_SCALE), so pauses must be in CPC T-states too: 4000 a millisecond
++	   (the Spectrum figure made every pause 12.5% short) */
++	return (4000*Milliseconds);
++#else
+ 	/* Spectrum clock specifies T states per second. 1000 milliseconds in a second */
+ 	return ((SPECTRUM_CLOCK_HZ/1000)*Milliseconds);
++#endif
+ }
+ 
+ enum
+@@ -1794,6 +1801,12 @@ static int		TapeImage_GetBlockLength(unsigned char *pBlock)
+ 	}
+ }
+ 
++/* Amiga port: TRUE when a tape is in and has blocks left to play */
++int		TapeImage_IsPlayable(void)
++{
++	return pTapeImage!=NULL && pCurrentBlockPtr!=NULL;
++}
++
+ int		TapeImage_GetCurrentBlock(void)
+ {
+ 	return CurrentBlockIndex;
+-- 
+2.50.0.windows.2
+

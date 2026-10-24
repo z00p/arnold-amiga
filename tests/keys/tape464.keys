@@ -1,0 +1,10 @@
+# CPC 464 tape load (tape tests, 24 Oct 2026): RUN" Return, then any key at
+# "Press PLAY then any key:", snaps every 10 s, quit after 4 minutes.
+100 R
+110 U
+120 N
+130 SHIFT+2
+145 RETURN
+200 SPACE
+500 SNAP every 500 until 12000
+12000 QUIT

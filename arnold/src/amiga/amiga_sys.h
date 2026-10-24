@@ -50,6 +50,7 @@ void Sys_AudioPause(void);           /* DMA off; the next Sys_AudioQueue restart
 struct SysMenu {
 	char cart[SYS_PATH], diska[SYS_PATH], diskb[SYS_PATH];
 	int sound, hires;
+	int wide;                /* full-width screen: up to all 384 CPC columns (lores overscan), for games drawn to the left/right border */
 	int tall;                /* full-height screen: all 272 CPC lines (PAL overscan), for games drawn into the top/bottom border */
 	int skip, refresh;       /* frame skip (max in a row, 0 off) and fixed refresh (1 = every frame) */
 	int joykeys;             /* keyboard as joystick: 0 off, 1 cursors, 2 QAOP */
@@ -62,10 +63,18 @@ struct SysMenu {
 	char prefs[SYS_PATH];    /* shown in the status line */
 	int game_prefs;          /* the cartridge has its own <file>.prefs (shown) */
 	char status[80];         /* one-off status line for the next menu (cleared) */
+	char remap[128];         /* the key map (remap= text): the host fills it before the menu, takes it back after */
+	int diskwrite;           /* write changed disks back to their .dsk files (22 Oct 2026) */
+	char tape[SYS_PATH];     /* tape (.cdt) in the cassette deck (24 Oct 2026) */
+	int fasttape;            /* Fast tape: no drawing or 50 Hz wait while the tape plays */
+	int tape_rewind;         /* set by the menu: rewind the tape on Continue / Reset */
+	char tapepos[32];        /* "Tape 3/5  " for the status line (host fills it) */
 };
 enum { SYS_MODEL_464 = 0, SYS_MODEL_664, SYS_MODEL_6128, SYS_MODEL_PLUS, SYS_MODEL_GX4000, SYS_MODELS };
 enum { SYS_MENU_QUIT = 0, SYS_MENU_POWER, SYS_MENU_CONTINUE, SYS_MENU_RESET, SYS_MENU_SAVE,
        SYS_MENU_SAVEGAME, SYS_MENU_FORGETGAME, SYS_MENU_SHOT };
+int  Sys_KeyMapEdit(void *screen, void *parent, void *visinfo, char *remap);   /* amiga_keymap.c: the editor window; 1 = OK (remap updated) */
+const char *Host_AmigaKeyName(int rawkey, char *buf);   /* host_amiga.c: remap= name of an Amiga rawkey, NULL if none */
 int  Sys_Menu(struct SysMenu *m);
 void Sys_MenuClose(void);           /* closes the menu screen Sys_Menu leaves open (call after the emulation screen is up) */
 void Sys_MenuError(const char *text);
@@ -73,7 +82,7 @@ void Sys_ShowPicture(void *screen, const char *name);   /* amiga_iff.c: modal IF
 
 /* Workbench start (amiga_wb.c): fills st from the icon's ToolTypes and a
  * project icon; returns 1 when started from Workbench. */
-struct SysStart { char prefs[SYS_PATH], media[SYS_PATH], remap[128]; int menu, hires, tall, nosound, skip, refresh, joykeys, pad, speed, video, model; };   /* skip -1, refresh 0, others -1: not given */
+struct SysStart { char prefs[SYS_PATH], media[SYS_PATH], remap[128]; int menu, hires, tall, wide, nosound, skip, refresh, joykeys, pad, speed, video, model, diskwrite, fasttape; char tape[SYS_PATH]; };   /* skip -1, refresh 0, others -1: not given */
 int Sys_ParseModel(const char *v);   /* "464" "664" "6128" "PLUS" "GX4000" (any case) -> SYS_MODEL_*, -1 if not one */
 int Sys_ParseVideo(const char *v);   /* "AUTO" "PAL" "NTSC" or 0-2 -> 0-2, -1 if not one */
 int Sys_ParseSpeed(const char *v);   /* "50" or 0 -> 0, "DISPLAY" or 1 -> 1, -1 if not one */
@@ -93,6 +102,7 @@ typedef struct { unsigned long c2p_us, wait_us, c2p_lines, c2p_frames, line_byte
                  audit_frames, audit_bad_frames, audit_bad_groups, audit_cop_checks, audit_cop_bad; } SysPerf;
 extern int Sys_Audit;      /* AUDIT argument: read every converted buffer back from chip RAM and check it, and the copper's plane pointer */
 extern int Sys_VShiftOn;   /* 1 when the display opened with the vertical-shift windows (NO_VSHIFT / NOVSHIFT: 0) */
+extern int Sys_WideScreen;   /* the next Sys_OpenDisplay takes the full width (menu.wide) */
 extern int Sys_TallScreen;   /* the next Sys_OpenDisplay takes the full height (menu.tall) */
 extern int Sys_NoVShift;   /* NOVSHIFT argument: don't use them (A/B tests) */
 extern int Sys_VShiftOn_Last;   /* as Sys_VShiftOn for the last display opened (kept after closing, for the perf report) */

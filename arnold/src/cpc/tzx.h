@@ -40,6 +40,8 @@ const char *TapeImage_GetBlockDescription(int BlockID);
 int		TapeImage_GetCurrentBlock(void);
 int		TapeImage_GetNumBlocks(void);
 int		TapeImage_GetBlockID(int BlockIndex);
+int		TapeImage_IsPlayable(void);
+void	TapeImage_SetBlockByIndex(int Index);
 
 
 typedef struct 

@@ -1,7 +1,7 @@
-From 5edccdf86fb0d4bbf557ba4bdb8e68ea720fa3db Mon Sep 17 00:00:00 2001
+From a3c42809e0ec95c648407d13536fd41f3892ba91 Mon Sep 17 00:00:00 2001
 From: John Stringer <jcec_1@yahoo.co.uk>
-Date: Wed, 21 Oct 2026 20:34:30 +0100
-Subject: [PATCH 25/31] CRTC: register writes at their I/O cycle, not at the
+Date: Sat, 24 Oct 2026 13:02:21 +0100
+Subject: [PATCH 25/34] CRTC: register writes at their I/O cycle, not at the
  start of the OUT
 
 The CRTC was run after each whole Z80 instruction, so an OUT reached it at the

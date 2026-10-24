@@ -82,7 +82,7 @@ def prog_boot(text='CPM BOOT SECTOR OK'):
     b = a.build()
     return b + bytes(512 - len(b))
 
-def prog_fdctest(tests, drive=0):
+def prog_fdctest(tests, drive=0, filler=0x5A):
     """FDCTEST.BIN at &4000: drives the uPD765 directly with interrupts off
     (so the AMSDOS motor timer can't interfere), then prints one line a test:
       tt hRR: s0 s1 s2 C  H  R  N  count sum
@@ -152,7 +152,7 @@ def prog_fdctest(tests, drive=0):
     a.db(0xDD, 0x7E, 6); a.op_w(0xCD, 'out')
     a.db(0xDD, 0x7E, 7); a.op_w(0xCD, 'out')
     a.db(0x3E, 0x20); a.op_w(0xCD, 'out')
-    a.db(0x3E, 0x5A); a.op_w(0xCD, 'out')
+    a.db(0x3E, filler); a.op_w(0xCD, 'out')
     a.db(0xDD, 0x5E, 7, 0xDD, 0x56, 5)                      # e = SC, d = first R
     a.L('fl')
     a.db(0xDD, 0x7E, 3); a.op_w(0xCD, 'out')

@@ -1,16 +1,16 @@
-Arnold for Amiga 0.9 - patch set and Amiga build
+Arnold for Amiga 1.0 - patch set and Amiga build
 =================================================
-21 October 2026.  Arnold (c) Kevin Thacker, GPL-2.0.  Amiga port by John Stringer.
+24 October 2026.  Arnold (c) Kevin Thacker, GPL-2.0.  Amiga port by John Stringer.
 
 This package holds the changes made to Arnold while porting it to 68k AmigaOS 3.x (AGA),
 as patches against the upstream source, plus a ready-to-run Amiga build.
 
-  patches/   31 patches (git format-patch) against rofl0r's GitHub mirror of Arnold,
+  patches/   34 patches (git format-patch) against rofl0r's GitHub mirror of Arnold,
              https://github.com/rofl0r/arnold, master at e5dce08
              ("fix prototype of LoadFile()", 4 Sep 2026)
   amiga/     the Amiga build: drawer Arnold with the program, icons, presets, the Plus
              system cartridge and a user README
-  source/    the complete source of this build (the upstream tree with all 31 patches
+  source/    the complete source of this build (the upstream tree with all 34 patches
              applied), for the GPL
 
 
@@ -20,8 +20,8 @@ Applying the patches
   git checkout e5dce08
   git am /path/to/patches/*.patch
 
-Each patch stands on its own and builds. Patches 1-29 touch only src/cpc (the core);
-30 adds src/amiga and 31 adds src/headless. The core changes are all marked "Amiga port"
+Each patch stands on its own and builds. Patches 1-32 touch only src/cpc (the core);
+33 adds src/amiga and 34 adds src/headless. The core changes are all marked "Amiga port"
 in comments, and every behaviour change can be switched off with a define (below).
 
 
@@ -147,12 +147,25 @@ Disk drives:
  0029  An 80-track image gets an 80-track drive                         NO_DSK80
        Drive A was a 43-track 3" drive, so 3.5" images stopped at track 42 (Pinball
        Dreams' Beat Box and Nightmare tables never loaded).
+ 0030  Disk images: write changes back to the .dsk file
+       Only changed sectors are patched into the original file (standard stays
+       standard where it can); the original is kept once as <name>.dsk.bak. Used
+       only when a host calls DskWrite_Flush.
+
+Monitor and tape:
+
+ 0031  Monitor: 62-character line threshold and a horizontal flywheel
+                                                   NO_MONLINE_FIX, NO_HFLYWHEEL
+       Pinball Dreams' 21st Century logo (66/62-character lines) was half height
+       (106 lines, CPCEC 226); per-line hsync changes no longer shift alternate lines.
+ 0032  Tape: pause timing at 4 MHz; accessors for a host            NO_TAPE_FIX
+       TZX pauses were converted at the Spectrum's 3.5 MHz, 12.5% short.
 
 Tools:
 
  0010  Diagnostics for hardware tracing (TRACE_HW, PAL_COUNT; off by default)
- 0030  AmigaOS host: Arnold for Amiga (src/amiga, built with bebbo's amiga-gcc)
- 0031  Headless test host (src/headless: frame checksums, PPM, key scripts, WAV,
+ 0033  AmigaOS host: Arnold for Amiga (src/amiga, built with bebbo's amiga-gcc)
+ 0034  Headless test host (src/headless: frame checksums, PPM, key scripts, WAV,
        disk insert / write-back / sector dumps)
 
 

@@ -122,11 +122,51 @@ static int test_skip_hook(void)
 	lcg = lcg * 1103515245UL + 12345UL;
 	return ((lcg >> 16) & 3) != 0;          /* skip 3 in 4 on average */
 }
+/* Tapes (24 Oct 2026): TAPE=<file.cdt> inserts a tape after the reset (as the
+ * Amiga host's power_on()). TAPEFAST=1 skips drawing frames while the motor
+ * runs and the tape has blocks left, like the Amiga host's Fast tape (one frame
+ * in 25 drawn; a frame the script will SNAP is drawn). Motor changes are
+ * logged as "tape: frame N motor on|off block i/n". The accessors are weak so
+ * headless_check can build this host against an older core. */
+#include "../cpc/tzx.h"
+extern int CPC_GetTapeMotor(void) __attribute__((weak));
+extern int TapeImage_IsPlayable(void) __attribute__((weak));
+static int tape_in, tape_motor, tape_fast_count;
+static long tape_frame;
+static void tape_tick(void)
+{
+	int m;
+	tape_frame++;
+	if (!tape_in || !&CPC_GetTapeMotor) return;
+	m = CPC_GetTapeMotor();
+	if (m != tape_motor) {
+		tape_motor = m;
+		printf("tape: frame %ld motor %s block %d/%d\n", tape_frame, m ? "on" : "off", TapeImage_GetCurrentBlock(), TapeImage_GetNumBlocks());
+	}
+}
+static int tape_skip_hook(void)
+{
+	if (script_on && KeyScript_SnapAt(script_frame + 1)) return 0;
+	if (!(CPC_GetTapeMotor() && TapeImage_IsPlayable())) { tape_fast_count = 0; return 0; }
+	return (tape_fast_count++ % 25) != 0;
+}
+static void insert_tape(const char *var)
+{
+	const char *n = getenv(var); unsigned char *d; unsigned long l; int r;
+	if (!n || !*n) return;
+	if (!Host_LoadFile(n, &d, &l)) { printf("tape: can't load %s\n", n); return; }
+	r = TapeImage_Insert(d, l);
+	free(d);   /* the core keeps its own copy */
+	tape_in = r == ARNOLD_STATUS_OK;
+	printf("tape: %s (%lu bytes, %d blocks) %s\n", n, l, TapeImage_GetNumBlocks(), tape_in ? "inserted" : "NOT RECOGNISED");
+	if (tape_in && getenv("TAPEFAST") && atoi(getenv("TAPEFAST")) && &TapeImage_IsPlayable && &CPC_SkipNextFrameHook) CPC_SkipNextFrameHook = tape_skip_hook;
+}
 #ifdef TRACE_HW
 extern int Trace_On;
 #endif
 BOOL Host_ProcessSystemEvents(void)
 {
+	tape_tick();
 #ifdef TRACE_HW
 	{ static int fr; const char *a = getenv("TRACE_AT"); int at = a ? atoi(a) : -1; fr++;
 	  Trace_On = (fr == at) || (getenv("TRACE_FROM") && fr >= atoi(getenv("TRACE_FROM"))); if (fr == 600 && getenv("RAMDUMP")) { extern unsigned char *Z80MemoryBase; FILE *mf = fopen(getenv("RAMDUMP"), "wb"); if (mf) { fwrite(Z80MemoryBase, 1, 65536, mf); fclose(mf); } }
@@ -229,6 +269,8 @@ static void snap(long frame)
  * DISKOUT= / DISKOUTB=: write that drive's image back out (Arnold's internal
  * EXTENDED form) at the end if the emulated machine wrote to it. */
 #include "../cpc/diskimage/diskimg.h"
+#include "../cpc/diskimage/dskwrite.h"
+static unsigned char *wb_img[2]; static unsigned long wb_len[2];
 static void insert_disk(int drive, const char *var)
 {
 	const char *n = getenv(var); unsigned char *d; unsigned long l; int r;
@@ -236,8 +278,21 @@ static void insert_disk(int drive, const char *var)
 	if (!Host_LoadFile(n, &d, &l)) { printf("disk %c: can't load %s\n", 'A' + drive, n); return; }
 	r = DiskImage_InsertDisk(drive, d, l);
 	printf("disk %c: %s (%lu bytes) %s\n", 'A' + drive, n, l, r == ARNOLD_STATUS_OK ? "inserted" : "NOT RECOGNISED");
+	if (getenv("DISKWB") && atoi(getenv("DISKWB")) && r == ARNOLD_STATUS_OK) { wb_img[drive] = d; wb_len[drive] = l; return; }
 	free(d);   /* the core keeps its own copy */
 }
+/* DISKWB=1: at the end, write each changed drive back into its DISKA/DISKB file
+ * the way the Amiga host does (cpc/diskimage/dskwrite.c: same format, patched
+ * sectors, .tmp + rename, .bak the first time). */
+static void writeback_disk(int drive, const char *var)
+{
+	const char *n = getenv(var); char msg[DSKWRITE_MSG]; int r;
+	if (!n || !*n || !wb_img[drive]) return;
+	r = DskWrite_Flush(drive, n, &wb_img[drive], &wb_len[drive], msg);
+	printf("disk %c write-back: %s\n", 'A' + drive, r == 0 ? "not changed" : msg);
+}
+#include <unistd.h>
+int Host_FileWritable(const char *name) { return access(name, W_OK) == 0; }
 /* DISKDUMP=file: list every sector the core holds for drive A after the insert
  * (track side index C H R N ST1 ST2 FNV-1a of the 128<<N bytes the FDC gets),
  * for tools/dsk_tests.py to compare with its own reading of the image. */
@@ -316,6 +371,7 @@ int main(int argc, char **argv)
 	}
 	insert_disk(0, "DISKA");
 	insert_disk(1, "DISKB");
+	insert_tape("TAPE");
 	dump_disk(0, "DISKDUMP");
 	Render_SetDisplayWindowed();
 	if (argc > 7 && argv[7][0] != '-') { wav = fopen(argv[7], "wb"); if (wav) { fseek(wav, 44, SEEK_SET); CPC_SetAudioActive(TRUE); } }
@@ -345,9 +401,12 @@ int main(int argc, char **argv)
 	{ extern unsigned long StatsE_Prepare, StatsE_Invalidate, StatsE_Runs, StatsE_RunCycles, StatsE_Events, StatsE_Calls;
 	  fprintf(stderr, "per frame: calls %lu prepare %lu invalidated-by-hook %lu runs %lu run-cycles %lu events %lu\n", StatsE_Calls/frames, StatsE_Prepare/frames, StatsE_Invalidate/frames, StatsE_Runs/frames, StatsE_RunCycles/frames, StatsE_Events/frames); }
 #endif
+	if (tape_in) printf("tape: end frame %ld motor %s block %d/%d\n", tape_frame, &CPC_GetTapeMotor && CPC_GetTapeMotor() ? "on" : "off", TapeImage_GetCurrentBlock(), TapeImage_GetNumBlocks());
 	dump();
 	save_disk(0, "DISKOUT");
 	save_disk(1, "DISKOUTB");
+	writeback_disk(0, "DISKA");
+	writeback_disk(1, "DISKB");
 	if (getenv("RAMOUT")) { extern unsigned char *Z80MemoryBase; Host_SaveFile(getenv("RAMOUT"), Z80MemoryBase, 65536); }   /* base 64K RAM at the end */
 	return 0;
 }

@@ -2086,6 +2086,17 @@ int Render_SkipCellIfHidden_Unused(void)   /* kept for reference; crtc.c has the
 	return 1;
 }
 
+/* Amiga port: horizontal flywheel - start the row `cells` chars off its left edge.
+ * Returns 0 (and does nothing) if that would be before the start of the buffer. */
+int Render_HShiftLine(int cells)
+{
+	unsigned char *p = pScreenLine + cells * Render_CellBytes;
+	if (p < pScreenBase)
+		return 0;
+	pScreenLine = p;
+	return 1;
+}
+
 void    Render_FirstLine(void)
 {
         RenderLine = 0;

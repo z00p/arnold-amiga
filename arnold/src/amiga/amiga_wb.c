@@ -9,6 +9,9 @@
 #include <proto/exec.h>
 #include <proto/dos.h>
 #include <proto/icon.h>
+#include <dos/dos.h>
+#include <dos/dosextens.h>
+#include <exec/memory.h>
 #include <string.h>
 #include <stdlib.h>
 #include "amiga_sys.h"
@@ -27,6 +30,7 @@ static int read_tooltypes(STRPTR name, struct SysStart *st)
 	if (FindToolType((STRPTR *)dobj->do_ToolTypes, (STRPTR)"MENU")) st->menu = 1;
 	if (FindToolType((STRPTR *)dobj->do_ToolTypes, (STRPTR)"HIRES")) st->hires = 1;
 	if (FindToolType((STRPTR *)dobj->do_ToolTypes, (STRPTR)"TALL")) st->tall = 1;
+	if (FindToolType((STRPTR *)dobj->do_ToolTypes, (STRPTR)"WIDE")) st->wide = 1;
 	if (FindToolType((STRPTR *)dobj->do_ToolTypes, (STRPTR)"NOSOUND")) st->nosound = 1;
 	tt = (char *)FindToolType((STRPTR *)dobj->do_ToolTypes, (STRPTR)"SKIP");
 	if (tt) st->skip = atoi(tt);
@@ -44,8 +48,33 @@ static int read_tooltypes(STRPTR name, struct SysStart *st)
 	if (tt) st->video = Sys_ParseVideo(tt);   /* VIDEO=AUTO|PAL|NTSC */
 	tt = (char *)FindToolType((STRPTR *)dobj->do_ToolTypes, (STRPTR)"MODEL");
 	if (tt) st->model = Sys_ParseModel(tt);   /* MODEL=464|664|6128|PLUS|GX4000 */
+	tt = (char *)FindToolType((STRPTR *)dobj->do_ToolTypes, (STRPTR)"DISKWRITE");
+	if (tt) st->diskwrite = atoi(tt) ? 1 : 0;   /* DISKWRITE=0|1: write changed disks back */
+	tt = (char *)FindToolType((STRPTR *)dobj->do_ToolTypes, (STRPTR)"FASTTAPE");
+	if (tt) st->fasttape = atoi(tt) ? 1 : 0;   /* FASTTAPE=0|1: fast tape loading (24 Oct 2026) */
+	tt = (char *)FindToolType((STRPTR *)dobj->do_ToolTypes, (STRPTR)"TAPE");
+	if (tt) strncpy(st->tape, tt, SYS_PATH - 1);   /* TAPE=<file.cdt> */
 	FreeDiskObject(dobj);
 	return 1;
+}
+
+/* Disk write-back (22 Oct 2026, cpc/diskimage/dskwrite.c): 0 if the file is
+ * protected against writing or deleting, or its volume is write-protected. */
+int Host_FileWritable(const char *name)
+{
+	struct FileInfoBlock *fib;
+	struct InfoData *id;
+	BPTR l = Lock((STRPTR)name, SHARED_LOCK);
+	int ok = 1;
+	if (!l) return 0;
+	fib = (struct FileInfoBlock *)AllocDosObject(DOS_FIB, NULL);
+	if (fib && Examine(l, fib) && (fib->fib_Protection & (FIBF_WRITE | FIBF_DELETE))) ok = 0;   /* RWED bits are set = not allowed */
+	if (fib) FreeDosObject(DOS_FIB, fib);
+	id = (struct InfoData *)AllocVec(sizeof *id, MEMF_PUBLIC);   /* longword aligned */
+	if (id && Info(l, id) && id->id_DiskState == ID_WRITE_PROTECTED) ok = 0;
+	if (id) FreeVec(id);
+	UnLock(l);
+	return ok;
 }
 
 int Sys_WBStart(int argc, char **argv, struct SysStart *st)
@@ -54,7 +83,7 @@ int Sys_WBStart(int argc, char **argv, struct SysStart *st)
 	struct WBArg *wa;
 	memset(st, 0, sizeof *st);
 	st->skip = -1;
-	st->joykeys = -1; st->pad = -1; st->speed = -1; st->video = -1; st->model = -1;
+	st->joykeys = -1; st->pad = -1; st->speed = -1; st->video = -1; st->model = -1; st->diskwrite = -1; st->fasttape = -1;
 	if (argc != 0) return 0;
 	wbs = (struct WBStartup *)argv;
 	if (!wbs || wbs->sm_NumArgs < 1) return 0;
@@ -71,7 +100,8 @@ int Sys_WBStart(int argc, char **argv, struct SysStart *st)
 		struct SysStart pre;
 		memset(&pre, 0, sizeof pre);
 		pre.skip = -1;
-		pre.joykeys = -1; pre.pad = -1; pre.speed = -1; pre.video = -1; pre.model = -1;
+		pre.joykeys = -1; pre.pad = -1; pre.speed = -1; pre.video = -1; pre.model = -1; pre.diskwrite = -1;
+		pre.fasttape = -1;
 		if (IconBase && read_tooltypes(wa[1].wa_Name, &pre) && pre.prefs[0]) {
 			char dir[SYS_PATH];
 			if (strchr(pre.prefs, ':') == NULL && NameFromLock(wa[1].wa_Lock, (STRPTR)dir, SYS_PATH)) {
@@ -82,6 +112,7 @@ int Sys_WBStart(int argc, char **argv, struct SysStart *st)
 			if (pre.menu) st->menu = 1;
 			if (pre.hires) st->hires = 1;
 			if (pre.tall) st->tall = 1;
+			if (pre.wide) st->wide = 1;
 			if (pre.nosound) st->nosound = 1;
 			if (pre.skip >= 0) st->skip = pre.skip;
 			if (pre.refresh > 0) st->refresh = pre.refresh;
@@ -91,6 +122,9 @@ int Sys_WBStart(int argc, char **argv, struct SysStart *st)
 			if (pre.speed >= 0) st->speed = pre.speed;
 			if (pre.video >= 0) st->video = pre.video;
 			if (pre.model >= 0) st->model = pre.model;
+			if (pre.diskwrite >= 0) st->diskwrite = pre.diskwrite;
+			if (pre.fasttape >= 0) st->fasttape = pre.fasttape;
+			if (pre.tape[0]) strcpy(st->tape, pre.tape);
 		} else if (NameFromLock(wa[1].wa_Lock, (STRPTR)st->media, SYS_PATH))
 			AddPart((STRPTR)st->media, wa[1].wa_Name, SYS_PATH);
 		CurrentDir(old);

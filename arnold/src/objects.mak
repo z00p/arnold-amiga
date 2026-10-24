@@ -8,7 +8,7 @@ CPC_O=	cpc/arnold.o cpc/asic.o cpc/audioevent.o cpc/bmp.o cpc/cpc.o \
 	cpc/debugger/gdebug.o cpc/debugger/breakpt.o \
 	cpc/diskimage/diskimg.o cpc/ramrom.o \
 	cpc/diskimage/dsk.o cpc/diskimage/extdsk.o \
-	cpc/diskimage/iextdsk.o \
+	cpc/diskimage/iextdsk.o cpc/diskimage/dskwrite.o \
 	cpc/z80/z80.o cpc/debugger/memdump.o \
 	cpc/riff.o cpc/snapv3.o \
 	cpc/messages.o
