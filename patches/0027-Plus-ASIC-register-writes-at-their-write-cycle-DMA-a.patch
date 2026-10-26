@@ -1,7 +1,7 @@
-From 7eaee592a9595d86b37d05759adbfe9094eccef4 Mon Sep 17 00:00:00 2001
+From 6597b1414c57033d97df442c132b369291da1053 Mon Sep 17 00:00:00 2001
 From: John Stringer <jcec_1@yahoo.co.uk>
-Date: Mon, 26 Oct 2026 07:40:40 +0000
-Subject: [PATCH 27/37] Plus: ASIC register writes at their write cycle, DMA at
+Date: Mon, 26 Oct 2026 13:39:59 +0000
+Subject: [PATCH 27/39] Plus: ASIC register writes at their write cycle, DMA at
  HSYNC start
 
 Memory-mapped ASIC writes (&6000-&7FFF and sprite pixels &4000-&4FFF) now

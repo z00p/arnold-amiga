@@ -1,0 +1,38 @@
+From 1f739abe041828768831c67952b497aadd778b44 Mon Sep 17 00:00:00 2001
+From: John Stringer <jcec_1@yahoo.co.uk>
+Date: Mon, 26 Oct 2026 13:40:03 +0000
+Subject: [PATCH 36/39] render: the changed-line hook names the surface row in
+ scanline mode
+
+With ScanLines set (RENDERING_ACCURACY_HIGH, a host's hires picture) CPC line i
+is copied to surface row Render_ScreenYOffset + 2i, with the rows between left
+black, but Render_LineChangedHook was called with Render_ScreenYOffset + i, so
+a host converting only the changed rows redrew the wrong ones and kept stale
+lines on screen (BASIC MODE 2 scrolling: 33000 of 36000 changed rows missed).
+The hook now gets the row the line was written to. Without ScanLines (the
+normal picture) nothing changes, and the pixels drawn are the same either way.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ src/cpc/render5.c | 5 ++++-
+ 1 file changed, 4 insertions(+), 1 deletion(-)
+
+diff --git a/src/cpc/render5.c b/src/cpc/render5.c
+index e01a419..c88a30a 100644
+--- a/src/cpc/render5.c
++++ b/src/cpc/render5.c
+@@ -1608,7 +1608,10 @@ void    Render_DumpScreen4(void)
+ 							if (k < n)
+ 							{
+ 								for (; k < n; k++) d[k] = s[k];
+-								Render_LineChangedHook(Render_ScreenYOffset + i);
++								/* hires (ScanLines): the surface pitch was doubled above, so CPC line i is
++								 * surface row 2i (every other row is left black), not row i; marking row i
++								 * left the changed rows stale on the AGA screen (1.2 fix; lores: i, as before) */
++								Render_LineChangedHook(Render_ScreenYOffset + (ScanLines ? (i << 1) : i));
+ 							}
+ 						}
+ 						else
+-- 
+2.50.0.windows.2
+

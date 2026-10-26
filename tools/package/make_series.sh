@@ -353,16 +353,37 @@ reads the port, so a loader that stops reading is silent for that stretch.
 Off (the default), nothing is recorded or mixed and the machine runs exactly
 as before; sound never changes the emulation."
 
+# 1.2 (26 Oct 2026): the hires changed-line fix
+post HEAD arnold/src/cpc/render5.c
+commit "render: the changed-line hook names the surface row in scanline mode" "With ScanLines set (RENDERING_ACCURACY_HIGH, a host's hires picture) CPC line i
+is copied to surface row Render_ScreenYOffset + 2i, with the rows between left
+black, but Render_LineChangedHook was called with Render_ScreenYOffset + i, so
+a host converting only the changed rows redrew the wrong ones and kept stale
+lines on screen (BASIC MODE 2 scrolling: 33000 of 36000 changed rows missed).
+The hook now gets the row the line was written to. Without ScanLines (the
+normal picture) nothing changes, and the pixels drawn are the same either way."
+
 post HEAD arnold/src/cpc
 commit "Core: remaining changes" "Small changes made after the fixes above."
+
+post HEAD arnold/src/amiga/rtgfw
+commit "RTG display framework (rtgfw) for the AmigaOS host, MIT licence" \
+"src/amiga/rtgfw: rtgfw, a small RTG (Picasso96 / CyberGraphX) display layer
+shared with other Amiga emulator ports: opens an RTG screen in a chosen mode
+and depth, and writes a chunky frame's changed lines into it (8-bit CLUT,
+16 and 32-bit, with optional 2x scanlines). Copyright (c) 2026 Zoopster,
+under the MIT licence (src/amiga/rtgfw/LICENSE), not the GPL: it is a
+separate work, vendored unchanged from its own repository (SOURCE.txt names
+the commit). Only the AmigaOS host uses it; the core does not."
 
 post HEAD arnold/src
 rm -rf $WT/src/headless
 commit "AmigaOS host (68k AGA): Arnold for Amiga" \
 "src/amiga: the AmigaOS 3.x host (AGA screen with chunky-to-planar and triple
-buffering, Paula sound, rawkey keyboard matrix, joystick/CD32 pads and keys as
-joystick, GadTools menu, prefs and per-game settings, Workbench icons and
-presets, screenshots, key scripts for test runs). Built with bebbo's
+buffering, an optional RTG screen through rtgfw, Paula sound, rawkey keyboard
+matrix, joystick/CD32 pads and keys as joystick, GadTools menu, prefs,
+per-game settings and a game settings database (Games.db), Workbench icons
+and presets, screenshots, key scripts for test runs). Built with bebbo's
 amiga-gcc (-noixemul): see src/amiga/Makefile."
 
 post HEAD arnold/src/headless

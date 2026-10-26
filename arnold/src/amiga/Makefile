@@ -16,7 +16,8 @@ LIBS = -lm
 # objects.mak may have CRLF line endings (Windows checkout): strip \r first.
 CORE := $(addprefix ../,$(shell tr -d '\r' < ../objects.mak | sed -n '/^CPC_O=/,/^$$/p' | tr -d '\\' | sed 's/CPC_O=//;s/\.o/.c/g'))
 OBJDIR ?= obj-$(CPU)
-OBJS := $(patsubst ../%.c,$(OBJDIR)/%.o,$(CORE)) $(OBJDIR)/host_amiga.o $(OBJDIR)/amiga_sys.o $(OBJDIR)/amiga_menu.o $(OBJDIR)/amiga_wb.o $(OBJDIR)/amiga_iff.o $(OBJDIR)/amiga_logo.o $(OBJDIR)/screenshot.o $(OBJDIR)/keyscript.o $(OBJDIR)/keymaplogic.o $(OBJDIR)/amiga_keymap.o
+OBJS := $(patsubst ../%.c,$(OBJDIR)/%.o,$(CORE)) $(OBJDIR)/host_amiga.o $(OBJDIR)/amiga_sys.o $(OBJDIR)/amiga_menu.o $(OBJDIR)/amiga_wb.o $(OBJDIR)/amiga_iff.o $(OBJDIR)/amiga_logo.o $(OBJDIR)/screenshot.o $(OBJDIR)/keyscript.o $(OBJDIR)/keymaplogic.o $(OBJDIR)/amiga_keymap.o $(OBJDIR)/gamedb.o \
+	$(OBJDIR)/rtgfw.o $(OBJDIR)/rtg_conv.o
 TARGET ?= $(if $(filter 68040,$(CPU)),Arnold,Arnold-$(subst 680,0,$(CPU)))
 
 all: $(TARGET)
@@ -27,6 +28,12 @@ $(TARGET): $(OBJS)
 $(OBJDIR)/%.o: ../%.c
 	@mkdir -p $(dir $@)
 	$(CC) $(CFLAGS) -c -o $@ $<
+
+# rtgfw (RTG pilot, 26 Oct 2026): the vendored MIT framework (rtgfw/SOURCE.txt), last in
+# the link so it doesn't move the hot code; gnu99 as in its own build
+$(OBJDIR)/%.o: rtgfw/src/%.c rtgfw/src/rtgfw.h rtgfw/src/rtg_conv.h
+	@mkdir -p $(dir $@)
+	$(CC) $(CFLAGS) -std=gnu99 -Irtgfw/src -c -o $@ $<
 
 $(OBJDIR)/%.o: %.c amiga_sys.h
 	@mkdir -p $(dir $@)

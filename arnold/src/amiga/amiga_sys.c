@@ -27,7 +27,7 @@
 #include <stdarg.h>
 
 unsigned long __stack = 256 * 1024;   /* libnix: enlarge the stack at start */
-static const char ver[] __attribute__((used)) = "$VER: Arnold 1.1 (26.10.2026) Amiga port, GPL-2.0";
+static const char ver[] __attribute__((used)) = "$VER: Arnold 1.2 (26.10.2026) Amiga port, GPL-2.0";
 
 /* ---- diagnostic log ---- */
 static FILE *logf;
@@ -504,7 +504,7 @@ static void measure_vblank(ULONG modeid)
 	 * sits in a 263-line frame: its bottom ~38 lines are lost and the picture
 	 * looks low. Put the PAL beam back (what the machine booted with). Not for an
 	 * NTSC mode (VIDEO=NTSC) or an NTSC machine. NO_PALBEAM: leave it. */
-	if (!Sys_Display50Hz() && (GfxBase->DisplayFlags & PAL)
+	if (!Sys_RtgActive && !Sys_Display50Hz() && (GfxBase->DisplayFlags & PAL)
 	 && ((modeid & MONITOR_ID_MASK) == PAL_MONITOR_ID || (modeid & MONITOR_ID_MASK) == DEFAULT_MONITOR_ID)) {
 		unsigned long was = Sys_DisplayFrameUs;
 		custom.beamcon0 = DISPLAYPAL;
@@ -534,6 +534,250 @@ unsigned long Sys_ChipClock(void)
 	return e * 5;
 }
 
+/* ---- RTG screen (pilot, 26 Oct 2026; DESIGN.md 9.2 of rtg-framework) ----
+ * The single-buffer way (John's choice after the A1200 bench: ChangeScreenBuffer waits for
+ * the 60 Hz HDMI flip there, ~8-9 ms): rtgfw opens one 8-bit CLUT RTG screen and a backdrop
+ * window, and every shown frame writes the core's changed chunky lines straight into that
+ * screen's bitmap under a lock (path A + C), with the changed palette range loaded once a
+ * frame. The chunky frame is shown whole (384x272, or 768x272 hires at 1:2), centred in the
+ * smallest fitting mode, the surround in pen 0 = the CPC border colour (the colour-0 rule).
+ * No c2p, shadow, vertical shift or AGA buffers. Tearing is possible (no flip). Pacing and
+ * Paula are untouched: the native VBlank keeps running under an RTG screen and is measured
+ * as for AGA. RTGBLIT: an off-screen bitmap and a blit (for comparison); RTGBUF=3: three
+ * screen buffers. If no RTG board or mode is found, the AGA screen opens as before. */
+#include "rtgfw/src/rtgfw.h"
+#include "screenshot.h"
+int Sys_RtgWanted, Sys_RtgActive, Sys_RtgBlit, Sys_RtgBuffers = 1, Sys_RtgGrabOn;
+/* Scanlines on the RTG screen (1.2, 26 Oct 2026; rtgfw RtgOpen.scan): SYS_SCAN_* = the Scanlines
+ * setting. Off is the 1x picture as before. The others draw the picture at 2x (each CPC pixel
+ * 2x2) into a bigger RTG mode, the lower row of each pair being the scanline: hard = the line
+ * dimmed (8-bit CLUT: dimmed colours in CLUT 128-255), blended = the line and the line below
+ * averaged and dimmed (16/32-bit screen). The mode: 960x540 if there is one (exactly 2x to a
+ * 1080p HDMI output: the PiStorm's hdmi_mode=82; 270 of the 272 lines fit, the top and bottom
+ * border lines are cut), else the smallest mode of 768x544 or more (768x576, 800x600, ...).
+ * RTGDEPTH=8|16|32 and SCANMODE=<w>x<h> (tests) override the depth and the mode size. */
+int Sys_RtgScan, Sys_RtgDepth, Sys_RtgScanW, Sys_RtgScanH;
+static const unsigned char scan_kind[SYS_SCANS] = { RTG_SCAN_OFF, RTG_SCAN_HARD, RTG_SCAN_HARD, RTG_SCAN_HARD, RTG_SCAN_BLEND, RTG_SCAN_BLEND, RTG_SCAN_BLEND };
+static const unsigned char scan_pct[SYS_SCANS] = { 0, 25, 50, 75, 25, 50, 75 };
+#define BLEND_DEPTH 32                /* blended scanlines: 32-bit (exact colours); RTGDEPTH=16 for RGB565 */
+static int rtg_scan_open;             /* the scanline setting of the RTG screen open now (for the log at close) */
+int Sys_RtgDead;                    /* RTG failed once (screen or menu): AGA is used until the user ticks RTG again */
+char Sys_RtgStatus[80];
+static int rtg_avail = -1;          /* -1: not asked yet */
+static RtgOpen rtg_o;
+static unsigned long rtg_errs;
+/* Hires (768x544 chunky, render5.c ScanLines): since 1.2 the core's line-changed hook names
+ * the surface row a line was copied to (Render_ScreenYOffset + 2i), so hires uses the line
+ * marks like lores; the pilot's "every line every frame" workaround is gone. */
+
+static void rtg_log(const char *line) { Sys_Log("%s", line); }
+
+int Sys_RtgAvailable(void)
+{
+	if (rtg_avail < 0) {
+		RtgCaps c;
+		int e;
+		memset(&c, 0, sizeof c);
+		c.size = sizeof c;
+		e = rtg_query(&c);
+		rtg_avail = e == RTG_OK && (c.depths & 1);
+		Sys_Log("rtg: query: %s, system %d, depths %d, library v%d, board '%s': 8-bit RTG screen %s",
+			e == RTG_OK ? "ok" : rtg_error_text(e), (int)c.system, (int)c.depths, (int)c.lib_version, c.board, rtg_avail ? "available" : "not available");
+	}
+	return rtg_avail;
+}
+
+unsigned long Sys_RtgMenuMode(int *w, int *h)
+{
+	/* ALL the modes: the PiStorm's VideoCore lists 588 (the pilot read only the first 128, the
+	 * small ones, so on the real A1200 no 640-wide 8-bit mode was ever found and the menu opened
+	 * on the AGA screen: found 26 Oct 2026 at the first double-click of the Arnold RTG icon) */
+	enum { MAXMODES = 2048 };
+	RtgModeInfo *m;
+	int n, i, best = -1;
+	if (!Sys_RtgAvailable()) return 0;
+	m = AllocVec(MAXMODES * sizeof(RtgModeInfo), MEMF_ANY);
+	if (!m) { Sys_Log("rtg: no memory for the mode list"); return 0; }
+	n = rtg_x_modes(m, MAXMODES);
+	Sys_Log("rtg: %d RTG modes listed for the menu screen", n);
+	for (i = 0; i < n; i++) {
+		if (m[i].fmt != RTG_FMT_CLUT8 || m[i].w < 640 || m[i].h < 256) continue;
+		if (best < 0 || (long)m[i].w * m[i].h < (long)m[best].w * m[best].h) best = i;
+	}
+	if (best < 0) { FreeVec(m); Sys_Log("rtg: no 8-bit RTG mode of 640x256 or more for the menu"); return 0; }
+	*w = m[best].w; *h = m[best].h;
+	{ unsigned long id = m[best].id; FreeVec(m); return id; }
+}
+
+/* the scanline mode: SCANMODE's size, else 960x540, in the wanted depth (0 if none: rtgfw picks
+ * the smallest mode of at least 2x the picture) */
+static unsigned long rtg_scan_mode(int depth, int *w, int *h)
+{
+	enum { MAXMODES = 2048 };
+	RtgModeInfo *m;
+	int n, i, ww = Sys_RtgScanW ? Sys_RtgScanW : 960, wh = Sys_RtgScanH ? Sys_RtgScanH : 540;
+	unsigned long id = 0;
+	m = AllocVec(MAXMODES * sizeof(RtgModeInfo), MEMF_ANY);
+	if (!m) return 0;
+	n = rtg_x_modes(m, MAXMODES);
+	for (i = 0; i < n && !id; i++) {
+		int g = m[i].fmt == RTG_FMT_CLUT8 ? 8 : (m[i].fmt == RTG_FMT_RGB565 || m[i].fmt == RTG_FMT_RGB565PC) ? 16 : m[i].fmt >= RTG_FMT_ARGB32 && m[i].fmt <= RTG_FMT_RGBA32 ? 32 : 0;
+		if (g == depth && m[i].w == ww && m[i].h == wh) { id = m[i].id; *w = m[i].w; *h = m[i].h; }
+	}
+	FreeVec(m);
+	if (!id) Sys_Log("rtg: scanlines: no %dx%d %d-bit mode, the smallest of 768x544 or more", ww, wh, depth);
+	return id;
+}
+
+static int rtg_open_display(int cw, int ch, int hires)
+{
+	int e, sc = Sys_RtgScan > 0 && Sys_RtgScan < SYS_SCANS ? Sys_RtgScan : 0;
+	memset(&rtg_o, 0, sizeof rtg_o);
+	rtg_o.size = sizeof rtg_o; rtg_o.api = RTGFW_API;
+	rtg_o.src_w = cw; rtg_o.src_h = ch; rtg_o.vis_w = cw; rtg_o.vis_h = ch;   /* all of it: no WIDE/TALL crops */
+	rtg_o.aspect_x = 1; rtg_o.aspect_y = (hires && ch <= 300) ? 2 : 1;   /* the hires chunky frame is 768x544: its lines are doubled already */
+	if (sc && ch > 300) { Sys_Log("rtg: scanlines are for the lores picture: off in hires"); sc = 0; }
+	rtg_o.depth = scan_kind[sc] == RTG_SCAN_BLEND ? BLEND_DEPTH : 8;
+	if (Sys_RtgDepth == 8 || Sys_RtgDepth == 16 || Sys_RtgDepth == 32) rtg_o.depth = Sys_RtgDepth;
+	if (scan_kind[sc] == RTG_SCAN_BLEND && rtg_o.depth == 8) rtg_o.depth = 16;
+	rtg_o.scan = scan_kind[sc]; rtg_o.scan_pct = scan_pct[sc];
+	if (sc && Sys_RtgAvailable()) {
+		int mw = 0, mh = 0;
+		unsigned long id = rtg_scan_mode(rtg_o.depth, &mw, &mh);
+		if (id) {
+			/* the picture at 2x in that mode: what does not fit is cut evenly (960x540: 270 lines, 1 off top and bottom) */
+			rtg_o.mode_id = id;
+			if (rtg_o.vis_h * 2 > mh) { rtg_o.vis_h = mh / 2; rtg_o.vis_y = (ch - rtg_o.vis_h) / 2; }
+			if (rtg_o.vis_w * 2 > mw) { rtg_o.vis_w = mw / 2; rtg_o.vis_x = (cw - rtg_o.vis_w) / 2; }
+		}
+	}
+	rtg_o.buffers = Sys_RtgBlit ? 1 : (Sys_RtgBuffers >= 1 && Sys_RtgBuffers <= 3 ? Sys_RtgBuffers : 1);
+	rtg_o.border_pen = 0;
+	rtg_o.flags = RTG_F_LOG | (Sys_RtgBlit ? RTG_F_BLIT : 0);
+	rtg_o.content_hz100 = 5000;
+	rtg_o.log = rtg_log;
+	if (!Sys_RtgAvailable()) e = RTG_E_NOMODE;
+	else e = rtg_open(&rtg_o);
+	if (e != RTG_OK) {
+		Sys_Log("rtg: open failed (%s): using the AGA screen", rtg_error_text(e));
+		snprintf(Sys_RtgStatus, sizeof Sys_RtgStatus, "RTG screen: %s, AGA used.",
+			e == RTG_E_NOLIB || e == RTG_E_NOMODE ? "no RTG board or 8-bit mode" : rtg_error_text(e));
+		if (e == RTG_E_NOLIB || e == RTG_E_NOMODE) rtg_avail = 0;
+		Sys_RtgDead = 1;                  /* fall back once: no retry on every Help */
+		return 0;
+	}
+	line_dirty = AllocMem(CH, MEMF_ANY);
+	if (!line_dirty) { rtg_close(); strcpy(Sys_RtgStatus, "RTG screen: out of memory, AGA used."); Sys_RtgDead = 1; return 0; }
+	memset(line_dirty, 1, CH);            /* the first present writes every line */
+	scr = rtg_o.out_screen;
+	win = rtg_o.out_window;
+	/* as the AGA window: take wheel events ourselves (Intuition would make cursor keys of them) */
+	ModifyIDCMP(win, IDCMP_RAWKEY | IDCMP_MOUSEBUTTONS | IDCMP_EXTENDEDMOUSE);
+	Sys_RtgActive = 1;
+	Sys_VShiftOn = 0; Sys_VShiftOn_Last = 0;
+	SW = cw; SH = ch; XOFF = YOFF = 0;
+	flipped = 0; shown = 0; safe_out = disp_out = 0;
+	pal32[0] = 256UL << 16;
+	pal32[1 + 256 * 3] = 0;
+	pal32[1 + SYS_OSD_PEN * 3] = 0xFFFFFFFF; pal32[2 + SYS_OSD_PEN * 3] = 0xDDDDDDDD; pal32[3 + SYS_OSD_PEN * 3] = 0;
+	pal_dirty = 1; pal_dirty_all = 1;
+	rtg_errs = 0;
+	Sys_Log("rtg: screen %08lx %dx%d, picture %dx%d at %d,%d (x%d,%d), format %d, %s, chip free %lu", (unsigned long)rtg_o.out_mode_id,
+		(int)rtg_o.out_w, (int)rtg_o.out_h, cw * rtg_o.out_scale_x, ch * rtg_o.out_scale_y, (int)rtg_o.out_x, (int)rtg_o.out_y,
+		(int)rtg_o.out_scale_x, (int)rtg_o.out_scale_y, (int)rtg_o.out_fmt,
+		rtg_o.out_buffers == 0 ? "off-screen bitmap + blit" : rtg_o.out_buffers == 1 ? "single buffer, direct writes" : "screen buffers",
+		(unsigned long)AvailMem(MEMF_CHIP));
+	rtg_scan_open = sc;
+	if (sc) Sys_Log("rtg: scanlines %s (%s %d%%), lines %d-%d of the frame shown", Sys_ScanWords[sc],
+		scan_kind[sc] == RTG_SCAN_HARD ? "hard" : "blended", (int)scan_pct[sc], (int)rtg_o.vis_y, (int)(rtg_o.vis_y + rtg_o.vis_h - 1));
+	measure_vblank(rtg_o.out_mode_id);    /* the native VBlank: pacing and Paula as on AGA */
+	Sys_Log("display: open (RTG)");
+	return 1;
+}
+
+static void rtg_show(const unsigned char *chunky, int pitch)
+{
+	static ULONG rgb[256];
+	unsigned long t0 = Sys_Micros(), t1;
+	RtgStats s0, s1;
+	int e;
+	rtg_get_stats(&s0);
+	if (Sys_PalAll) pal_dirty = pal_dirty_all = 1;
+	if (pal_dirty) {
+		int i, lo, hi;
+		if (pal_dirty_all) { pal_lo = 0; pal_hi = 255; pal_dirty_all = 0; }
+		lo = pal_lo; hi = pal_hi;
+		for (i = lo; i <= hi; i++)
+			rgb[i] = ((pal32[1 + i * 3] >> 24) << 16) | ((pal32[2 + i * 3] >> 24) << 8) | (pal32[3 + i * 3] >> 24);
+		rtg_set_palette(0, lo, hi - lo + 1, rgb + lo, RTG_RGB24);   /* loaded by rtg_present (LoadRGB32 of that range) */
+		pal_dirty = 0;
+		Sys_Perf.palette_loads++;
+	}
+	e = rtg_present(chunky, pitch, Sys_AllLines ? NULL : line_dirty);
+	memset(line_dirty, 0, CH);            /* a skipped frame's lines stay owed inside rtgfw */
+	if (e != RTG_OK && rtg_errs++ < 10) Sys_Log("rtg: present: %s (frame %lu)", rtg_error_text(e), frames);
+	rtg_get_stats(&s1);
+	Sys_Perf.c2p_lines += s1.lines_written - s0.lines_written;
+	Sys_Perf.c2p_chip_longs += (s1.bytes_written - s0.bytes_written) >> 2;   /* RTG: bytes written to the board / 4 */
+	Sys_Perf.c2p_frames++;
+	Sys_Perf.line_bytes = SW;             /* one byte a pixel */
+	frames++;
+	t1 = Sys_Micros(); Sys_Perf.c2p_us += t1 - t0;
+}
+
+int Sys_RtgGrab(const char *name, const unsigned char *chunky, int pitch)
+{
+	static unsigned char pal[256][3];
+	static ULONG clut[256];
+	unsigned char *pens;
+	int i, e, w, h;
+	if (!Sys_RtgActive) return 0;
+	rtg_show(chunky, pitch);              /* TURBO shows every 25th frame only: make sure this one is on the screen */
+	w = rtg_o.out_w; h = rtg_o.out_h;
+	if (rtg_o.out_fmt != RTG_FMT_CLUT8) {
+		/* 16/32-bit screen (blended scanlines): the screen as RGB, saved as a PPM beside the name */
+		uint32_t *rgb = AllocVec((long)w * h * 4, MEMF_ANY);
+		char ppm[300];
+		FILE *f;
+		long k;
+		if (!rgb) return 0;
+		e = rtg_x_read_rgb(rgb);
+		strncpy(ppm, name, sizeof ppm - 5); ppm[sizeof ppm - 5] = 0;
+		{ char *dot = strrchr(ppm, '.'); if (dot) *dot = 0; }
+		strcat(ppm, ".ppm");
+		if (e == RTG_OK && (f = fopen(ppm, "wb"))) {
+			unsigned char *row = (unsigned char *)rgb;   /* rewritten in place: 4 bytes in, 3 out */
+			fprintf(f, "P6\n%d %d\n255\n", w, h);
+			for (k = 0; k < (long)w * h; k++) { uint32_t v = rgb[k]; row[3 * k] = v >> 16; row[3 * k + 1] = v >> 8; row[3 * k + 2] = v; }
+			fwrite(row, 3, (long)w * h, f);
+			fclose(f);
+		} else Sys_Log("rtg: grab %s: %s", ppm, e == RTG_OK ? "can't write" : rtg_error_text(e));
+		FreeVec(rgb);
+		return e == RTG_OK;
+	}
+	pens = malloc((long)w * h);
+	if (!pens) return 0;
+	e = rtg_x_read_frame(pens, (uint32_t *)clut);
+	if (e == RTG_OK) {
+		for (i = 0; i < 256; i++) { pal[i][0] = clut[i] >> 16; pal[i][1] = clut[i] >> 8; pal[i][2] = clut[i]; }
+		Screenshot_SavePNG(name, pens, w, h, w, pal);
+	} else Sys_Log("rtg: grab %s: %s", name, rtg_error_text(e));
+	free(pens);
+	return e == RTG_OK;
+}
+
+static void rtg_close_display(void)
+{
+	uint32_t hl = 0;
+	if (rtg_scan_open && rtg_x_scan_info(&hl) == RTG_SCAN_HARD && hl && rtg_o.out_fmt == RTG_FMT_CLUT8)
+		Sys_Log("rtg: scanlines: %lu lines had pens 128+ (their scanline is not dimmed)", (unsigned long)hl);
+	rtg_close();                          /* waits for any buffer messages, closes the window and screen */
+	scr = NULL; win = NULL;
+	if (line_dirty) { FreeMem(line_dirty, CH); line_dirty = NULL; }
+	Sys_RtgActive = 0;
+	Sys_Log("display: closed (RTG)");
+}
+
 int Sys_OpenDisplay(int cw, int ch, int hires)
 {
 	struct Rectangle rect;
@@ -544,6 +788,7 @@ int Sys_OpenDisplay(int cw, int ch, int hires)
 	flipped = 0;
 	c2p_init();
 	quit_requested = 0; kq_head = kq_tail = 0;
+	if (Sys_RtgWanted && !Sys_RtgDead && rtg_open_display(cw, ch, hires)) return 1;   /* else the AGA screen, as before */
 	/* Standard overscan, not MAX: MAX's rectangle starts further left than a
 	 * monitor shows (first WinUAE run: the left border was off the screen). */
 	if (!QueryOverscan(modeid, &rect, OSCAN_STANDARD)) {
@@ -764,6 +1009,7 @@ static void collect_safe(void)
 {
 	struct Message *m;
 	int j;
+	if (!safeport) return;   /* RTG screen (no AGA buffers) or no display */
 	while ((m = GetMsg(safeport))) {
 		for (j = 0; j < NBUF; j++)
 			if (sb[j] && m == &sb[j]->sb_DBufInfo->dbi_SafeMessage) { buf_safe[safe_for[j]] = 1; safe_pend[j] = 0; }
@@ -775,6 +1021,7 @@ static void collect_disp(void)
 {
 	struct Message *m;
 	int j;
+	if (!dispport) return;   /* RTG screen: Sys_WaitFrame calls this every frame, and GetMsg(NULL) reads low memory */
 	while ((m = GetMsg(dispport))) {
 		for (j = 0; j < NBUF; j++)
 			if (sb[j] && m == &sb[j]->sb_DBufInfo->dbi_DispMessage) disp_pend[j] = 0;
@@ -785,6 +1032,7 @@ static void collect_disp(void)
 void Sys_CloseDisplay(void)
 {
 	int i;
+	if (Sys_RtgActive) { rtg_close_display(); return; }
 	while (safe_out > 0) { WaitPort(safeport); collect_safe(); }
 	while (disp_out > 0) { WaitPort(dispport); collect_disp(); }
 #ifdef VSHIFT
@@ -828,7 +1076,7 @@ void Sys_CloseDisplay(void)
 	if (line_dirty) { FreeMem(line_dirty, CH); line_dirty = NULL; }
 	for (i = 0; i < NBUF; i++) if (line_lvl[i]) { FreeVec(line_lvl[i]); line_lvl[i] = NULL; }
 	for (i = 0; i < NBUF; i++) if (shadow[i]) { FreeVec(shadow[i]); shadow[i] = NULL; }
-	if (scr) { CloseScreen(scr); scr = NULL; }
+	if (scr) { CloseScreen(scr); scr = NULL; Sys_Log("display: closed"); }
 	if (safeport) { DeleteMsgPort(safeport); safeport = NULL; }
 	if (dispport) { DeleteMsgPort(dispport); dispport = NULL; }
 }
@@ -900,6 +1148,7 @@ void Sys_ShowFrame(const unsigned char *chunky, int pitch)
 	struct BitMap *bm;
 	int y, next, bit, wr, moved;
 
+	if (Sys_RtgActive) { rtg_show(chunky, pitch); return; }
 	if (!scr) return;
 	t0 = Sys_Micros();
 	next = (shown + 1) % NBUF;
@@ -1472,6 +1721,7 @@ void Sys_Message(const char *text)
 {
 	Sys_Log("message: %s", text);
 	struct EasyStruct es = { sizeof(struct EasyStruct), 0, "Arnold", "%s", "OK" };
+	if (Sys_RtgActive) { EasyRequest(win, &es, NULL, (ULONG)text); return; }   /* on the RTG screen, which stays up */
 	if (scr) Sys_CloseDisplay();
 	EasyRequest(NULL, &es, NULL, (ULONG)text);
 }

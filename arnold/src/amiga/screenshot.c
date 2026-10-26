@@ -77,7 +77,8 @@ int Screenshot_SavePNG(const char *name, const unsigned char *chunky, int w, int
 	unsigned char ihdr[13], hdr[5], *line;
 	unsigned long a = 1, b = 0, idatlen, crc, raw = (unsigned long)(w + 1) * h, done = 0;
 	int y, x;
-	static unsigned char buf[1 + 768];
+	static unsigned char buf[1 + 4096];      /* 768 before 26 Oct 2026: the RTG grab writes whole RTG screens (up to 4096 wide) */
+	if (w > 4096) { if (f) fclose(f); return 0; }
 	if (!f) return 0;
 	crc_init();
 	fwrite("\211PNG\r\n\032\n", 1, 8, f);

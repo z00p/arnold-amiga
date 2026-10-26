@@ -1,7 +1,7 @@
-From 458048354183b69c774531e949575f028f5a47b4 Mon Sep 17 00:00:00 2001
+From 2fdb7dfc3e8793a1a2aee2b82cc9e56fb5159728 Mon Sep 17 00:00:00 2001
 From: John Stringer <jcec_1@yahoo.co.uk>
-Date: Mon, 26 Oct 2026 07:40:33 +0000
-Subject: [PATCH 09/37] Plus: raise the programmable raster interrupt at HSYNC
+Date: Mon, 26 Oct 2026 13:39:52 +0000
+Subject: [PATCH 09/39] Plus: raise the programmable raster interrupt at HSYNC
  start
 
 The PRI was compared at HSYNC end, ~R3 characters late. Sonic GX chains PRI

@@ -1,0 +1,6 @@
+rtgfw: common RTG display framework (MIT, see LICENSE; Copyright (c) 2026 Zoopster).
+Vendored copy for Arnold for Amiga's RTG screen. Canonical source: the rtg-framework
+repository (a separate project). Files are byte-identical copies of its src/ and include/.
+Fix bugs there first, then copy them here again.
+
+Source commit: 60d7bf0 2026-10-26 Scanlines: CLUT8 hard in two sequential long-store passes; 16/32-bit back to row-by-row (interleaved rows were slower on the VideoCore: blend 1.11 vs 0.81 ms)

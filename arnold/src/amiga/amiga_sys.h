@@ -53,7 +53,7 @@ struct SysMenu {
 	int wide;                /* full-width screen: up to all 384 CPC columns (lores overscan), for games drawn to the left/right border */
 	int tall;                /* full-height screen: all 272 CPC lines (PAL overscan), for games drawn into the top/bottom border */
 	int skip, refresh;       /* frame skip (max in a row, 0 off) and fixed refresh (1 = every frame) */
-	int joykeys;             /* keyboard as joystick: 0 off, 1 cursors, 2 QAOP */
+	int joykeys;             /* keyboard as joystick: 0 off, 1 cursors, 2 QAOP, 3 cursors + X fire */
 	int pad;                 /* port 2 pad: 0 standard 2-button joystick, 1 CD32 pad */
 	int speed;               /* game speed: 0 the CPC's 50 Hz (E-clock timer off PAL), 1 follow the display */
 	int video;               /* video mode of both screens: 0 Auto (as Workbench), 1 PAL, 2 NTSC */
@@ -61,7 +61,7 @@ struct SysMenu {
 	int running_model;       /* the model of the machine that is running (-1 none) */
 	int can_continue;        /* a machine is running (Help brought us here) */
 	char prefs[SYS_PATH];    /* shown in the status line */
-	int game_prefs;          /* the cartridge has its own <file>.prefs (shown) */
+	int game_prefs;          /* 1: the game has its own <file>.prefs (+game), 2: settings from Games.db (+db) */
 	char status[80];         /* one-off status line for the next menu (cleared) */
 	char remap[128];         /* the key map (remap= text): the host fills it before the menu, takes it back after */
 	int diskwrite;           /* write changed disks back to their .dsk files (22 Oct 2026) */
@@ -70,6 +70,8 @@ struct SysMenu {
 	int tapesound;           /* Tape sound: the tape signal is audible at real speed (25 Oct 2026) */
 	int tape_rewind;         /* set by the menu: rewind the tape on Continue / Reset */
 	char tapepos[32];        /* "Tape 3/5  " for the status line (host fills it) */
+	int rtg;                 /* RTG screen (experimental, 26 Oct 2026): the emulation (and the menu) on an RTG board's 8-bit screen */
+	int scan;                /* Scanlines on the RTG screen (SYS_SCAN_*, 1.2) */
 };
 enum { SYS_MODEL_464 = 0, SYS_MODEL_664, SYS_MODEL_6128, SYS_MODEL_PLUS, SYS_MODEL_GX4000, SYS_MODELS };
 enum { SYS_MENU_QUIT = 0, SYS_MENU_POWER, SYS_MENU_CONTINUE, SYS_MENU_RESET, SYS_MENU_SAVE,
@@ -79,11 +81,13 @@ const char *Host_AmigaKeyName(int rawkey, char *buf);   /* host_amiga.c: remap= 
 int  Sys_Menu(struct SysMenu *m);
 void Sys_MenuClose(void);           /* closes the menu screen Sys_Menu leaves open (call after the emulation screen is up) */
 void Sys_MenuError(const char *text);
+extern void (*Sys_MenuOpenedHook)(void);   /* called once a new menu screen is up (RTG: the host then closes the emulation screen, so nothing else shows between) */
+int  Sys_MenuOnRtg(void);           /* the menu screen open now is an RTG screen */
 void Sys_ShowPicture(void *screen, const char *name);   /* amiga_iff.c: modal IFF viewer */
 
 /* Workbench start (amiga_wb.c): fills st from the icon's ToolTypes and a
  * project icon; returns 1 when started from Workbench. */
-struct SysStart { char prefs[SYS_PATH], media[SYS_PATH], remap[128]; int menu, hires, tall, wide, nosound, skip, refresh, joykeys, pad, speed, video, model, diskwrite, fasttape, tapesound; char tape[SYS_PATH]; };   /* skip -1, refresh 0, others -1: not given */
+struct SysStart { char prefs[SYS_PATH], media[SYS_PATH], remap[128]; int menu, hires, tall, wide, nosound, skip, refresh, joykeys, pad, speed, video, model, diskwrite, fasttape, tapesound, rtg, scan; char tape[SYS_PATH]; };   /* skip -1, refresh 0, others -1: not given */
 int Sys_ParseModel(const char *v);   /* "464" "664" "6128" "PLUS" "GX4000" (any case) -> SYS_MODEL_*, -1 if not one */
 int Sys_ParseVideo(const char *v);   /* "AUTO" "PAL" "NTSC" or 0-2 -> 0-2, -1 if not one */
 int Sys_ParseSpeed(const char *v);   /* "50" or 0 -> 0, "DISPLAY" or 1 -> 1, -1 if not one */
@@ -91,6 +95,28 @@ extern const char *Sys_ModelNames[SYS_MODELS], *Sys_VideoNames[3], *Sys_SpeedNam
 int  Sys_WBStart(int argc, char **argv, struct SysStart *st);
 
 unsigned long Sys_Millis(void);
+
+/* RTG screen (pilot, 26 Oct 2026; rtgfw, the vendored MIT framework in rtgfw/). Single buffer:
+ * one 8-bit CLUT RTG screen written directly under a bitmap lock, only the changed lines, the
+ * palette loaded once a frame; no ChangeScreenBuffer, so nothing waits for the RTG refresh.
+ * Pacing and sound stay as on AGA. Off: the AGA code runs exactly as before. */
+extern int Sys_RtgWanted;            /* the next Sys_OpenDisplay tries the RTG screen first (menu.rtg) */
+extern int Sys_RtgActive;            /* the display open now is the RTG screen */
+extern int Sys_RtgBlit;              /* RTGBLIT (diagnostic): off-screen bitmap + blit of the changed lines */
+extern int Sys_RtgBuffers;           /* RTGBUF=1|3 (diagnostic): 3 = ChangeScreenBuffer triple buffering */
+extern int Sys_RtgDead;              /* RTG failed once: AGA until the user ticks RTG screen again (no retry on every Help) */
+extern int Sys_RtgGrabOn;            /* RTGGRAB (tests): every SNAP also reads the RTG screen back (rtg-NNNNN.png) */
+extern char Sys_RtgStatus[80];       /* why RTG fell back to AGA, for the next menu's status line ("" none) */
+int  Sys_RtgAvailable(void);         /* an RTG board with an 8-bit CLUT mode (asked once) */
+unsigned long Sys_RtgMenuMode(int *w, int *h);   /* the 8-bit RTG mode for the menu screen (>= 640x256), 0 if none */
+int  Sys_RtgGrab(const char *name, const unsigned char *chunky, int pitch);   /* RTG mode: show chunky, save the screen as a PNG */
+/* Scanlines on the RTG screen (1.2): Off, Hard 25/50/75% (8-bit), Blended light/normal/strong (32-bit) */
+enum { SYS_SCAN_OFF = 0, SYS_SCAN_H25, SYS_SCAN_H50, SYS_SCAN_H75, SYS_SCAN_BLIGHT, SYS_SCAN_BLEND, SYS_SCAN_BSTRONG, SYS_SCANS };
+extern int Sys_RtgScan;              /* SYS_SCAN_* for the next RTG screen (menu.scan) */
+extern int Sys_RtgDepth;             /* RTGDEPTH=8|16|32 (tests): the RTG screen's depth, 0 = by the scanline setting */
+extern int Sys_RtgScanW, Sys_RtgScanH;   /* SCANMODE=<w>x<h> (tests): the scanline mode size, 0 = 960x540 */
+extern const char *Sys_ScanWords[SYS_SCANS];   /* prefs words: off 25 50 75 blendlight blend blendstrong */
+int  Sys_ParseScan(const char *v);   /* a prefs word (any case; also hard25..hard75, 0) -> SYS_SCAN_*, -1 if not one */
 
 /* Performance counters (timer.device E-clock): time in c2p (conversion plus the
  * chip RAM writes), time waiting for flips/VBlank, lines converted. */

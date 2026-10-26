@@ -1,0 +1,2110 @@
+From 2617c86f8360a10b6a4ede491be25070d85b9490 Mon Sep 17 00:00:00 2001
+From: John Stringer <jcec_1@yahoo.co.uk>
+Date: Mon, 26 Oct 2026 13:40:04 +0000
+Subject: [PATCH 37/39] RTG display framework (rtgfw) for the AmigaOS host, MIT
+ licence
+
+src/amiga/rtgfw: rtgfw, a small RTG (Picasso96 / CyberGraphX) display layer
+shared with other Amiga emulator ports: opens an RTG screen in a chosen mode
+and depth, and writes a chunky frame's changed lines into it (8-bit CLUT,
+16 and 32-bit, with optional 2x scanlines). Copyright (c) 2026 Zoopster,
+under the MIT licence (src/amiga/rtgfw/LICENSE), not the GPL: it is a
+separate work, vendored unchanged from its own repository (SOURCE.txt names
+the commit). Only the AmigaOS host uses it; the core does not.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ src/amiga/rtgfw/LICENSE             |   21 +
+ src/amiga/rtgfw/SOURCE.txt          |    6 +
+ src/amiga/rtgfw/include/rtgfw_p96.h |  128 +++
+ src/amiga/rtgfw/src/rtg_conv.c      |  418 ++++++++++
+ src/amiga/rtgfw/src/rtg_conv.h      |   91 +++
+ src/amiga/rtgfw/src/rtgfw.c         | 1149 +++++++++++++++++++++++++++
+ src/amiga/rtgfw/src/rtgfw.h         |  220 +++++
+ 7 files changed, 2033 insertions(+)
+ create mode 100644 src/amiga/rtgfw/LICENSE
+ create mode 100644 src/amiga/rtgfw/SOURCE.txt
+ create mode 100644 src/amiga/rtgfw/include/rtgfw_p96.h
+ create mode 100644 src/amiga/rtgfw/src/rtg_conv.c
+ create mode 100644 src/amiga/rtgfw/src/rtg_conv.h
+ create mode 100644 src/amiga/rtgfw/src/rtgfw.c
+ create mode 100644 src/amiga/rtgfw/src/rtgfw.h
+
+diff --git a/src/amiga/rtgfw/LICENSE b/src/amiga/rtgfw/LICENSE
+new file mode 100644
+index 0000000..771acb8
+--- /dev/null
++++ b/src/amiga/rtgfw/LICENSE
+@@ -0,0 +1,21 @@
++MIT License
++
++Copyright (c) 2026 Zoopster
++
++Permission is hereby granted, free of charge, to any person obtaining a copy
++of this software and associated documentation files (the "Software"), to deal
++in the Software without restriction, including without limitation the rights
++to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
++copies of the Software, and to permit persons to whom the Software is
++furnished to do so, subject to the following conditions:
++
++The above copyright notice and this permission notice shall be included in all
++copies or substantial portions of the Software.
++
++THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
++IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
++FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
++AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
++LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
++OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
++SOFTWARE.
+diff --git a/src/amiga/rtgfw/SOURCE.txt b/src/amiga/rtgfw/SOURCE.txt
+new file mode 100644
+index 0000000..e8d263a
+--- /dev/null
++++ b/src/amiga/rtgfw/SOURCE.txt
+@@ -0,0 +1,6 @@
++rtgfw: common RTG display framework (MIT, see LICENSE; Copyright (c) 2026 Zoopster).
++Vendored copy for Arnold for Amiga's RTG screen. Canonical source: the rtg-framework
++repository (a separate project). Files are byte-identical copies of its src/ and include/.
++Fix bugs there first, then copy them here again.
++
++Source commit: 60d7bf0 2026-10-26 Scanlines: CLUT8 hard in two sequential long-store passes; 16/32-bit back to row-by-row (interleaved rows were slower on the VideoCore: blend 1.11 vs 0.81 ms)
+diff --git a/src/amiga/rtgfw/include/rtgfw_p96.h b/src/amiga/rtgfw/include/rtgfw_p96.h
+new file mode 100644
+index 0000000..abeac8a
+--- /dev/null
++++ b/src/amiga/rtgfw/include/rtgfw_p96.h
+@@ -0,0 +1,128 @@
++/* rtgfw_p96.h - the few Picasso96API.library calls rtgfw uses.
++ *
++ * Own declarations, written from the public Picasso96API autodoc and fd
++ * (function order and registers); not copied from the P96 SDK, which the
++ * bebbo toolchain does not ship. Only what rtgfw needs is declared.
++ *
++ * The library base is P96Base_rtg (private to rtgfw, so it never clashes
++ * with a program's own P96Base). rtgfw.c cross-checks the mode width that
++ * p96GetModeIDAttr() returns against graphics.library before it trusts any
++ * other P96 call, so a wrong offset here shows as "P96 calls disabled" in
++ * the log instead of a crash later. */
++#ifndef RTGFW_P96_H
++#define RTGFW_P96_H
++
++#include <exec/types.h>
++#include <exec/libraries.h>
++#include <graphics/gfx.h>
++#include <graphics/rastport.h>
++
++extern struct Library *P96Base_rtg;
++
++/* RGBFTYPE: pixel formats */
++#define RGBFB_NONE      0
++#define RGBFB_CLUT      1
++#define RGBFB_R8G8B8    2
++#define RGBFB_B8G8R8    3
++#define RGBFB_R5G6B5PC  4
++#define RGBFB_R5G5B5PC  5
++#define RGBFB_A8R8G8B8  6
++#define RGBFB_A8B8G8R8  7
++#define RGBFB_R8G8B8A8  8
++#define RGBFB_B8G8R8A8  9
++#define RGBFB_R5G6B5    10
++#define RGBFB_R5G5B5    11
++#define RGBFB_B5G6R5PC  12
++#define RGBFB_B5G5R5PC  13
++
++/* p96GetModeIDAttr() attributes */
++#define P96IDA_WIDTH          0
++#define P96IDA_HEIGHT         1
++#define P96IDA_DEPTH          2
++#define P96IDA_BYTESPERPIXEL  3
++#define P96IDA_BITSPERPIXEL   4
++#define P96IDA_RGBFORMAT      5
++#define P96IDA_ISP96          6
++#define P96IDA_BOARDNUMBER    7
++#define P96IDA_STDBYTESPERROW 8
++#define P96IDA_BOARDNAME      9
++
++/* p96GetBitMapAttr() attributes */
++#define P96BMA_WIDTH          0
++#define P96BMA_HEIGHT         1
++#define P96BMA_DEPTH          2
++#define P96BMA_MEMORY         3
++#define P96BMA_BYTESPERROW    4
++#define P96BMA_BYTESPERPIXEL  5
++#define P96BMA_BITSPERPIXEL   6
++#define P96BMA_RGBFORMAT      7
++#define P96BMA_ISP96          8
++#define P96BMA_ISONBOARD      9
++
++/* p96LockBitMap() fills one of these */
++struct RenderInfo {
++	APTR  Memory;
++	WORD  BytesPerRow;
++	WORD  pad;
++	ULONG RGBFormat;
++};
++
++/* -42 p96GetBitMapAttr(BitMap, Attribute)(a0, d0) */
++static inline ULONG p96GetBitMapAttr(struct BitMap *bm, ULONG attr)
++{
++	register struct Library *_b __asm("a6") = P96Base_rtg;
++	register struct BitMap *_a0 __asm("a0") = bm;
++	register ULONG _d0 __asm("d0") = attr;
++	__asm volatile ("jsr %%a6@(-42:W)" : "+d"(_d0), "+a"(_a0) : "a"(_b) : "d1", "a1", "fp0", "fp1", "cc", "memory");
++	return _d0;
++}
++
++/* -48 p96LockBitMap(BitMap, Buffer, Size)(a0, a1, d0) -> lock (0 = failed) */
++static inline LONG p96LockBitMap(struct BitMap *bm, UBYTE *buf, ULONG size)
++{
++	register struct Library *_b __asm("a6") = P96Base_rtg;
++	register struct BitMap *_a0 __asm("a0") = bm;
++	register UBYTE *_a1 __asm("a1") = buf;
++	register ULONG _d0 __asm("d0") = size;
++	__asm volatile ("jsr %%a6@(-48:W)" : "+d"(_d0), "+a"(_a0), "+a"(_a1) : "a"(_b) : "d1", "fp0", "fp1", "cc", "memory");
++	return (LONG)_d0;
++}
++
++/* -54 p96UnlockBitMap(BitMap, Lock)(a0, d0) */
++static inline void p96UnlockBitMap(struct BitMap *bm, LONG lock)
++{
++	register struct Library *_b __asm("a6") = P96Base_rtg;
++	register struct BitMap *_a0 __asm("a0") = bm;
++	register LONG _d0 __asm("d0") = lock;
++	__asm volatile ("jsr %%a6@(-54:W)" : "+d"(_d0), "+a"(_a0) : "a"(_b) : "d1", "a1", "fp0", "fp1", "cc", "memory");
++}
++
++/* -84 p96GetModeIDAttr(Mode, Attribute)(d0, d1) */
++static inline ULONG p96GetModeIDAttr(ULONG id, ULONG attr)
++{
++	register struct Library *_b __asm("a6") = P96Base_rtg;
++	register ULONG _d0 __asm("d0") = id;
++	register ULONG _d1 __asm("d1") = attr;
++	__asm volatile ("jsr %%a6@(-84:W)" : "+d"(_d0), "+d"(_d1) : "a"(_b) : "a0", "a1", "fp0", "fp1", "cc", "memory");
++	return _d0;
++}
++
++/* -102 p96WritePixelArray(ri, SrcX, SrcY, rp, DestX, DestY, SizeX, SizeY)
++ *      (a0, d0, d1, a1, d2, d3, d4, d5) */
++static inline void p96WritePixelArray(struct RenderInfo *ri, UWORD sx, UWORD sy, struct RastPort *rp,
++                                      UWORD dx, UWORD dy, UWORD w, UWORD h)
++{
++	register struct Library *_b __asm("a6") = P96Base_rtg;
++	register struct RenderInfo *_a0 __asm("a0") = ri;
++	register struct RastPort *_a1 __asm("a1") = rp;
++	register ULONG _d0 __asm("d0") = sx;
++	register ULONG _d1 __asm("d1") = sy;
++	register ULONG _d2 __asm("d2") = dx;
++	register ULONG _d3 __asm("d3") = dy;
++	register ULONG _d4 __asm("d4") = w;
++	register ULONG _d5 __asm("d5") = h;
++	__asm volatile ("jsr %%a6@(-102:W)" : "+d"(_d0), "+d"(_d1), "+a"(_a0), "+a"(_a1)
++	                : "a"(_b), "d"(_d2), "d"(_d3), "d"(_d4), "d"(_d5) : "fp0", "fp1", "cc", "memory");
++}
++
++#endif
+diff --git a/src/amiga/rtgfw/src/rtg_conv.c b/src/amiga/rtgfw/src/rtg_conv.c
+new file mode 100644
+index 0000000..8429bc3
+--- /dev/null
++++ b/src/amiga/rtgfw/src/rtg_conv.c
+@@ -0,0 +1,418 @@
++/* rtg_conv.c - portable core of rtg_present() (see rtg_conv.h).
++ *
++ * Which lines are written into buffer b this time:
++ *   - lines the emulator marked dirty since the last present are owed to
++ *     every buffer (need[y] = all buffer bits), and
++ *   - in a direct (16/32-bit) format, any line whose effective palette
++ *     signature differs from the one buffer b last wrote it with.
++ * The signature of a line is a hash of the base palette plus every run that
++ * starts at or above it, so a frame that repeats last frame's raster splits
++ * costs nothing extra, while a changed split rewrites only the lines below it.
++ *
++ * On a big-endian host (the Amiga) the LUT holds each colour in the target's
++ * memory order and pixels are stored as words or longs. On a little-endian
++ * host (the PC test) they are stored byte by byte: same result in memory. */
++#include <stdlib.h>
++#include <string.h>
++#include "rtg_conv.h"
++
++#if defined(__BYTE_ORDER__) && defined(__ORDER_BIG_ENDIAN__) && (__BYTE_ORDER__ == __ORDER_BIG_ENDIAN__)
++#define RTGC_BE 1
++#else
++#define RTGC_BE 0
++#endif
++
++static uint32_t fnv(uint32_t h, uint32_t v)
++{
++	int i;
++	for (i = 0; i < 4; i++) { h ^= (v >> (8 * i)) & 0xff; h *= 16777619u; }
++	return h;
++}
++
++int rtgc_bpp(int fmt)
++{
++	switch (fmt) {
++	case RTG_FMT_CLUT8: return 1;
++	case RTG_FMT_RGB565: case RTG_FMT_RGB565PC: return 2;
++	case RTG_FMT_ARGB32: case RTG_FMT_BGRA32: case RTG_FMT_RGBA32: return 4;
++	}
++	return 0;
++}
++
++/* The colour as the bytes appear in memory, packed big-endian into the
++ * low bpp bytes of the result. */
++uint32_t rtgc_pack(int fmt, uint32_t rgb)
++{
++	uint32_t r = (rgb >> 16) & 0xff, g = (rgb >> 8) & 0xff, b = rgb & 0xff, w;
++	switch (fmt) {
++	case RTG_FMT_RGB565:   return ((r >> 3) << 11) | ((g >> 2) << 5) | (b >> 3);
++	case RTG_FMT_RGB565PC: w = ((r >> 3) << 11) | ((g >> 2) << 5) | (b >> 3); return ((w & 0xff) << 8) | (w >> 8);
++	case RTG_FMT_ARGB32:   return 0xff000000u | (r << 16) | (g << 8) | b;
++	case RTG_FMT_BGRA32:   return (b << 24) | (g << 16) | (r << 8) | 0xffu;
++	case RTG_FMT_RGBA32:   return (r << 24) | (g << 16) | (b << 8) | 0xffu;
++	}
++	return 0;
++}
++
++static uint32_t base_signature(const RtgConv *c)
++{
++	uint32_t h = 2166136261u;
++	int i;
++	for (i = 0; i < 256; i++) h = fnv(h, c->base[i]);
++	return h;
++}
++
++int rtgc_init(RtgConv *c, int w, int h, int fmt, int nbuf)
++{
++	int b;
++	memset(c, 0, sizeof *c);
++	c->bpp = rtgc_bpp(fmt);
++	if (w <= 0 || h <= 0 || !c->bpp || nbuf < 1 || nbuf > RTGC_MAXBUF) return RTG_E_ARGS;
++	c->w = w; c->h = h; c->fmt = fmt; c->nbuf = nbuf;
++	c->sx = c->sy = 1;
++	c->need = malloc(h);
++	if (!c->need) return RTG_E_NOMEM;
++	memset(c->need, (1 << nbuf) - 1, h);          /* first present writes everything */
++	for (b = 0; b < nbuf; b++) {
++		c->sig[b] = calloc(h, sizeof(uint32_t));
++		if (!c->sig[b]) { rtgc_free(c); return RTG_E_NOMEM; }
++	}
++	c->base_sig = base_signature(c);
++	c->base_lo = 0; c->base_hi = 255;
++	c->tab_runs = 1;                              /* build the direct-format tables at the first present */
++	return RTG_OK;
++}
++
++void rtgc_free(RtgConv *c)
++{
++	int b;
++	free(c->need); c->need = NULL;
++	for (b = 0; b < RTGC_MAXBUF; b++) { free(c->sig[b]); c->sig[b] = NULL; }
++}
++
++void rtgc_invalidate(RtgConv *c)
++{
++	if (c->need) memset(c->need, (1 << c->nbuf) - 1, c->h);
++}
++
++void rtgc_skip(RtgConv *c, const uint8_t *dirty)
++{
++	int y, all = (1 << c->nbuf) - 1;
++	if (c->need)
++		for (y = 0; y < c->h; y++)
++			if (!dirty || dirty[y] || (c->scan == RTG_SCAN_BLEND && y + 1 < c->h && dirty[y + 1])) c->need[y] = (uint8_t)all;
++	c->nruns = 0; c->pool_used = 0;
++}
++
++uint32_t rtgc_read_colour(const void *col, int colfmt, int i)
++{
++	if (colfmt == RTG_RGB12) {
++		uint32_t v = ((const uint16_t *)col)[i];
++		return ((v >> 8) & 15) * 0x110000u + ((v >> 4) & 15) * 0x1100u + (v & 15) * 0x11u;
++	}
++	return ((const uint32_t *)col)[i] & 0xffffff;
++}
++
++int rtgc_add_run(RtgConv *c, int line, int first, int count, const void *col, int colfmt)
++{
++	int i;
++	if (first < 0 || count < 1 || first + count > 256) return RTG_E_ARGS;
++	if (c->fmt == RTG_FMT_CLUT8) return RTG_E_RUNS;          /* one palette a frame on CLUT */
++	if (line < 0) line = 0;
++	if (c->nruns >= RTGC_MAXRUNS || c->pool_used + count > RTGC_MAXPOOL) return RTG_E_RUNS;
++	if (c->nruns && c->runs[c->nruns - 1].line > line) return RTG_E_RUNS;   /* must be in line order */
++	c->runs[c->nruns].line = (uint16_t)line;
++	c->runs[c->nruns].first = (uint8_t)first;
++	c->runs[c->nruns].count_m1 = (uint8_t)(count - 1);
++	c->runs[c->nruns].offset = (uint32_t)c->pool_used;
++	for (i = 0; i < count; i++) c->pool[c->pool_used++] = rtgc_read_colour(col, colfmt, i);
++	c->nruns++;
++	return RTG_OK;
++}
++
++int rtgc_set_palette(RtgConv *c, int line, int first, int count, const void *col, int colfmt)
++{
++	int i;
++	if (first < 0 || count < 1 || first + count > 256) return RTG_E_ARGS;
++	if (line <= 0) {
++		int changed = 0;
++		for (i = 0; i < count; i++) {
++			uint32_t v = rtgc_read_colour(col, colfmt, i);
++			if (c->base[first + i] != v) { c->base[first + i] = v; changed = 1; }
++		}
++		if (changed) {
++			if (c->base_lo > c->base_hi) { c->base_lo = first; c->base_hi = first + count - 1; }
++			else {
++				if (first < c->base_lo) c->base_lo = first;
++				if (first + count - 1 > c->base_hi) c->base_hi = first + count - 1;
++			}
++			c->base_sig = base_signature(c);
++		}
++		return RTG_OK;
++	}
++	return rtgc_add_run(c, line, first, count, col, colfmt);
++}
++
++#if !RTGC_BE
++static void store(uint8_t *d, uint32_t v, int bpp)
++{
++	switch (bpp) {
++	case 2: d[0] = (uint8_t)(v >> 8); d[1] = (uint8_t)v; break;
++	default: d[0] = (uint8_t)(v >> 24); d[1] = (uint8_t)(v >> 16); d[2] = (uint8_t)(v >> 8); d[3] = (uint8_t)v; break;
++	}
++}
++#endif
++
++/* mode: 0 normal, 1 doubled (RTG_L_X2), 2 blank (border pen) */
++#define PEN(s, mode, x) ((mode) == 2 ? (uint8_t)c->border : (s)[(mode) ? (x) >> 1 : (x)])
++
++/* one row of the line in full colour, each pixel sx times */
++static void normal_row(RtgConv *c, const uint8_t *s, uint8_t *d, int mode)
++{
++	int x, k, w = c->w, sx = c->sx, bpp = c->bpp;
++	if (bpp == 1) {
++		if (mode == 2) memset(d, c->border, w * sx);
++		else if (mode == 0 && sx == 1) memcpy(d, s, w);
++		else if (mode == 0 && sx == 2) { uint16_t *p = (uint16_t *)d; for (x = w; x; x--) *p++ = (uint16_t)(*s++ * 0x0101u); }
++		else for (x = 0; x < w; x++) { uint8_t v = PEN(s, mode, x); for (k = 0; k < sx; k++) *d++ = v; }
++	} else {
++		const uint32_t *lut = c->lut;
++#if RTGC_BE
++		if (bpp == 2) {
++			uint16_t *p = (uint16_t *)d;
++			if (mode == 2) { uint16_t v = (uint16_t)lut[c->border]; for (x = w * sx; x; x--) *p++ = v; }
++			else if (mode == 0 && sx == 1) for (x = w; x; x--) *p++ = (uint16_t)lut[*s++];
++			else if (mode == 0 && sx == 2) { uint32_t *q = (uint32_t *)d; for (x = w; x; x--) { uint32_t v = lut[*s++] & 0xffff; *q++ = (v << 16) | v; } }
++			else for (x = 0; x < w; x++) { uint16_t v = (uint16_t)lut[PEN(s, mode, x)]; for (k = 0; k < sx; k++) *p++ = v; }
++		} else {
++			uint32_t *p = (uint32_t *)d;
++			if (mode == 2) { uint32_t v = lut[c->border]; for (x = w * sx; x; x--) *p++ = v; }
++			else if (mode == 0 && sx == 1) for (x = w; x; x--) *p++ = lut[*s++];
++			else if (mode == 0 && sx == 2) for (x = w; x; x--) { uint32_t v = lut[*s++]; *p++ = v; *p++ = v; }
++			else for (x = 0; x < w; x++) { uint32_t v = lut[PEN(s, mode, x)]; for (k = 0; k < sx; k++) *p++ = v; }
++		}
++#else
++		for (x = 0; x < w; x++) {
++			uint32_t v = lut[PEN(s, mode, x)];
++			for (k = 0; k < sx; k++, d += bpp) store(d, v, bpp);
++		}
++#endif
++	}
++}
++
++static uint32_t swap16(uint32_t v) { return ((v & 0xff) << 8) | ((v >> 8) & 0xff); }
++
++/* the scanline row: hard = the line dimmed; blend = the line and the next (s2) averaged and dimmed */
++static void scan_row(RtgConv *c, const uint8_t *s, int mode, const uint8_t *s2, int mode2, uint8_t *d)
++{
++	int x, k, w = c->w, sx = c->sx, bpp = c->bpp;
++	if (bpp == 1) {                      /* CLUT8: hard only */
++		const uint8_t *m = c->dmap;
++		unsigned acc = 0;
++		if (mode == 0 && sx == 2) { uint16_t *p = (uint16_t *)d; for (x = w; x; x--) { unsigned v = *s++; acc |= v; *p++ = (uint16_t)(m[v] * 0x0101u); } }
++		else for (x = 0; x < w; x++) { unsigned v = PEN(s, mode, x); acc |= v; v = m[v]; for (k = 0; k < sx; k++) *d++ = (uint8_t)v; }
++		if (acc & 0x80) c->high_lines++;
++		return;
++	}
++	if (c->scan == RTG_SCAN_HARD) {
++		const uint32_t *lut = c->lut_dim;
++#if RTGC_BE
++		if (bpp == 2) {
++			if (mode == 0 && sx == 2) { uint32_t *q = (uint32_t *)d; for (x = w; x; x--) { uint32_t v = lut[*s++] & 0xffff; *q++ = (v << 16) | v; } }
++			else { uint16_t *p = (uint16_t *)d; for (x = 0; x < w; x++) { uint16_t v = (uint16_t)lut[PEN(s, mode, x)]; for (k = 0; k < sx; k++) *p++ = v; } }
++		} else {
++			uint32_t *p = (uint32_t *)d;
++			if (mode == 0 && sx == 2) for (x = w; x; x--) { uint32_t v = lut[*s++]; *p++ = v; *p++ = v; }
++			else for (x = 0; x < w; x++) { uint32_t v = lut[PEN(s, mode, x)]; for (k = 0; k < sx; k++) *p++ = v; }
++		}
++#else
++		for (x = 0; x < w; x++) { uint32_t v = lut[PEN(s, mode, x)]; for (k = 0; k < sx; k++, d += bpp) store(d, v, bpp); }
++#endif
++	} else {                             /* blend: halves of the two lines added (no carries between channels) */
++		const uint32_t *ha = c->lut_ha, *hb = c->lut_hb;
++		int pc = c->fmt == RTG_FMT_RGB565PC;
++#if RTGC_BE
++		if (bpp == 2) {
++			if (mode == 0 && mode2 == 0 && sx == 2 && !pc) { uint32_t *q = (uint32_t *)d; for (x = w; x; x--) { uint32_t v = (ha[*s++] + hb[*s2++]) & 0xffff; *q++ = (v << 16) | v; } }
++			else if (mode == 0 && mode2 == 0 && sx == 2) { uint32_t *q = (uint32_t *)d; for (x = w; x; x--) { uint32_t v = swap16(ha[*s++] + hb[*s2++]); *q++ = (v << 16) | v; } }
++			else { uint16_t *p = (uint16_t *)d; for (x = 0; x < w; x++) { uint32_t v = ha[PEN(s, mode, x)] + hb[PEN(s2, mode2, x)]; if (pc) v = swap16(v); for (k = 0; k < sx; k++) *p++ = (uint16_t)v; } }
++		} else {
++			uint32_t *p = (uint32_t *)d;
++			if (mode == 0 && mode2 == 0 && sx == 2) for (x = w; x; x--) { uint32_t v = ha[*s++] + hb[*s2++]; *p++ = v; *p++ = v; }
++			else for (x = 0; x < w; x++) { uint32_t v = ha[PEN(s, mode, x)] + hb[PEN(s2, mode2, x)]; for (k = 0; k < sx; k++) *p++ = v; }
++		}
++#else
++		for (x = 0; x < w; x++) {
++			uint32_t v = ha[PEN(s, mode, x)] + hb[PEN(s2, mode2, x)];
++			if (pc) v = swap16(v);
++			for (k = 0; k < sx; k++, d += bpp) store(d, v, bpp);
++		}
++#endif
++	}
++}
++
++/* The usual scanline cases at 2x2 in one pass, long stores, both rows at once (A1200, 26 Oct 2026:
++ * the per-pixel word loops cost 0.76 ms a Sonic frame). CLUT8 hard: dmap[p] == p | 128 for every
++ * pen, so the scanline row is the normal row with bit 7 set in each byte. Returns 0 if not handled.
++ * 16/32-bit keep the row-by-row loops (normal_row, scan_row). */
++#if RTGC_BE
++#define PAIR8(a, b) (((uint32_t)(a) * 0x01010000u) | ((uint32_t)(b) * 0x0101u))   /* memory: a a b b */
++#else
++#define PAIR8(a, b) (((uint32_t)(b) * 0x01010000u) | ((uint32_t)(a) * 0x0101u))
++#endif
++static int fused_2x2(RtgConv *c, const uint8_t *s, uint8_t *d, int dbpr, int mode)
++{
++	int x, w = c->w;
++	if (c->sx != 2 || c->sy != 2 || mode != 0) return 0;
++	if (c->bpp == 1 && c->scan == RTG_SCAN_HARD && !(w & 1)) {
++		/* two passes, one row after the other: the board takes sequential writes best (32-bit
++		 * blend with both rows interleaved measured 1.11 ms against 0.81 ms in two passes) */
++		const uint8_t *s0 = s;
++		uint32_t *p = (uint32_t *)d, acc = 0;
++		for (x = w >> 1; x; x--) { uint32_t v = PAIR8(s[0], s[1]); s += 2; acc |= v; *p++ = v; }
++		p = (uint32_t *)(d + dbpr); s = s0;
++		for (x = w >> 1; x; x--) { *p++ = PAIR8(s[0], s[1]) | 0x80808080u; s += 2; }
++		if (acc & 0x80808080u) c->high_lines++;
++		return 1;
++	}
++	return 0;
++}
++
++/* all rows of source line s (rows 0..sy-1 at d); s2/mode2 = the next line (blend) */
++static void write_line(RtgConv *c, const uint8_t *s, uint8_t *d, int dbpr, int mode, const uint8_t *s2, int mode2)
++{
++	int k, sy = c->sy, n = c->w * c->sx * c->bpp, nrm = c->scan ? sy >> 1 : sy;
++	if (c->scan && fused_2x2(c, s, d, dbpr, mode)) {
++		c->lines_written++;
++		c->bytes_written += (uint32_t)(n * sy);
++		return;
++	}
++	if (nrm < 1) nrm = 1;
++	normal_row(c, s, d, mode);
++	for (k = 1; k < nrm; k++) memcpy(d + (long)k * dbpr, d, n);
++	if (nrm < sy) {
++		uint8_t *e = d + (long)nrm * dbpr;
++		scan_row(c, s, mode, s2, mode2, e);
++		for (k = nrm + 1; k < sy; k++) memcpy(d + (long)k * dbpr, e, n);
++	}
++	c->lines_written++;
++	c->bytes_written += (uint32_t)(n * sy);
++}
++
++uint32_t rtgc_dim(uint32_t rgb, int pct)
++{
++	uint32_t f = (uint32_t)(100 - pct), r = (rgb >> 16) & 0xff, g = (rgb >> 8) & 0xff, b = rgb & 0xff;
++	return ((r * f / 100) << 16) | ((g * f / 100) << 8) | (b * f / 100);
++}
++
++uint32_t rtgc_half(uint32_t rgb, int pct)
++{
++	uint32_t f = (uint32_t)(100 - pct), r = (rgb >> 16) & 0xff, g = (rgb >> 8) & 0xff, b = rgb & 0xff;
++	return ((r * f / 200) << 16) | ((g * f / 200) << 8) | (b * f / 200);
++}
++
++int rtgc_set_scan(RtgConv *c, int scan, int pct)
++{
++	int i;
++	if (scan < RTG_SCAN_OFF || scan > RTG_SCAN_BLEND || pct < 0 || pct > 100) return RTG_E_ARGS;
++	if (scan == RTG_SCAN_BLEND && c->fmt == RTG_FMT_CLUT8) return RTG_E_FORMAT;
++	c->scan = scan; c->scan_pct = pct; c->high_lines = 0; c->tab_runs = 1;
++	for (i = 0; i < 256; i++) c->dmap[i] = (uint8_t)(scan && i < 128 ? i | 128 : i);
++	if (c->fmt == RTG_FMT_CLUT8 && scan) { c->base_lo = 0; c->base_hi = 255; }   /* load the dimmed half */
++	rtgc_invalidate(c);
++	return RTG_OK;
++}
++
++uint32_t rtgc_clut_colour(const RtgConv *c, int i)
++{
++	if (c->scan == RTG_SCAN_HARD && c->fmt == RTG_FMT_CLUT8 && i >= 128) return rtgc_dim(c->base[i - 128], c->scan_pct);
++	return c->base[i & 255];
++}
++
++/* the direct-format tables for entry i from colour v */
++static void set_entry(RtgConv *c, int i, uint32_t v)
++{
++	c->lut[i] = rtgc_pack(c->fmt, v);
++	if (c->scan == RTG_SCAN_HARD) c->lut_dim[i] = rtgc_pack(c->fmt, rtgc_dim(v, c->scan_pct));
++	else if (c->scan == RTG_SCAN_BLEND) {
++		uint32_t h = rtgc_half(v, c->scan_pct);
++		if (c->fmt == RTG_FMT_RGB565PC) c->lut_ha[i] = c->lut_hb[i] = rtgc_pack(RTG_FMT_RGB565, h);
++		else { c->lut_ha[i] = rtgc_pack(c->fmt, h); c->lut_hb[i] = c->lut_ha[i] & ~rtgc_pack(c->fmt, 0); }   /* alpha once */
++	}
++}
++
++int rtgc_present(RtgConv *c, int buf, const uint8_t *pix, int stride, const uint8_t *dirty,
++                 const uint8_t *lineflags, uint8_t *dst, int dbpr, int *pal_lo, int *pal_hi)
++{
++	int y, ri = 0, i, all = (1 << c->nbuf) - 1, bit = 1 << buf, blend = c->scan == RTG_SCAN_BLEND;
++	uint32_t sig = c->base_sig;
++	long rowstep = (long)dbpr * c->sy;
++	if (buf < 0 || buf >= c->nbuf) return RTG_E_ARGS;
++	if (c->fmt == RTG_FMT_CLUT8) {
++		*pal_lo = c->base_lo; *pal_hi = c->base_hi;
++		if (c->scan == RTG_SCAN_HARD && c->base_lo <= c->base_hi && c->base_lo < 128) {
++			int h2 = (c->base_hi < 128 ? c->base_hi : 127) + 128;   /* and their dimmed copies */
++			if (h2 > *pal_hi) *pal_hi = h2;
++		}
++	} else {
++		*pal_lo = 1; *pal_hi = 0;
++		if (c->tab_sig != c->base_sig || c->tab_runs) {
++			for (i = 0; i < 256; i++) set_entry(c, i, c->base[i]);
++			c->tab_sig = c->base_sig;
++		}
++		c->tab_runs = c->nruns != 0;      /* runs change the tables while the frame is drawn */
++	}
++	c->base_lo = 1; c->base_hi = 0;
++	for (y = 0; y < c->h; y++) {
++		while (ri < c->nruns && c->runs[ri].line <= y) {
++			const RtgPalRun *r = &c->runs[ri];
++			int n = r->count_m1 + 1;
++			sig = fnv(fnv(sig, ((uint32_t)r->first << 8) | r->count_m1), 0x52554e53u);
++			for (i = 0; i < n; i++) {
++				uint32_t v = c->pool[r->offset + i];
++				set_entry(c, r->first + i, v);
++				sig = fnv(sig, v);
++			}
++			ri++;
++		}
++		if (!dirty || dirty[y] || (blend && y + 1 < c->h && dirty[y + 1])) c->need[y] = (uint8_t)all;
++		if ((c->need[y] & bit) || (c->fmt != RTG_FMT_CLUT8 && c->sig[buf][y] != sig)) {
++			int f = lineflags ? lineflags[y] : 0, y2 = y + 1 < c->h ? y + 1 : y;
++			int f2 = lineflags ? lineflags[y2] : 0;
++			write_line(c, pix + (long)y * stride, dst + y * rowstep, dbpr,
++			           (f & RTG_L_BLANK) ? 2 : (f & RTG_L_X2) ? 1 : 0,
++			           pix + (long)y2 * stride, (f2 & RTG_L_BLANK) ? 2 : (f2 & RTG_L_X2) ? 1 : 0);
++			c->need[y] &= (uint8_t)~bit;
++			c->sig[buf][y] = sig;
++			if (c->written) c->written[y] = 1;
++		} else if (c->written) c->written[y] = 0;
++	}
++	c->nruns = 0; c->pool_used = 0;   /* runs are per frame */
++	return RTG_OK;
++}
++
++void rtgc_layout(int vis_w, int vis_h, int ax, int ay, int scr_w, int scr_h, RtgLayout *l)
++{
++	int k = 0;
++	if (ax < 1) ax = 1;
++	if (ay < 1) ay = 1;
++	while (vis_w * ax * (k + 1) <= scr_w && vis_h * ay * (k + 1) <= scr_h) k++;
++	if (k == 0) {
++		/* does not fit at its shape: show 1:1 and crop the middle */
++		ax = ay = 1; k = 1;
++	}
++	l->sx = ax * k; l->sy = ay * k;
++	l->w = vis_w * l->sx; l->h = vis_h * l->sy;
++	l->x = (scr_w - l->w) / 2; l->y = (scr_h - l->h) / 2;   /* negative = cropped */
++}
++
++void rtgc_layout_scan(int vis_w, int vis_h, int ax, int ay, int scr_w, int scr_h, RtgLayout *l)
++{
++	if (ax < 1) ax = 1;
++	if (ay < 1) ay = 1;
++	rtgc_layout(vis_w, vis_h, 2 * ax, 2 * ay, scr_w, scr_h, l);
++	if (l->sy == 1) {                       /* rtgc_layout's crop fallback is 1:1: scanlines need 2x */
++		l->sx = 2 * ax; l->sy = 2 * ay; l->w = vis_w * l->sx; l->h = vis_h * l->sy;
++		l->x = (scr_w - l->w) / 2; l->y = (scr_h - l->h) / 2;
++	}
++}
+diff --git a/src/amiga/rtgfw/src/rtg_conv.h b/src/amiga/rtgfw/src/rtg_conv.h
+new file mode 100644
+index 0000000..67914ce
+--- /dev/null
++++ b/src/amiga/rtgfw/src/rtg_conv.h
+@@ -0,0 +1,91 @@
++/* rtg_conv.h - the portable part of rtg_present(): picks the lines that must
++ * be written into a buffer and converts them (8-bit copy, or palette lookup
++ * into 16/32-bit pixels), plus the screen layout (scale and centring).
++ * No AmigaOS calls: the Amiga side locks the bitmap, passes its address and
++ * bytes per row, and flips. Host-tested by tests/test_conv.c.
++ *
++ * v0 (26 Oct 2026) additions over the design prototype: integer scaling
++ * (sx, sy), RTG_L_BLANK lines in the border pen, runs at line 0 (per frame),
++ * a per-line "written" output for the OS-copy and blit paths, and word/long
++ * stores on big-endian hosts (the Amiga). */
++#ifndef RTG_CONV_H
++#define RTG_CONV_H
++
++#include <stdint.h>
++#include "rtgfw.h"
++
++#define RTGC_MAXBUF  3
++#define RTGC_MAXRUNS 64
++#define RTGC_MAXPOOL (RTGC_MAXRUNS * 16 + 256)
++
++typedef struct RtgConv {
++	int w, h;                 /* visible size (source pixels/lines) */
++	int fmt, bpp;             /* target format, bytes per pixel */
++	int nbuf;
++	int sx, sy;               /* integer scale (1 = none) */
++	int border;               /* border pen (RTG_L_BLANK lines) */
++	uint32_t base[256];       /* base palette, 0x00RRGGBB */
++	uint32_t base_sig;
++	int base_lo, base_hi;     /* changed range since the last present (CLUT load), lo > hi = none */
++	uint8_t *need;            /* per line: bit b = buffer b must be rewritten */
++	uint32_t *sig[RTGC_MAXBUF];  /* per buffer, per line: palette signature it was written with */
++	uint32_t lut[256];        /* palette in the target format (direct formats), memory order */
++	uint8_t *written;         /* optional (caller-owned, h bytes): set per line by rtgc_present */
++	/* runs of the frame being built */
++	int nruns;
++	RtgPalRun runs[RTGC_MAXRUNS];
++	uint32_t pool[RTGC_MAXPOOL];
++	int pool_used;
++	/* counters */
++	uint32_t lines_written, bytes_written;
++	/* scanlines (RTG_SCAN_*, see rtgfw.h; set with rtgc_set_scan after rtgc_init) */
++	int scan, scan_pct;
++	uint8_t dmap[256];        /* CLUT8 hard: the pen of each pen's dimmed colour (p | 128 for p < 128) */
++	uint32_t lut_dim[256];    /* direct hard: dimmed colours, memory order */
++	uint32_t lut_ha[256], lut_hb[256];  /* direct blend: halves (hb without alpha; RGB565PC: native order) */
++	uint32_t high_lines;      /* CLUT8 hard: lines written with a pen >= 128 (shown undimmed/wrong) */
++	uint32_t tab_sig;         /* base palette signature the direct-format tables were built from */
++	int tab_runs;             /* the tables must be rebuilt (runs changed them, or scan changed) */
++} RtgConv;
++
++/* scan RTG_SCAN_OFF/HARD/BLEND, pct = darkness 0-100. CLUT8 + BLEND is refused
++ * (RTG_E_FORMAT). The caller sets sy even (the lower sy/2 rows of each line
++ * are the scanline). Everything is owed again. */
++int  rtgc_set_scan(RtgConv *c, int scan, int pct);
++/* the colour CLUT entry i must hold (base, or a dimmed base colour in CLUT8 hard mode) */
++uint32_t rtgc_clut_colour(const RtgConv *c, int i);
++/* per channel: dimmed (hard) and half-dimmed (blend) 0x00RRGGBB colours */
++uint32_t rtgc_dim(uint32_t rgb, int pct);
++uint32_t rtgc_half(uint32_t rgb, int pct);
++
++int  rtgc_init(RtgConv *c, int w, int h, int fmt, int nbuf);
++void rtgc_free(RtgConv *c);
++/* every line owed to every buffer again (border pen change, buffer loss) */
++void rtgc_invalidate(RtgConv *c);
++/* a frame that could not be written (lock failed): its dirty lines stay owed
++ * to every buffer, and its runs are dropped (they are per frame) */
++void rtgc_skip(RtgConv *c, const uint8_t *dirty);
++/* line <= 0: base palette (persistent); line > 0: a run for the next present */
++int  rtgc_set_palette(RtgConv *c, int line, int first, int count, const void *col, int colfmt);
++/* a run for the next present at any line, 0 included (rtg_present_ex) */
++int  rtgc_add_run(RtgConv *c, int line, int first, int count, const void *col, int colfmt);
++/* Write buffer `buf` (0..nbuf-1) at dst (bytes per row dbpr), from the
++ * visible part of the chunky frame. dirty: per visible line, non-zero =
++ * changed since the last call (any buffer). Line y lands at dst + y*sy*dbpr,
++ * each pixel sx times, each line sy times. Returns RTG_OK or an error. For
++ * CLUT8, pal_lo and pal_hi give the base palette range to load (lo > hi: none). */
++int  rtgc_present(RtgConv *c, int buf, const uint8_t *pix, int stride, const uint8_t *dirty,
++                  const uint8_t *lineflags, uint8_t *dst, int dbpr, int *pal_lo, int *pal_hi);
++uint32_t rtgc_pack(int fmt, uint32_t rgb);   /* one colour in the target format */
++int  rtgc_bpp(int fmt);
++uint32_t rtgc_read_colour(const void *col, int colfmt, int i);   /* -> 0x00RRGGBB */
++
++/* Layout: the biggest integer scale (keeping the pixel shape ax:ay) of
++ * vis_w x vis_h source pixels on a scr_w x scr_h screen with square pixels,
++ * centred. x/y negative = the picture is cropped. */
++typedef struct RtgLayout { int sx, sy, x, y, w, h; } RtgLayout;
++void rtgc_layout(int vis_w, int vis_h, int ax, int ay, int scr_w, int scr_h, RtgLayout *l);
++/* the same with scanlines: an even scale (2x, 4x ...), or the 2x crop if even 2x does not fit */
++void rtgc_layout_scan(int vis_w, int vis_h, int ax, int ay, int scr_w, int scr_h, RtgLayout *l);
++
++#endif
+diff --git a/src/amiga/rtgfw/src/rtgfw.c b/src/amiga/rtgfw/src/rtgfw.c
+new file mode 100644
+index 0000000..6c90a4e
+--- /dev/null
++++ b/src/amiga/rtgfw/src/rtgfw.c
+@@ -0,0 +1,1149 @@
++/* rtgfw.c - common RTG display framework, v0 (see rtgfw.h and ../DESIGN.md).
++ *
++ * Written fresh for this framework (MIT, see ../LICENSE); not derived from
++ * Arnold's GPL code. Built with bebbo's amiga-gcc (m68k-amigaos, libnix).
++ *
++ * What this file does:
++ *   rtg_query      Picasso96API.library 2+ / cybergraphics.library 41+, mode list
++ *   rtg_open       mode choice, screen + backdrop window, 1-3 screen buffers
++ *                  (AllocScreenBuffer/ChangeScreenBuffer) or an off-screen
++ *                  bitmap + blit (RTG_F_BLIT); the real pixel format is read
++ *                  from the bitmap
++ *   rtg_present    path A (CLUT8 copy + LoadRGB32), path B (16/32-bit LUT
++ *                  conversion with per-line runs), path C (dirty lines),
++ *                  through a bitmap lock (P96 or CGX) or the OS copy calls
++ *                  (RTG_F_OSCOPY)
++ *   rtg_set_pacing / rtg_wait_frame   E-clock schedule (timer.device
++ *                  UNIT_WAITECLOCK), switchable at any time
++ *
++ * Library bases are private (rtg_GfxBase ...), so the framework links into a
++ * program that has its own GfxBase/IntuitionBase. SysBase comes from the C
++ * runtime (libnix); the LoadSeg module form must read it from address 4
++ * (README: "left for the module form").
++ *
++ * No calls are made while a bitmap is locked other than the converter
++ * itself (no graphics, layers, Intuition, DOS or Wait). */
++#include <exec/types.h>
++#include <exec/memory.h>
++#include <exec/execbase.h>
++#include <devices/timer.h>
++#include <graphics/gfx.h>
++#include <graphics/rastport.h>
++#include <graphics/displayinfo.h>
++#include <graphics/modeid.h>
++#include <intuition/intuition.h>
++#include <intuition/screens.h>
++#include <cybergraphx/cybergraphics.h>
++#include <utility/tagitem.h>
++
++#define GRAPHICS_BASE_NAME      rtg_GfxBase
++#define INTUITION_BASE_NAME     rtg_IntuitionBase
++#define CYBERGRAPHICS_BASE_NAME rtg_CyberGfxBase
++#define TIMER_BASE_NAME         rtg_TimerBase
++#include <exec/libraries.h>
++#include <exec/devices.h>
++extern struct Library *rtg_GfxBase, *rtg_IntuitionBase, *rtg_CyberGfxBase;
++extern struct Device  *rtg_TimerBase;
++#include <proto/exec.h>
++#include <proto/graphics.h>
++#include <proto/intuition.h>
++#include <proto/cybergraphics.h>
++#include <proto/timer.h>
++
++#include <stdarg.h>
++#include <stdio.h>
++#include <string.h>
++#include <stdlib.h>
++
++#include "rtgfw.h"
++#include "rtg_conv.h"
++#include "../include/rtgfw_p96.h"
++
++struct Library *rtg_GfxBase, *rtg_IntuitionBase, *rtg_CyberGfxBase, *P96Base_rtg;
++struct Device  *rtg_TimerBase;
++
++#define MAXMODES 2048          /* VideoCore lists 588 (26 Oct 2026); the first 128 are the small ones */
++#define FLIP_TIMEOUT_US 100000u
++
++typedef unsigned long long u64;
++
++static struct {
++	/* libraries */
++	int libs_open;
++	int p96ok;                  /* P96 calls passed the self-check */
++	int lockm;                  /* 1 P96, 2 CGX */
++	char info[200];
++	/* timer */
++	struct MsgPort *tport, *tport2;
++	struct timerequest *treq, *treq2;   /* UNIT_WAITECLOCK (pacing), UNIT_MICROHZ (timeouts) */
++	ULONG efreq;
++	u64 period_fx, due_fx;              /* 48.16 E-clock ticks */
++	/* screen */
++	int open;
++	struct Screen *scr;
++	struct Window *win;
++	UWORD *blankptr;
++	struct ScreenBuffer *sb[RTGC_MAXBUF];
++	struct MsgPort *safeport, *dispport;
++	int nbuf;                   /* screen buffers in use (1 = single, direct to the screen bitmap) */
++	int degraded;               /* messages were late: no more flips, keep writing the shown buffer */
++	int blit;                   /* RTG_F_BLIT: off-screen bitmap */
++	struct BitMap *offbm;
++	int shown, last;            /* buffer on display; buffer written last */
++	int prev_of[RTGC_MAXBUF];   /* buffer that was on display before this one */
++	UBYTE safe_out[RTGC_MAXBUF], disp_out[RTGC_MAXBUF], writable[RTGC_MAXBUF];
++	int oscopy;
++	UBYTE *staging; int staging_bpr;
++	/* layout and format */
++	int scr_w, scr_h, ox, oy, sx, sy, pic_w, pic_h;
++	int fmt, bpp, rawfmt;
++	int src_w, src_h, vis_x, vis_y, vis_w, vis_h;
++	int border_pen;
++	ULONG surround_val[RTGC_MAXBUF];    /* value last painted around the picture, per buffer */
++	UBYTE surround_need;                /* bit b: buffer b must repaint its surround */
++	UWORD flags;
++	RtgConv conv;
++	UBYTE *written;
++	ULONG pal32[2 + 256 * 3];
++	void (*log)(const char *);
++	RtgStats st;
++	u64 last_disp;              /* E-clock of the last DispMessage seen while waiting */
++	u64 refresh_sum; ULONG refresh_n;
++	int errs;
++} R;
++
++static const char *const errtext[RTG_E_COUNT] = {
++	"ok",
++	"no RTG library (Picasso96API 2+ or cybergraphics 41+)",
++	"no RTG mode with that depth and size",
++	"out of memory",
++	"could not open the RTG screen or window",
++	"screen buffers refused",
++	"pixel format not supported",
++	"bad arguments",
++	"RTG output not open",
++	"palette runs refused (order, count, or an 8-bit screen)",
++	"bitmap lock failed",
++};
++
++const char *rtg_error_text(RTG_REG(int32_t, err, d0))
++{
++	if (err < 0 || err >= RTG_E_COUNT) return "unknown error";
++	return errtext[err];
++}
++
++static void logf_(int verbose, const char *fmt, ...)
++{
++	char buf[160];
++	va_list ap;
++	if (!R.log || (verbose && !(R.flags & RTG_F_LOG))) return;
++	va_start(ap, fmt);
++	vsnprintf(buf, sizeof buf, fmt, ap);
++	va_end(ap);
++	R.log(buf);
++}
++
++/* ------------------------------------------------------------------ */
++/* time                                                                */
++
++static int timer_open(void)
++{
++	if (R.treq) return 1;
++	R.tport = CreateMsgPort();
++	R.tport2 = CreateMsgPort();
++	if (!R.tport || !R.tport2) goto fail;
++	R.treq = (struct timerequest *)CreateIORequest(R.tport, sizeof(struct timerequest));
++	R.treq2 = (struct timerequest *)CreateIORequest(R.tport2, sizeof(struct timerequest));
++	if (!R.treq || !R.treq2) goto fail;
++	if (OpenDevice((CONST_STRPTR)TIMERNAME, UNIT_WAITECLOCK, (struct IORequest *)R.treq, 0)) { DeleteIORequest((struct IORequest *)R.treq); R.treq = NULL; goto fail; }
++	if (OpenDevice((CONST_STRPTR)TIMERNAME, UNIT_MICROHZ, (struct IORequest *)R.treq2, 0)) { DeleteIORequest((struct IORequest *)R.treq2); R.treq2 = NULL; goto fail; }
++	rtg_TimerBase = R.treq->tr_node.io_Device;
++	{
++		struct EClockVal ev;
++		R.efreq = ReadEClock(&ev);
++	}
++	return 1;
++fail:
++	if (R.treq2) { if (R.treq2->tr_node.io_Device) CloseDevice((struct IORequest *)R.treq2); DeleteIORequest((struct IORequest *)R.treq2); R.treq2 = NULL; }
++	if (R.treq) { CloseDevice((struct IORequest *)R.treq); DeleteIORequest((struct IORequest *)R.treq); R.treq = NULL; }
++	if (R.tport) DeleteMsgPort(R.tport);
++	if (R.tport2) DeleteMsgPort(R.tport2);
++	R.tport = R.tport2 = NULL;
++	rtg_TimerBase = NULL;
++	return 0;
++}
++
++static void timer_close(void)
++{
++	if (R.treq2) { CloseDevice((struct IORequest *)R.treq2); DeleteIORequest((struct IORequest *)R.treq2); R.treq2 = NULL; }
++	if (R.treq) { CloseDevice((struct IORequest *)R.treq); DeleteIORequest((struct IORequest *)R.treq); R.treq = NULL; }
++	if (R.tport) DeleteMsgPort(R.tport);
++	if (R.tport2) DeleteMsgPort(R.tport2);
++	R.tport = R.tport2 = NULL;
++	rtg_TimerBase = NULL;
++	R.period_fx = R.due_fx = 0;
++}
++
++static u64 eclock(void)
++{
++	struct EClockVal ev;
++	if (!rtg_TimerBase) return 0;
++	ReadEClock(&ev);
++	return ((u64)ev.ev_hi << 32) | ev.ev_lo;
++}
++
++static ULONG ticks_us(u64 t)
++{
++	if (!R.efreq) return 0;
++	return (ULONG)((t / R.efreq) * 1000000ull + (t % R.efreq) * 1000000ull / R.efreq);
++}
++
++uint32_t rtg_x_micros(void) { if (!timer_open()) return 0; return ticks_us(eclock()); }
++uint32_t rtg_x_eclock_hz(void) { return R.efreq; }
++
++/* ------------------------------------------------------------------ */
++/* libraries, modes                                                    */
++
++static int map_rgbfb(ULONG f)
++{
++	switch (f) {
++	case RGBFB_CLUT: return RTG_FMT_CLUT8;
++	case RGBFB_R5G6B5: return RTG_FMT_RGB565;
++	case RGBFB_R5G6B5PC: return RTG_FMT_RGB565PC;
++	case RGBFB_A8R8G8B8: return RTG_FMT_ARGB32;
++	case RGBFB_B8G8R8A8: return RTG_FMT_BGRA32;
++	case RGBFB_R8G8B8A8: return RTG_FMT_RGBA32;
++	}
++	return RTG_FMT_NONE;
++}
++
++static int map_pixfmt(ULONG f)
++{
++	switch (f) {
++	case PIXFMT_LUT8: return RTG_FMT_CLUT8;
++	case PIXFMT_RGB16: return RTG_FMT_RGB565;
++	case PIXFMT_RGB16PC: return RTG_FMT_RGB565PC;
++	case PIXFMT_ARGB32: return RTG_FMT_ARGB32;
++	case PIXFMT_BGRA32: return RTG_FMT_BGRA32;
++	case PIXFMT_RGBA32: return RTG_FMT_RGBA32;
++	}
++	return RTG_FMT_NONE;
++}
++
++static const char *const fmtname[RTG_FMT_COUNT] = { "other", "CLUT8", "RGB565", "RGB565PC", "ARGB32", "BGRA32", "RGBA32" };
++
++static ULONG libver(struct Library *l) { return l ? ((ULONG)l->lib_Version << 16) | l->lib_Revision : 0; }
++
++static ULONG resident_lib_version(const char *name)
++{
++	struct Library *l;
++	ULONG v = 0;
++	Forbid();
++	l = (struct Library *)FindName(&SysBase->LibList, (CONST_STRPTR)name);
++	if (l) v = libver(l);
++	Permit();
++	return v;
++}
++
++static void libs_close(void)
++{
++	if (P96Base_rtg) CloseLibrary(P96Base_rtg);
++	if (rtg_CyberGfxBase) CloseLibrary(rtg_CyberGfxBase);
++	if (rtg_IntuitionBase) CloseLibrary(rtg_IntuitionBase);
++	if (rtg_GfxBase) CloseLibrary(rtg_GfxBase);
++	P96Base_rtg = rtg_CyberGfxBase = rtg_IntuitionBase = rtg_GfxBase = NULL;
++	R.libs_open = 0;
++	R.p96ok = 0;
++}
++
++static int dims_of(ULONG id, int *w, int *h, int *depth)
++{
++	struct DimensionInfo di;
++	if (!GetDisplayInfoData(NULL, (UBYTE *)&di, sizeof di, DTAG_DIMS, id)) return 0;
++	*w = di.Nominal.MaxX - di.Nominal.MinX + 1;
++	*h = di.Nominal.MaxY - di.Nominal.MinY + 1;
++	*depth = di.MaxDepth;
++	return 1;
++}
++
++static int libs_open(void)
++{
++	ULONG id;
++	int checked = 0, bad = 0;
++	if (R.libs_open) return RTG_OK;
++	rtg_GfxBase = OpenLibrary((CONST_STRPTR)"graphics.library", 40);
++	rtg_IntuitionBase = OpenLibrary((CONST_STRPTR)"intuition.library", 39);
++	if (!rtg_GfxBase || !rtg_IntuitionBase) { libs_close(); return RTG_E_NOLIB; }
++	P96Base_rtg = OpenLibrary((CONST_STRPTR)"Picasso96API.library", 2);
++	rtg_CyberGfxBase = OpenLibrary((CONST_STRPTR)"cybergraphics.library", 41);
++	if (!P96Base_rtg && !rtg_CyberGfxBase) { libs_close(); return RTG_E_NOLIB; }
++	/* P96 self-check: p96GetModeIDAttr(width) must agree with graphics.library
++	 * on every P96 mode, else the P96 calls are not trusted (see rtgfw_p96.h). */
++	if (P96Base_rtg) {
++		id = INVALID_ID;
++		while ((id = NextDisplayInfo(id)) != INVALID_ID) {
++			int w, h, d;
++			if (!p96GetModeIDAttr(id, P96IDA_ISP96)) continue;
++			if (!dims_of(id, &w, &h, &d)) continue;
++			checked++;
++			if ((int)p96GetModeIDAttr(id, P96IDA_WIDTH) != w || (int)p96GetModeIDAttr(id, P96IDA_HEIGHT) != h) bad++;
++		}
++		R.p96ok = checked > 0 && bad == 0;
++	}
++	R.lockm = R.p96ok ? 1 : 2;
++	if (!R.p96ok && !rtg_CyberGfxBase) { libs_close(); return RTG_E_NOLIB; }
++	snprintf(R.info, sizeof R.info, "Picasso96API %u.%u%s, rtg.library %u.%u, cybergraphics %u.%u, P96 self-check %d/%d modes %s",
++	         (unsigned)(libver(P96Base_rtg) >> 16), (unsigned)(libver(P96Base_rtg) & 0xffff), P96Base_rtg ? "" : " (none)",
++	         (unsigned)(resident_lib_version("rtg.library") >> 16), (unsigned)(resident_lib_version("rtg.library") & 0xffff),
++	         (unsigned)(libver(rtg_CyberGfxBase) >> 16), (unsigned)(libver(rtg_CyberGfxBase) & 0xffff),
++	         checked - bad, checked, R.p96ok ? "ok" : !P96Base_rtg ? "n/a" : checked ? "FAILED (P96 calls off)" : "(no P96 modes)");
++	R.libs_open = 1;
++	return RTG_OK;
++}
++
++const char *rtg_x_info(void) { return R.info; }
++
++static int is_rtg(ULONG id)
++{
++	if (R.p96ok) return p96GetModeIDAttr(id, P96IDA_ISP96) != 0;
++	if (rtg_CyberGfxBase) return IsCyberModeID(id) != 0;
++	return 0;
++}
++
++static int mode_info(ULONG id, RtgModeInfo *m)
++{
++	int w, h, d;
++	struct NameInfo ni;
++	if (!is_rtg(id) || ModeNotAvailable(id) || !dims_of(id, &w, &h, &d)) return 0;
++	memset(m, 0, sizeof *m);
++	m->id = id; m->w = (uint16_t)w; m->h = (uint16_t)h; m->depth = (uint8_t)d;
++	if (R.p96ok) {
++		ULONG f = p96GetModeIDAttr(id, P96IDA_RGBFORMAT);
++		m->rawfmt = (uint8_t)f; m->fmt = (uint8_t)map_rgbfb(f);
++		m->depth = (uint8_t)p96GetModeIDAttr(id, P96IDA_BITSPERPIXEL);
++	} else {
++		ULONG f = GetCyberIDAttr(CYBRIDATTR_PIXFMT, id);
++		m->rawfmt = (uint8_t)(100 + f); m->fmt = (uint8_t)map_pixfmt(f);
++		m->depth = (uint8_t)GetCyberIDAttr(CYBRIDATTR_DEPTH, id);
++	}
++	if (GetDisplayInfoData(NULL, (UBYTE *)&ni, sizeof ni, DTAG_NAME, id)) {
++		strncpy(m->name, (const char *)ni.Name, sizeof m->name - 1);
++	}
++	return 1;
++}
++
++int rtg_x_modes(RtgModeInfo *m, int max)
++{
++	ULONG id = INVALID_ID;
++	int n = 0, opened = 0;
++	if (!R.libs_open) { if (libs_open() != RTG_OK) return 0; opened = 1; }
++	while (n < max && (id = NextDisplayInfo(id)) != INVALID_ID)
++		if (mode_info(id, &m[n])) n++;
++	if (opened && !R.open) libs_close();
++	return n;
++}
++
++int32_t rtg_query(RTG_REG(RtgCaps *, caps, a0))
++{
++	RtgModeInfo mi;
++	ULONG id = INVALID_ID;
++	int err, opened = 0;
++	if (!caps || caps->size < sizeof(RtgCaps)) return RTG_E_ARGS;
++	caps->api = RTGFW_API;
++	caps->system = 0; caps->depths = 0; caps->lib_version = 0; caps->board[0] = 0;
++	if (!R.libs_open) {
++		if ((err = libs_open()) != RTG_OK) return err;
++		opened = 1;
++	}
++	caps->system = P96Base_rtg ? 1 : 2;
++	caps->lib_version = (uint16_t)((P96Base_rtg ? P96Base_rtg : rtg_CyberGfxBase)->lib_Version);
++	while ((id = NextDisplayInfo(id)) != INVALID_ID) {
++		if (!mode_info(id, &mi)) continue;
++		if (mi.fmt == RTG_FMT_CLUT8) caps->depths |= 1;
++		else if (mi.fmt == RTG_FMT_RGB565 || mi.fmt == RTG_FMT_RGB565PC) caps->depths |= 2;
++		else if (mi.fmt >= RTG_FMT_ARGB32) caps->depths |= 4;
++		if (!caps->board[0] && R.p96ok) {
++			const char *b = (const char *)p96GetModeIDAttr(id, P96IDA_BOARDNAME);
++			if (b) { strncpy(caps->board, b, sizeof caps->board - 1); caps->board[sizeof caps->board - 1] = 0; }
++		}
++	}
++	if (opened && !R.open) libs_close();
++	return caps->depths ? RTG_OK : RTG_E_NOMODE;
++}
++
++/* ------------------------------------------------------------------ */
++/* bitmap access                                                       */
++
++static int fmt_of_bitmap(struct BitMap *bm, int *raw)
++{
++	if (R.p96ok) {
++		ULONG f = p96GetBitMapAttr(bm, P96BMA_RGBFORMAT);
++		*raw = (int)f;
++		return map_rgbfb(f);
++	}
++	if (rtg_CyberGfxBase && GetCyberMapAttr(bm, CYBRMATTR_ISCYBERGFX)) {
++		ULONG f = GetCyberMapAttr(bm, CYBRMATTR_PIXFMT);
++		*raw = (int)(100 + f);
++		return map_pixfmt(f);
++	}
++	*raw = -1;
++	return RTG_FMT_NONE;
++}
++
++static APTR lock_bm(struct BitMap *bm, UBYTE **addr, LONG *bpr)
++{
++	if (R.lockm == 1) {
++		struct RenderInfo ri;
++		LONG l = p96LockBitMap(bm, (UBYTE *)&ri, sizeof ri);
++		if (!l) return NULL;
++		*addr = (UBYTE *)ri.Memory; *bpr = ri.BytesPerRow;
++		return (APTR)l;
++	} else {
++		ULONG a = 0, b = 0;
++		APTR h = LockBitMapTags(bm, LBMI_BASEADDRESS, (ULONG)&a, LBMI_BYTESPERROW, (ULONG)&b, TAG_DONE);
++		if (!h) return NULL;
++		*addr = (UBYTE *)a; *bpr = (LONG)b;
++		return h;
++	}
++}
++
++static void unlock_bm(struct BitMap *bm, APTR h)
++{
++	if (R.lockm == 1) p96UnlockBitMap(bm, (LONG)h);
++	else UnLockBitMap(h);
++}
++
++int rtg_x_set_lock_method(int m)
++{
++	if (m == 1 && R.p96ok) R.lockm = 1;
++	else if (m == 2 && rtg_CyberGfxBase) R.lockm = 2;
++	else if (m == 0) R.lockm = R.p96ok ? 1 : 2;
++	return R.lockm;
++}
++
++/* ------------------------------------------------------------------ */
++/* screen buffer messages                                              */
++
++static void note_disp(void)
++{
++	u64 t = eclock();
++	if (R.last_disp && t > R.last_disp) {
++		ULONG d = ticks_us(t - R.last_disp);
++		if (d > 2000 && d < 100000) { R.refresh_sum += d; R.refresh_n++; R.st.refresh_us = (ULONG)(R.refresh_sum / R.refresh_n); }
++	}
++	R.last_disp = t;
++}
++
++static void drain(int waiting)
++{
++	struct Message *m;
++	int i;
++	if (!R.safeport) return;
++	while ((m = GetMsg(R.safeport)) != NULL)
++		for (i = 0; i < R.nbuf; i++)
++			if (R.sb[i] && m == &R.sb[i]->sb_DBufInfo->dbi_SafeMessage) {
++				R.safe_out[i] = 0;
++				if (R.prev_of[i] >= 0) R.writable[R.prev_of[i]] = 1;
++			}
++	while ((m = GetMsg(R.dispport)) != NULL)
++		for (i = 0; i < R.nbuf; i++)
++			if (R.sb[i] && m == &R.sb[i]->sb_DBufInfo->dbi_DispMessage) {
++				R.disp_out[i] = 0;
++				if (waiting) note_disp(); else R.last_disp = 0;
++			}
++}
++
++/* wait until cond() holds or timeout_us passes; returns 1 if it holds */
++static int wait_msgs(int (*cond)(int), int arg, ULONG timeout_us)
++{
++	ULONG sigs;
++	int ok;
++	drain(0);
++	if (cond(arg)) return 1;
++	if (!R.treq2) return 0;
++	R.treq2->tr_node.io_Command = TR_ADDREQUEST;
++	R.treq2->tr_time.tv_secs = timeout_us / 1000000;
++	R.treq2->tr_time.tv_micro = timeout_us % 1000000;
++	SendIO((struct IORequest *)R.treq2);
++	for (;;) {
++		sigs = Wait((1UL << R.safeport->mp_SigBit) | (1UL << R.dispport->mp_SigBit) | (1UL << R.tport2->mp_SigBit));
++		(void)sigs;
++		drain(1);
++		if ((ok = cond(arg)) != 0) break;
++		if (CheckIO((struct IORequest *)R.treq2)) break;
++	}
++	if (!CheckIO((struct IORequest *)R.treq2)) AbortIO((struct IORequest *)R.treq2);
++	WaitIO((struct IORequest *)R.treq2);
++	SetSignal(0, 1UL << R.tport2->mp_SigBit);
++	return cond(arg);
++}
++
++static int c_target_ready(int b) { return R.writable[b] && !R.safe_out[b] && !R.disp_out[b]; }
++static int c_all_back(int unused) { int i; (void)unused; for (i = 0; i < R.nbuf; i++) if (R.safe_out[i] || R.disp_out[i]) return 0; return 1; }
++static int c_disp_back(int unused) { int i; (void)unused; for (i = 0; i < R.nbuf; i++) if (R.disp_out[i]) return 0; return 1; }
++
++int32_t rtg_x_sync_display(uint32_t timeout_us, uint32_t *waited_us)
++{
++	u64 t0 = eclock();
++	int ok;
++	if (!R.open) return RTG_E_NOTOPEN;
++	ok = R.nbuf > 1 ? wait_msgs(c_disp_back, 0, timeout_us) : 1;
++	if (waited_us) *waited_us = ticks_us(eclock() - t0);
++	return ok ? RTG_OK : RTG_E_BUFFERS;
++}
++
++/* ------------------------------------------------------------------ */
++/* open / close                                                        */
++
++static void free_buffers(void)
++{
++	int i, outstanding = 0;
++	if (R.nbuf > 1 && R.scr) {
++		logf_(1, "rtgfw: close: waiting for buffer messages (shown %d)", R.shown);
++		wait_msgs(c_all_back, 0, 500000);
++		if (R.shown != 0 && R.sb[0]) {
++			/* show the screen's own bitmap again before freeing the others */
++			int tries;
++			for (tries = 0; tries < 10; tries++) {
++				if (ChangeScreenBuffer(R.scr, R.sb[0])) { R.safe_out[0] = R.disp_out[0] = 1; R.prev_of[0] = R.shown; R.shown = 0; break; }
++				WaitTOF();
++			}
++			wait_msgs(c_all_back, 0, 500000);
++		}
++		for (i = 0; i < R.nbuf; i++) if (R.safe_out[i] || R.disp_out[i]) outstanding = 1;
++		logf_(1, "rtgfw: close: shown %d, messages outstanding %d", R.shown, outstanding);
++	}
++	for (i = 0; i < RTGC_MAXBUF; i++) {
++		if (R.sb[i] && R.scr) FreeScreenBuffer(R.scr, R.sb[i]);
++		R.sb[i] = NULL;
++	}
++	if (outstanding) {
++		/* A message never came back: keep the ports (a small leak) rather
++		 * than let the driver reply into freed memory later. */
++		logf_(0, "rtgfw: screen buffer messages still out at close; ports kept");
++		R.safeport = R.dispport = NULL;
++	} else {
++		if (R.safeport) DeleteMsgPort(R.safeport);
++		if (R.dispport) DeleteMsgPort(R.dispport);
++		R.safeport = R.dispport = NULL;
++	}
++	R.nbuf = 0;
++	R.degraded = 0;
++}
++
++static void close_all(void)
++{
++	free_buffers();
++	if (R.offbm) { WaitBlit(); FreeBitMap(R.offbm); R.offbm = NULL; }
++	if (R.win) { ClearPointer(R.win); CloseWindow(R.win); R.win = NULL; }
++	if (R.blankptr) { FreeMem(R.blankptr, 16); R.blankptr = NULL; }
++	if (R.scr) { CloseScreen(R.scr); R.scr = NULL; }
++	if (R.staging) { free(R.staging); R.staging = NULL; }
++	if (R.written) { free(R.written); R.written = NULL; }
++	rtgc_free(&R.conv);
++	R.open = 0;
++}
++
++void rtg_close(void)
++{
++	if (R.open) logf_(1, "rtgfw: close");
++	if (R.open || R.scr) close_all();
++	timer_close();
++	if (R.libs_open) libs_close();
++}
++
++static int fmt_group(int f)
++{
++	if (f == RTG_FMT_CLUT8) return 8;
++	if (f == RTG_FMT_RGB565 || f == RTG_FMT_RGB565PC) return 16;
++	if (f >= RTG_FMT_ARGB32 && f <= RTG_FMT_RGBA32) return 32;
++	return 0;
++}
++
++static ULONG surround_value(int b)
++{
++	(void)b;
++	if (R.fmt == RTG_FMT_CLUT8) return (ULONG)R.border_pen;
++	return rtgc_pack(R.fmt, R.conv.base[R.border_pen]);
++}
++
++/* Try one mode: open the screen and window, check the real format. */
++static int try_mode(RtgOpen *o, const RtgModeInfo *m, int buffers)
++{
++	int w, h, depth, raw, f;
++	ULONG idcmp = IDCMP_RAWKEY | IDCMP_MOUSEBUTTONS;
++	if (!dims_of(m->id, &w, &h, &depth)) return RTG_E_NOMODE;
++	R.scr = OpenScreenTags(NULL,
++		SA_DisplayID, m->id, SA_Width, w, SA_Height, h, SA_Depth, depth,
++		SA_Quiet, TRUE, SA_ShowTitle, FALSE, SA_Type, CUSTOMSCREEN,
++		SA_Title, (ULONG)"rtgfw", SA_Draggable, FALSE, SA_Exclusive, TRUE,
++		SA_AutoScroll, FALSE, SA_Interleaved, FALSE, TAG_DONE);
++	if (!R.scr) { logf_(1, "rtgfw: OpenScreen %08lx %dx%dx%d failed", m->id, w, h, depth); return RTG_E_SCREEN; }
++	f = fmt_of_bitmap(R.scr->RastPort.BitMap, &raw);
++	if (fmt_group(f) == 0 || (o->depth && fmt_group(f) != o->depth)) {
++		logf_(1, "rtgfw: mode %08lx bitmap format %d (raw %d) not usable", m->id, f, raw);
++		CloseScreen(R.scr); R.scr = NULL;
++		return RTG_E_FORMAT;
++	}
++	R.fmt = f; R.rawfmt = raw; R.bpp = rtgc_bpp(f);
++	R.scr_w = w; R.scr_h = h;
++	R.win = OpenWindowTags(NULL, WA_CustomScreen, (ULONG)R.scr, WA_Left, 0, WA_Top, 0,
++		WA_Width, w, WA_Height, h, WA_Backdrop, TRUE, WA_Borderless, TRUE, WA_Activate, TRUE,
++		WA_RMBTrap, TRUE, WA_SimpleRefresh, TRUE, WA_NoCareRefresh, TRUE, WA_IDCMP, idcmp, TAG_DONE);
++	if (!R.win) { CloseScreen(R.scr); R.scr = NULL; return RTG_E_SCREEN; }
++	R.blankptr = (UWORD *)AllocMem(16, MEMF_CHIP | MEMF_CLEAR);
++	if (R.blankptr) SetPointer(R.win, R.blankptr, 1, 16, 0, 0);
++	(void)buffers;
++	return RTG_OK;
++}
++
++static int alloc_buffers(int want)
++{
++	int i;
++	R.nbuf = 1;
++	R.degraded = 0;
++	R.shown = R.last = 0;
++	for (i = 0; i < RTGC_MAXBUF; i++) { R.prev_of[i] = -1; R.safe_out[i] = R.disp_out[i] = 0; R.writable[i] = 1; }
++	R.writable[0] = want > 1 ? 0 : 1;
++	if (want <= 1) return RTG_OK;
++	R.safeport = CreateMsgPort();
++	R.dispport = CreateMsgPort();
++	if (!R.safeport || !R.dispport) goto fail;
++	for (i = 0; i < want; i++) {
++		R.sb[i] = AllocScreenBuffer(R.scr, NULL, i == 0 ? SB_SCREEN_BITMAP : 0);
++		if (!R.sb[i]) goto fail;
++		R.sb[i]->sb_DBufInfo->dbi_SafeMessage.mn_ReplyPort = R.safeport;
++		R.sb[i]->sb_DBufInfo->dbi_DispMessage.mn_ReplyPort = R.dispport;
++		R.sb[i]->sb_DBufInfo->dbi_UserData1 = (APTR)(LONG)i;
++	}
++	R.nbuf = want;
++	return RTG_OK;
++fail:
++	for (i = 0; i < RTGC_MAXBUF; i++) { if (R.sb[i]) FreeScreenBuffer(R.scr, R.sb[i]); R.sb[i] = NULL; }
++	if (R.safeport) DeleteMsgPort(R.safeport);
++	if (R.dispport) DeleteMsgPort(R.dispport);
++	R.safeport = R.dispport = NULL;
++	R.nbuf = 1;
++	R.writable[0] = 1;
++	return RTG_E_BUFFERS;
++}
++
++static int cmp_area(const void *a, const void *b)
++{
++	const RtgModeInfo *x = a, *y = b;
++	long ax = (long)x->w * x->h, ay = (long)y->w * y->h;
++	return ax < ay ? -1 : ax > ay ? 1 : 0;
++}
++
++int32_t rtg_open(RTG_REG(RtgOpen *, o, a0))
++{
++	RtgModeInfo *modes;
++	static const int order_auto[3] = { 8, 16, 32 }, order_perline[2] = { 16, 32 };
++	const int *order;
++	int norder, nm = 0, i, g, err = RTG_E_NOMODE, scl, need_w, need_h, wb_w = 0, wb_h = 0, want_buf, convfmt;
++	ULONG id = INVALID_ID;
++	RtgLayout L;
++
++	if (!o || o->size < sizeof(RtgOpen) || o->api != RTGFW_API) return RTG_E_ARGS;
++	if (R.open) rtg_close();
++	if (!o->src_w || !o->src_h || !o->vis_w || !o->vis_h || o->vis_x + o->vis_w > o->src_w || o->vis_y + o->vis_h > o->src_h) return RTG_E_ARGS;
++	if (o->flags & RTG_F_WINDOW) return RTG_E_ARGS;                      /* not in v0 */
++	if ((o->flags & RTG_F_PERLINE) && o->depth == 8) return RTG_E_ARGS;
++	if (o->buffers > 3 || o->scale > 8) return RTG_E_ARGS;
++	if ((o->flags & RTG_F_BLIT) && (o->flags & RTG_F_OSCOPY)) return RTG_E_ARGS;
++	if (o->scan > RTG_SCAN_BLEND || o->scan_pct > 100) return RTG_E_ARGS;
++	if (o->scan == RTG_SCAN_BLEND && o->depth == 8) return RTG_E_ARGS;   /* blended lines need 16/32-bit */
++	if (o->scan && o->scale && (o->scale & 1)) return RTG_E_ARGS;        /* scanlines: even scales only */
++	R.log = o->log; R.flags = o->flags;
++	if ((err = libs_open()) != RTG_OK) return err;
++	if (!timer_open()) { libs_close(); return RTG_E_NOMEM; }
++	memset(&R.st, 0, sizeof R.st);
++	R.refresh_sum = 0; R.refresh_n = 0; R.last_disp = 0; R.errs = 0;
++	logf_(1, "rtgfw: %s", R.info);
++
++	/* candidates: every RTG mode (the list was cut at 128 before 26 Oct 2026, so the big
++	 * VideoCore modes were never seen), smallest first */
++	modes = malloc(MAXMODES * sizeof *modes);
++	if (!modes) { timer_close(); libs_close(); return RTG_E_NOMEM; }
++	while (nm < MAXMODES && (id = NextDisplayInfo(id)) != INVALID_ID)
++		if (mode_info(id, &modes[nm]) && fmt_group(modes[nm].fmt)) nm++;
++	qsort(modes, nm, sizeof modes[0], cmp_area);
++	logf_(1, "rtgfw: %d usable RTG modes", nm);
++	if (o->depth) { static int one[1]; one[0] = o->depth; order = one; norder = 1; }
++	else if ((o->flags & RTG_F_PERLINE) || o->scan == RTG_SCAN_BLEND) { order = order_perline; norder = 2; }
++	else { order = order_auto; norder = 3; }
++	scl = o->scale ? o->scale : (o->scan ? 2 : 1);
++	need_w = o->vis_w * (o->aspect_x ? o->aspect_x : 1) * scl;
++	need_h = o->vis_h * (o->aspect_y ? o->aspect_y : 1) * scl;
++	if ((o->flags & RTG_F_NOHWSCALE) && !o->scale) {
++		struct Screen *wb = LockPubScreen(NULL);
++		if (wb) { wb_w = wb->Width; wb_h = wb->Height; UnlockPubScreen(NULL, wb); }
++	}
++	want_buf = (o->flags & RTG_F_BLIT) ? 1 : (o->buffers ? o->buffers : 3);
++
++	err = RTG_E_NOMODE;
++	if (o->mode_id) {
++		RtgModeInfo mi;
++		if (mode_info(o->mode_id, &mi)) err = try_mode(o, &mi, want_buf);
++	}
++	for (g = 0; !R.scr && g < norder; g++) {
++		int pass;
++		/* NOHWSCALE: first the Workbench size, then the smallest that fits */
++		for (pass = (wb_w ? 0 : 1); !R.scr && pass < 2; pass++)
++			for (i = 0; !R.scr && i < nm; i++) {
++				if (fmt_group(modes[i].fmt) != order[g]) continue;
++				if (modes[i].w < need_w || modes[i].h < need_h) continue;
++				if (pass == 0 && (modes[i].w != wb_w || modes[i].h != wb_h)) continue;
++				err = try_mode(o, &modes[i], want_buf);
++			}
++	}
++	free(modes);
++	if (!R.scr) { logf_(0, "rtgfw: open failed: %s", rtg_error_text(err)); rtg_close(); return err == RTG_OK ? RTG_E_NOMODE : err; }
++
++	/* layout */
++	if (o->scale) {
++		L.sx = o->scale * (o->aspect_x ? o->aspect_x : 1); L.sy = o->scale * (o->aspect_y ? o->aspect_y : 1);
++		L.w = o->vis_w * L.sx; L.h = o->vis_h * L.sy;
++		L.x = (R.scr_w - L.w) / 2; L.y = (R.scr_h - L.h) / 2;
++	} else if (o->scan) rtgc_layout_scan(o->vis_w, o->vis_h, o->aspect_x, o->aspect_y, R.scr_w, R.scr_h, &L);
++	else rtgc_layout(o->vis_w, o->vis_h, o->aspect_x, o->aspect_y, R.scr_w, R.scr_h, &L);
++	if (L.x < 0 || L.y < 0) { rtg_close(); return RTG_E_NOMODE; }
++	R.ox = L.x; R.oy = L.y; R.sx = L.sx; R.sy = L.sy; R.pic_w = L.w; R.pic_h = L.h;
++	R.src_w = o->src_w; R.src_h = o->src_h; R.vis_x = o->vis_x; R.vis_y = o->vis_y; R.vis_w = o->vis_w; R.vis_h = o->vis_h;
++	R.border_pen = o->border_pen;
++	R.oscopy = (o->flags & RTG_F_OSCOPY) != 0;
++	R.blit = (o->flags & RTG_F_BLIT) != 0;
++
++	/* buffers */
++	if (R.blit) {
++		R.offbm = AllocBitMap(R.scr_w, R.scr_h, R.scr->RastPort.BitMap->Depth, BMF_MINPLANES | BMF_DISPLAYABLE, R.scr->RastPort.BitMap);
++		if (!R.offbm) { rtg_close(); return RTG_E_NOMEM; }
++		alloc_buffers(1);
++		{
++			int raw2, f2 = fmt_of_bitmap(R.offbm, &raw2);
++			if (f2 != R.fmt) { logf_(0, "rtgfw: off-screen bitmap format %d differs from the screen's %d", f2, R.fmt); rtg_close(); return RTG_E_FORMAT; }
++		}
++	} else if (alloc_buffers(want_buf) != RTG_OK) {
++		logf_(0, "rtgfw: AllocScreenBuffer refused, single buffer");
++	}
++
++	/* converter: OS copy of direct formats without P96 goes through ARGB32 + WritePixelArray(RECTFMT_ARGB) */
++	convfmt = R.fmt;
++	if (R.oscopy && R.fmt != RTG_FMT_CLUT8 && !R.p96ok) convfmt = RTG_FMT_ARGB32;
++	if ((err = rtgc_init(&R.conv, R.vis_w, R.vis_h, convfmt, R.nbuf)) != RTG_OK) { rtg_close(); return err; }
++	R.conv.sx = R.sx; R.conv.sy = R.sy; R.conv.border = R.border_pen;
++	if (o->scan && (err = rtgc_set_scan(&R.conv, o->scan, o->scan_pct)) != RTG_OK) { rtg_close(); return err; }
++	R.written = malloc(R.vis_h);
++	if (!R.written) { rtg_close(); return RTG_E_NOMEM; }
++	R.conv.written = R.written;
++	if (R.oscopy || R.blit) {
++		/* OS copy: a fast-RAM staging frame. Blit: lines go to the off-screen bitmap. */
++		if (R.oscopy) {
++			R.staging_bpr = R.pic_w * rtgc_bpp(convfmt);
++			R.staging = malloc((long)R.staging_bpr * R.pic_h);
++			if (!R.staging) { rtg_close(); return RTG_E_NOMEM; }
++		}
++	}
++	R.surround_need = (UBYTE)((1 << RTGC_MAXBUF) - 1);
++	R.open = 1;
++
++	o->out_mode_id = GetVPModeID(&R.scr->ViewPort);
++	o->out_w = (uint16_t)R.scr_w; o->out_h = (uint16_t)R.scr_h;
++	o->out_x = (uint16_t)R.ox; o->out_y = (uint16_t)R.oy;
++	o->out_scale_x = (uint16_t)R.sx; o->out_scale_y = (uint16_t)R.sy;
++	o->out_fmt = (uint8_t)R.fmt;
++	o->out_buffers = (uint8_t)(R.blit ? 0 : R.nbuf);
++	o->out_screen = R.scr; o->out_window = R.win;
++	logf_(1, "rtgfw: open %08lx %dx%d %s, picture %dx%d at %d,%d (x%d,%d), %d buffer(s)%s%s, lock %s, scanlines %s %d%%",
++	      o->out_mode_id, R.scr_w, R.scr_h, fmtname[R.fmt], R.pic_w, R.pic_h, R.ox, R.oy, R.sx, R.sy, R.nbuf,
++	      R.blit ? " blit" : "", R.oscopy ? " oscopy" : "", R.lockm == 1 ? "P96" : "CGX",
++	      o->scan == RTG_SCAN_HARD ? "hard" : o->scan == RTG_SCAN_BLEND ? "blend" : "off", (int)o->scan_pct);
++	return RTG_OK;
++}
++
++/* ------------------------------------------------------------------ */
++/* palette, border, pacing                                             */
++
++int32_t rtg_set_palette(RTG_REG(int32_t, line, d0), RTG_REG(int32_t, first, d1), RTG_REG(int32_t, count, d2),
++                        RTG_REG(const void *, colours, a0), RTG_REG(int32_t, colfmt, d3))
++{
++	if (!R.open) return RTG_E_NOTOPEN;
++	if (!colours || (colfmt != RTG_RGB24 && colfmt != RTG_RGB12)) return RTG_E_ARGS;
++	if (line <= 0) return rtgc_set_palette(&R.conv, 0, first, count, colours, colfmt);
++	line -= R.vis_y;
++	if (line >= R.vis_h) return RTG_OK;                     /* below the visible part */
++	return rtgc_add_run(&R.conv, line < 0 ? 0 : line, first, count, colours, colfmt);
++}
++
++int32_t rtg_set_border(RTG_REG(int32_t, pen, d0))
++{
++	if (!R.open) return RTG_E_NOTOPEN;
++	if (pen < 0 || pen > 255) return RTG_E_ARGS;
++	if (pen != R.border_pen) {
++		R.border_pen = pen; R.conv.border = pen;
++		R.surround_need = (UBYTE)((1 << RTGC_MAXBUF) - 1);
++		rtgc_invalidate(&R.conv);                            /* RTG_L_BLANK lines use the pen */
++	}
++	return RTG_OK;
++}
++
++void rtg_set_pacing(RTG_REG(uint32_t, frame_us, d0))
++{
++	if (!frame_us) { R.period_fx = 0; R.due_fx = 0; return; }
++	if (!timer_open()) return;
++	R.period_fx = ((u64)frame_us * R.efreq << 16) / 1000000ull;
++	/* the next due time follows from the last one: no jump on a 50/60 Hz switch */
++}
++
++int32_t rtg_wait_frame(void)
++{
++	u64 now;
++	if (!R.period_fx || !R.treq) return 0;
++	now = eclock() << 16;
++	if (!R.due_fx) R.due_fx = now;
++	R.due_fx += R.period_fx;
++	if (now >= R.due_fx) {
++		u64 behind = now - R.due_fx;
++		if (behind > 4 * R.period_fx) R.due_fx = now;       /* far behind: restart the schedule */
++		return (int32_t)ticks_us(behind >> 16);
++	}
++	{
++		u64 due = R.due_fx >> 16;
++		R.treq->tr_node.io_Command = TR_ADDREQUEST;
++		R.treq->tr_time.tv_secs = (ULONG)(due >> 32);       /* UNIT_WAITECLOCK: an EClockVal */
++		R.treq->tr_time.tv_micro = (ULONG)due;
++		DoIO((struct IORequest *)R.treq);
++	}
++	return 0;
++}
++
++void rtg_get_stats(RTG_REG(RtgStats *, s, a0))
++{
++	if (s) *s = R.st;
++}
++
++/* ------------------------------------------------------------------ */
++/* present                                                             */
++
++static void fill_rect(UBYTE *base, LONG bpr, int x, int y, int w, int h, ULONG v)
++{
++	int r, i;
++	if (w <= 0 || h <= 0) return;
++	for (r = 0; r < h; r++) {
++		UBYTE *d = base + (long)(y + r) * bpr + (long)x * R.bpp;
++		if (R.bpp == 1) memset(d, (int)v, w);
++		else if (R.bpp == 2) { UWORD *p = (UWORD *)d; for (i = w; i; i--) *p++ = (UWORD)v; }
++		else { ULONG *p = (ULONG *)d; for (i = w; i; i--) *p++ = v; }
++	}
++}
++
++static void fill_surround(UBYTE *base, LONG bpr, ULONG v)
++{
++	fill_rect(base, bpr, 0, 0, R.scr_w, R.oy, v);
++	fill_rect(base, bpr, 0, R.oy + R.pic_h, R.scr_w, R.scr_h - R.oy - R.pic_h, v);
++	fill_rect(base, bpr, 0, R.oy, R.ox, R.pic_h, v);
++	fill_rect(base, bpr, R.ox + R.pic_w, R.oy, R.scr_w - R.ox - R.pic_w, R.pic_h, v);
++}
++
++static void load_clut(int lo, int hi)
++{
++	int i, n = 0;
++	if (lo > hi) return;
++	R.pal32[n++] = ((ULONG)(hi - lo + 1) << 16) | (ULONG)lo;
++	for (i = lo; i <= hi; i++) {
++		ULONG c = rtgc_clut_colour(&R.conv, i);    /* the base colour, or its dimmed copy (scanlines) */
++		R.pal32[n++] = ((c >> 16) & 0xff) * 0x01010101u;
++		R.pal32[n++] = ((c >> 8) & 0xff) * 0x01010101u;
++		R.pal32[n++] = (c & 0xff) * 0x01010101u;
++	}
++	R.pal32[n] = 0;
++	LoadRGB32(&R.scr->ViewPort, R.pal32);
++	R.st.palette_loads++;
++}
++
++/* OS copy of the lines just converted into the staging frame */
++static void os_copy_spans(struct RastPort *rp)
++{
++	int y = 0, y1;
++	while (y < R.vis_h) {
++		if (!R.written[y]) { y++; continue; }
++		y1 = y;
++		while (y1 < R.vis_h && R.written[y1]) y1++;
++		{
++			int sy0 = y * R.sy, rows = (y1 - y) * R.sy;
++			UBYTE *src = R.staging + (long)sy0 * R.staging_bpr;
++			if (R.fmt == RTG_FMT_CLUT8)
++				WriteChunkyPixels(rp, R.ox, R.oy + sy0, R.ox + R.pic_w - 1, R.oy + sy0 + rows - 1, src, R.staging_bpr);
++			else if (R.p96ok) {
++				struct RenderInfo ri;
++				ri.Memory = R.staging; ri.BytesPerRow = (WORD)R.staging_bpr; ri.pad = 0; ri.RGBFormat = (ULONG)R.rawfmt;
++				p96WritePixelArray(&ri, 0, (UWORD)sy0, rp, (UWORD)R.ox, (UWORD)(R.oy + sy0), (UWORD)R.pic_w, (UWORD)rows);
++			} else
++				WritePixelArray(R.staging, 0, sy0, R.staging_bpr, rp, R.ox, R.oy + sy0, R.pic_w, rows, RECTFMT_ARGB);
++		}
++		y = y1;
++	}
++}
++
++static void blit_spans(void)
++{
++	int y = 0, y1;
++	while (y < R.vis_h) {
++		if (!R.written[y]) { y++; continue; }
++		y1 = y;
++		while (y1 < R.vis_h && R.written[y1]) y1++;
++		BltBitMapRastPort(R.offbm, R.ox, R.oy + y * R.sy, &R.scr->RastPort, R.ox, R.oy + y * R.sy, R.pic_w, (y1 - y) * R.sy, 0xc0);
++		y = y1;
++	}
++}
++
++static int32_t present_common(const uint8_t *pixels, int32_t stride, const uint8_t *dirty, const uint8_t *lineflags)
++{
++	struct BitMap *bm;
++	int b = 0, lo, hi, err = RTG_OK;
++	u64 t0, t1, t2, t3;
++	const uint8_t *pix;
++	if (!R.open) return RTG_E_NOTOPEN;
++	if (!pixels || stride < R.vis_w) return RTG_E_ARGS;
++	pix = pixels + (long)R.vis_y * stride + R.vis_x;
++	if (dirty) dirty += R.vis_y;
++	if (lineflags) lineflags += R.vis_y;
++
++	/* pick the buffer */
++	t0 = eclock();
++	if (R.nbuf > 1 && !R.degraded) {
++		b = (R.shown + 1) % R.nbuf;
++		if (!wait_msgs(c_target_ready, b, FLIP_TIMEOUT_US)) {
++			/* messages did not come back: keep writing the buffer on display, no more flips */
++			logf_(0, "rtgfw: screen buffer messages late (>100 ms): single buffer from now on");
++			R.st.flips_refused++;
++			R.degraded = 1;
++		}
++	}
++	if (R.nbuf == 1) b = 0;
++	else if (R.degraded) b = R.shown;
++	t1 = eclock();
++	R.st.us_flip_wait += ticks_us(t1 - t0);
++
++	if (R.blit) bm = R.offbm;
++	else if (R.nbuf > 1) bm = R.sb[b]->sb_BitMap;
++	else bm = R.scr->RastPort.BitMap;
++
++	{
++		ULONG lw = R.conv.lines_written, bw = R.conv.bytes_written;
++		ULONG sv = surround_value(b);
++		int cb = b, filled = 0;              /* converter buffer index = screen buffer index */
++		if (sv != R.surround_val[cb]) R.surround_need |= (UBYTE)(1 << cb);
++		if (R.oscopy) {
++			struct RastPort rp;
++			InitRastPort(&rp);
++			rp.BitMap = bm;
++			t2 = eclock();
++			err = rtgc_present(&R.conv, cb, pix, stride, dirty, lineflags, R.staging, R.staging_bpr, &lo, &hi);
++			if (R.surround_need & (1 << cb)) {
++				/* the surround is painted through a lock even here (once per border change) */
++				UBYTE *addr; LONG bpr;
++				APTR h = lock_bm(bm, &addr, &bpr);
++				if (h) { fill_surround(addr, bpr, sv); unlock_bm(bm, h); filled = 1; }
++				R.surround_need &= (UBYTE)~(1 << cb); R.surround_val[cb] = sv;
++			}
++			if (err == RTG_OK) os_copy_spans(&rp);
++			t3 = eclock();
++			R.st.us_convert += ticks_us(t3 - t2);
++		} else {
++			UBYTE *addr = NULL;
++			LONG bpr = 0;
++			APTR h;
++			t2 = eclock();
++			h = lock_bm(bm, &addr, &bpr);
++			t3 = eclock();
++			R.st.us_lock += ticks_us(t3 - t2);
++			if (!h || !addr) {
++				if (h) unlock_bm(bm, h);
++				R.errs++;
++				/* frame skipped: its dirty lines stay owed here (the caller may clear
++				 * its own marks after any present) and its runs are dropped */
++				rtgc_skip(&R.conv, dirty);
++				return RTG_E_LOCK;
++			}
++			if (R.surround_need & (1 << cb)) {
++				fill_surround(addr, bpr, sv);
++				R.surround_need &= (UBYTE)~(1 << cb); R.surround_val[cb] = sv;
++				filled = 1;
++			}
++			err = rtgc_present(&R.conv, cb, pix, stride, dirty, lineflags, addr + (long)R.oy * bpr + (long)R.ox * R.bpp, bpr, &lo, &hi);
++			t2 = eclock();
++			unlock_bm(bm, h);
++			t1 = eclock();
++			R.st.us_convert += ticks_us(t2 - t3);
++			R.st.us_lock += ticks_us(t1 - t2);
++		}
++		R.st.lines_written += R.conv.lines_written - lw;
++		R.st.bytes_written += R.conv.bytes_written - bw;
++		if (err == RTG_OK && R.blit) {
++			if (filled) BltBitMapRastPort(R.offbm, 0, 0, &R.scr->RastPort, 0, 0, R.scr_w, R.scr_h, 0xc0);
++			else blit_spans();
++		}
++	}
++	if (err != RTG_OK) return err;
++	if (R.fmt == RTG_FMT_CLUT8) load_clut(lo, hi);
++	R.last = b;
++	if (R.nbuf > 1 && !R.degraded) {
++		if (ChangeScreenBuffer(R.scr, R.sb[b])) {
++			R.safe_out[b] = R.disp_out[b] = 1;
++			R.prev_of[b] = R.shown;
++			R.writable[R.shown] = 0;
++			R.writable[b] = 0;
++			R.shown = b;
++		} else R.st.flips_refused++;     /* written but not shown: it is the target again next time */
++	}
++	R.st.frames++;
++	return RTG_OK;
++}
++
++int32_t rtg_present(RTG_REG(const uint8_t *, pixels, a0), RTG_REG(int32_t, stride, d0), RTG_REG(const uint8_t *, dirty, a1))
++{
++	return present_common(pixels, stride, dirty, NULL);
++}
++
++int32_t rtg_present_ex(RTG_REG(const RtgFrame *, f, a0))
++{
++	int i, err;
++	if (!R.open) return RTG_E_NOTOPEN;
++	if (!f || (f->nruns && (!f->runs || !f->pool)) || (f->colfmt != RTG_RGB24 && f->colfmt != RTG_RGB12)) return RTG_E_ARGS;
++	for (i = 0; i < f->nruns; i++) {
++		const RtgPalRun *r = &f->runs[i];
++		int line = (int)r->line - R.vis_y;
++		const void *col = f->colfmt == RTG_RGB12 ? (const void *)((const uint16_t *)f->pool + r->offset)
++		                                         : (const void *)((const uint32_t *)f->pool + r->offset);
++		if (line >= R.vis_h) break;
++		if ((err = rtgc_add_run(&R.conv, line < 0 ? 0 : line, r->first, r->count_m1 + 1, col, f->colfmt)) != RTG_OK) {
++			R.conv.nruns = 0; R.conv.pool_used = 0;
++			return err;
++		}
++	}
++	return present_common(f->pixels, f->stride, f->dirty, f->lineflags);
++}
++
++/* ------------------------------------------------------------------ */
++/* bench extensions                                                    */
++
++int32_t rtg_x_lock_cost(int n, uint32_t *us)
++{
++	struct BitMap *bm;
++	int i;
++	u64 t0;
++	if (!R.open) return RTG_E_NOTOPEN;
++	bm = R.blit ? R.offbm : (R.nbuf > 1 ? R.sb[R.last]->sb_BitMap : R.scr->RastPort.BitMap);
++	t0 = eclock();
++	for (i = 0; i < n; i++) {
++		UBYTE *a; LONG b;
++		APTR h = lock_bm(bm, &a, &b);
++		if (!h) return RTG_E_LOCK;
++		unlock_bm(bm, h);
++	}
++	if (us) *us = ticks_us(eclock() - t0);
++	return RTG_OK;
++}
++
++int32_t rtg_x_lut_copy(const uint8_t *pix, int32_t stride, uint32_t *us)
++{
++	static ULONG ctab[256];
++	struct RastPort rp;
++	struct BitMap *bm;
++	int i;
++	u64 t0;
++	if (!R.open) return RTG_E_NOTOPEN;
++	if (!rtg_CyberGfxBase) return RTG_E_NOLIB;
++	if (R.sx != 1 || R.sy != 1) return RTG_E_ARGS;
++	bm = R.blit ? R.offbm : (R.nbuf > 1 ? R.sb[R.shown]->sb_BitMap : R.scr->RastPort.BitMap);
++	for (i = 0; i < 256; i++) ctab[i] = R.conv.base[i];
++	InitRastPort(&rp);
++	rp.BitMap = bm;
++	t0 = eclock();
++	WriteLUTPixelArray((APTR)(pix + (long)R.vis_y * stride + R.vis_x), 0, 0, stride, &rp, ctab, R.ox, R.oy, R.vis_w, R.vis_h, CTABFMT_XRGB8);
++	if (us) *us = ticks_us(eclock() - t0);
++	return RTG_OK;
++}
++
++/* The whole screen of the buffer last written, in one lock: CLUT8 screens
++ * give their pen numbers in pens[] (w x h, w = out_w) and the CLUT in
++ * clut[256] (0x00RRGGBB); other formats give RTG_E_FORMAT. For grabs that
++ * check what the screen really holds. */
++int32_t rtg_x_read_frame(uint8_t *pens, uint32_t *clut)
++{
++	struct BitMap *bm;
++	UBYTE *a;
++	LONG bpr;
++	APTR h;
++	int y, i;
++	if (!R.open) return RTG_E_NOTOPEN;
++	if (R.fmt != RTG_FMT_CLUT8) return RTG_E_FORMAT;
++	bm = R.blit ? R.scr->RastPort.BitMap : (R.nbuf > 1 ? R.sb[R.last]->sb_BitMap : R.scr->RastPort.BitMap);
++	if (!(h = lock_bm(bm, &a, &bpr))) return RTG_E_LOCK;
++	for (y = 0; y < R.scr_h; y++) memcpy(pens + (long)y * R.scr_w, a + (long)y * bpr, R.scr_w);
++	unlock_bm(bm, h);
++	if (clut) for (i = 0; i < 256; i++) clut[i] = rtgc_clut_colour(&R.conv, i);
++	return RTG_OK;
++}
++
++/* The whole shown screen as 0x00RRGGBB (out_w x out_h longs), any format, one lock. */
++int32_t rtg_x_read_rgb(uint32_t *rgb)
++{
++	struct BitMap *bm;
++	UBYTE *a;
++	LONG bpr;
++	APTR h;
++	int x, y;
++	if (!R.open) return RTG_E_NOTOPEN;
++	bm = R.blit ? R.scr->RastPort.BitMap : (R.nbuf > 1 ? R.sb[R.last]->sb_BitMap : R.scr->RastPort.BitMap);
++	if (!(h = lock_bm(bm, &a, &bpr))) return RTG_E_LOCK;
++	for (y = 0; y < R.scr_h; y++) {
++		const UBYTE *p = a + (long)y * bpr;
++		uint32_t *o = rgb + (long)y * R.scr_w, w;
++		for (x = 0; x < R.scr_w; x++, p += R.bpp) {
++			switch (R.fmt) {
++			case RTG_FMT_CLUT8: o[x] = rtgc_clut_colour(&R.conv, p[0]); break;
++			case RTG_FMT_RGB565: w = (p[0] << 8) | p[1]; o[x] = (((w >> 11) & 31) << 19) | (((w >> 5) & 63) << 10) | ((w & 31) << 3); break;
++			case RTG_FMT_RGB565PC: w = (p[1] << 8) | p[0]; o[x] = (((w >> 11) & 31) << 19) | (((w >> 5) & 63) << 10) | ((w & 31) << 3); break;
++			case RTG_FMT_ARGB32: o[x] = ((ULONG)p[1] << 16) | (p[2] << 8) | p[3]; break;
++			case RTG_FMT_BGRA32: o[x] = ((ULONG)p[2] << 16) | (p[1] << 8) | p[0]; break;
++			case RTG_FMT_RGBA32: o[x] = ((ULONG)p[0] << 16) | (p[1] << 8) | p[2]; break;
++			default: o[x] = 0;
++			}
++		}
++	}
++	unlock_bm(bm, h);
++	return RTG_OK;
++}
++
++uint32_t rtg_x_scan_info(uint32_t *high_pen_lines)
++{
++	if (high_pen_lines) *high_pen_lines = R.open ? R.conv.high_lines : 0;
++	return R.open ? (uint32_t)R.conv.scan : 0;
++}
++
++int32_t rtg_x_read_pixel(int x, int y, uint32_t *rgb)
++{
++	struct BitMap *bm;
++	UBYTE *a, *p;
++	LONG bpr;
++	APTR h;
++	ULONG v = 0, w;
++	if (!R.open) return RTG_E_NOTOPEN;
++	if (x < 0 || y < 0 || x >= R.scr_w || y >= R.scr_h) return RTG_E_ARGS;
++	bm = R.blit ? R.offbm : (R.nbuf > 1 ? R.sb[R.last]->sb_BitMap : R.scr->RastPort.BitMap);
++	if (!(h = lock_bm(bm, &a, &bpr))) return RTG_E_LOCK;
++	p = a + (long)y * bpr + (long)x * R.bpp;
++	switch (R.fmt) {
++	case RTG_FMT_CLUT8: v = rtgc_clut_colour(&R.conv, p[0]); break;
++	case RTG_FMT_RGB565: w = (p[0] << 8) | p[1]; v = (((w >> 11) & 31) << 19) | (((w >> 5) & 63) << 10) | ((w & 31) << 3); break;
++	case RTG_FMT_RGB565PC: w = (p[1] << 8) | p[0]; v = (((w >> 11) & 31) << 19) | (((w >> 5) & 63) << 10) | ((w & 31) << 3); break;
++	case RTG_FMT_ARGB32: v = ((ULONG)p[1] << 16) | (p[2] << 8) | p[3]; break;
++	case RTG_FMT_BGRA32: v = ((ULONG)p[2] << 16) | (p[1] << 8) | p[0]; break;
++	case RTG_FMT_RGBA32: v = ((ULONG)p[0] << 16) | (p[1] << 8) | p[2]; break;
++	}
++	unlock_bm(bm, h);
++	if (rgb) *rgb = v;
++	return RTG_OK;
++}
+diff --git a/src/amiga/rtgfw/src/rtgfw.h b/src/amiga/rtgfw/src/rtgfw.h
+new file mode 100644
+index 0000000..9d4b300
+--- /dev/null
++++ b/src/amiga/rtgfw/src/rtgfw.h
+@@ -0,0 +1,220 @@
++/* rtgfw.h - common RTG display framework for John's Amiga emulators.
++ *
++ * v0 (26 Oct 2026): implemented in rtgfw.c (amiga-gcc, m68k-amigaos) and
++ * measured by bench/rtgbench.c. Not used by any emulator yet. See
++ * ../DESIGN.md for the design and ../README.md for the status.
++ *
++ * ABI: every entry point takes its arguments in registers, Amiga-library
++ * style, so vasm code can call it without a C stack frame:
++ *   arguments  d0-d3 / a0-a1 as listed per function
++ *   result     d0 (error code, value or pointer)
++ *   scratch    d0, d1, a0, a1 (trashed); everything else is preserved
++ * amiga-gcc builds the same prototypes with register parameters (RTG_REG),
++ * so C callers simply call the functions. On other hosts RTG_REG is a plain
++ * parameter (the PC test build).
++ *
++ * Task context only: call from the emulator task with a normal A7 stack,
++ * never from an interrupt or from inside a CPU core.
++ *
++ * One instance per program: the framework keeps its state internally, so no
++ * handle is passed around (simpler for assembler callers).
++ */
++#ifndef RTGFW_H
++#define RTGFW_H
++
++#include <stdint.h>
++
++#if defined(__amigaos__) && defined(__mc68000__)
++#define RTG_REG(type, name, reg) register type name __asm(#reg)
++#else
++#define RTG_REG(type, name, reg) type name
++#endif
++
++#define RTGFW_API 1
++
++/* ---- error codes (d0). 0 is success everywhere. ---- */
++enum {
++	RTG_OK = 0,
++	RTG_E_NOLIB,      /* neither Picasso96API.library 2+ nor cybergraphics.library 41+ */
++	RTG_E_NOMODE,     /* no RTG mode with the wanted depth and at least the wanted size */
++	RTG_E_NOMEM,
++	RTG_E_SCREEN,     /* OpenScreen / OpenWindow failed */
++	RTG_E_BUFFERS,    /* AllocScreenBuffer failed (the caller may retry with buffers = 1) */
++	RTG_E_FORMAT,     /* the bitmap's pixel format is not one the converter writes */
++	RTG_E_ARGS,       /* bad sizes, struct size or API version */
++	RTG_E_NOTOPEN,
++	RTG_E_RUNS,       /* palette runs: out of order, too many, or runs on an 8-bit screen */
++	RTG_E_LOCK,       /* LockBitMap failed (bitmap not in board memory) */
++	RTG_E_COUNT
++};
++
++/* ---- target pixel formats (what the RTG bitmap really is) ---- */
++enum {
++	RTG_FMT_NONE = 0,
++	RTG_FMT_CLUT8,       /* 8-bit, hardware palette */
++	RTG_FMT_RGB565,      /* 16-bit big-endian (P96 RGBFB_R5G6B5, CGX PIXFMT_RGB16) */
++	RTG_FMT_RGB565PC,    /* 16-bit little-endian (RGBFB_R5G6B5PC, PIXFMT_RGB16PC) */
++	RTG_FMT_ARGB32,      /* RGBFB_A8R8G8B8, PIXFMT_ARGB32 */
++	RTG_FMT_BGRA32,      /* RGBFB_B8G8R8A8, PIXFMT_BGRA32 (the A1200 Workbench mode) */
++	RTG_FMT_RGBA32,      /* RGBFB_R8G8B8A8, PIXFMT_RGBA32 */
++	RTG_FMT_COUNT
++};
++
++/* ---- colour input formats for rtg_set_palette ---- */
++#define RTG_RGB24  0     /* ULONG 0x00RRGGBB per colour */
++#define RTG_RGB12  1     /* UWORD 0x0RGB per colour (an Amiga 12-bit colour word); expanded x17 */
++
++/* ---- open flags ---- */
++#define RTG_F_PERLINE  0x0001  /* frames may carry palette runs: needs a 16/32-bit screen */
++#define RTG_F_WINDOW   0x0002  /* later: a window on the Workbench screen instead of a screen */
++#define RTG_F_OSCOPY   0x0004  /* copy with WriteChunkyPixels / WritePixelArray, never lock */
++#define RTG_F_NOHWSCALE 0x0008 /* never rely on the board's scaler; use a big mode + integer scale */
++#define RTG_F_LOG      0x0010  /* call log() with one line per stage */
++#define RTG_F_BLIT     0x0020  /* v0: no screen buffers; write an off-screen bitmap, blit the changed lines */
++
++/* ---- scanlines (RtgOpen.scan; added 26 Oct 2026). The picture is drawn at
++ * an even integer scale (2x, 4x); in each source line's group of output rows
++ * the lower half is the "scanline":
++ *   RTG_SCAN_HARD   a copy of the line, each channel * (100 - scan_pct) / 100.
++ *                   CLUT8: pens 0-127 use CLUT entries 128-255 for their dimmed
++ *                   colours (the framework loads them), so the frame must use
++ *                   pens 0-127 only (pens 128+ are counted, rtg_x_scan_info).
++ *   RTG_SCAN_BLEND  the line and the line below averaged, then dimmed:
++ *                   each channel = h(upper) + h(lower), h(c) = c * (100 - scan_pct) / 200
++ *                   (integer, per channel, in the target's precision); the last
++ *                   line blends with itself. 16/32-bit screens only. With palette
++ *                   runs, both pixels use the upper line's palette.
++ * Scanlines only change how a frame is drawn: the dirty-line rules stay the
++ * caller's (a changed line also redraws the blend row above it). ---- */
++#define RTG_SCAN_OFF   0
++#define RTG_SCAN_HARD  1
++#define RTG_SCAN_BLEND 2
++
++/* ---- per-line flags (RtgFrame.lineflags) ---- */
++#define RTG_L_X2       0x01    /* line holds vis_w/2 pixels: double each one (MSX 256 lines in a 512 frame) */
++#define RTG_L_BLANK    0x02    /* line is all border pen (not read) */
++#define RTG_L_RGB16    0x04    /* reserved (not in v1): direct RGB565 line from a second pixel pointer (MSX YJK) */
++
++struct Screen;
++struct Window;
++
++typedef struct RtgCaps {
++	uint16_t size;            /* in: sizeof(RtgCaps) */
++	uint16_t api;             /* out: RTGFW_API */
++	uint8_t  system;          /* out: 0 none, 1 Picasso96, 2 CyberGraphX (or P96's CGX emulation only) */
++	uint8_t  depths;          /* out: bit 0 = 8-bit CLUT, bit 1 = 16-bit, bit 2 = 32-bit modes exist */
++	uint16_t lib_version;     /* out: version of the library used */
++	char     board[32];       /* out: board/driver name, e.g. "VideoCore", "Minimig", "uaegfx" */
++} RtgCaps;
++
++typedef struct RtgOpen {
++	uint16_t size, api;            /* sizeof(RtgOpen), RTGFW_API */
++	uint16_t src_w, src_h;         /* chunky frame size (pixels, lines) */
++	uint16_t vis_x, vis_y;         /* part of the frame to show ... */
++	uint16_t vis_w, vis_h;         /* ... (e.g. Arnold 384x272 frame, 320x256 or 384x272 shown) */
++	uint8_t  aspect_x, aspect_y;   /* shape of one source pixel: 1:1, or 1:2 for MSX 512-wide */
++	uint8_t  depth;                /* 0 auto, 8, 16, 32 */
++	uint8_t  scale;                /* 0 auto, else fixed integer scale */
++	uint8_t  buffers;              /* 0 auto (3), 1 = single buffer (tears), 2, 3 */
++	uint8_t  border_pen;           /* palette index that fills the surround (CPC/MSX border colour) */
++	uint16_t flags;                /* RTG_F_* */
++	uint32_t mode_id;              /* 0: choose (BestModeID); else this RTG mode */
++	uint16_t content_hz100;        /* 5000 or 6000 (for the log and the mode choice) */
++	uint8_t  scan;                 /* RTG_SCAN_*: 0 off; else the picture is drawn at 2x height (and 2x width) */
++	uint8_t  scan_pct;             /* how much darker the in-between lines are, 0-100 (25 = 75% bright) */
++	void   (*log)(const char *line);  /* optional, may be NULL */
++	/* out */
++	uint32_t out_mode_id;
++	uint16_t out_w, out_h;         /* screen size */
++	uint16_t out_x, out_y;         /* where the picture's top left lands */
++	uint16_t out_scale_x, out_scale_y;
++	uint8_t  out_fmt;              /* RTG_FMT_* */
++	uint8_t  out_buffers;          /* 1-3 screen buffers; 0 = RTG_F_BLIT (off-screen bitmap + blit) */
++	uint16_t reserved2;
++	struct Screen *out_screen;     /* for menus/requesters on the same output */
++	struct Window *out_window;     /* backdrop window: its UserPort carries IDCMP_RAWKEY etc. */
++} RtgOpen;
++
++/* A palette run: from line `line` (0 = top of the frame) to the end of the
++ * frame, palette entries first..first+count-1 take these colours. Runs are
++ * per frame: rtg_present() returns the palette to the base palette. */
++typedef struct RtgPalRun {
++	uint16_t line;
++	uint8_t  first;
++	uint8_t  count_m1;   /* count - 1 (0..255) */
++	uint32_t offset;     /* index of the first colour in the frame's colour pool */
++} RtgPalRun;
++
++/* The full frame description (rtg_present_ex). rtg_present() is the
++ * short form with no runs and no line flags. */
++typedef struct RtgFrame {
++	const uint8_t *pixels;        /* chunky 8-bit indices, src_w x src_h */
++	int32_t        stride;        /* bytes from one line to the next */
++	const uint8_t *dirty;         /* per source line: non-zero = changed since the last present; NULL = all */
++	const uint8_t *lineflags;     /* per source line RTG_L_*, or NULL */
++	uint16_t       nruns, colfmt; /* palette runs this frame; RTG_RGB24 / RTG_RGB12 for the pool */
++	const RtgPalRun *runs;        /* sorted by line */
++	const void    *pool;          /* the runs' colours */
++} RtgFrame;
++
++typedef struct RtgStats {
++	uint32_t frames, lines_written, bytes_written, palette_loads;
++	uint32_t us_convert, us_lock, us_flip_wait, flips_refused;
++	uint32_t refresh_us;          /* measured time between flips' DispMessages (the RTG refresh) */
++} RtgStats;
++
++/* Function                                          registers           result d0 */
++int32_t  rtg_query(RTG_REG(RtgCaps *, caps, a0));                 /* error */
++int32_t  rtg_open(RTG_REG(RtgOpen *, o, a0));                        /* error; o->out_* filled */
++void     rtg_close(void);
++int32_t  rtg_set_palette(RTG_REG(int32_t , line, d0),              /* 0 = base palette */
++                         RTG_REG(int32_t , first, d1),
++                         RTG_REG(int32_t , count, d2),
++                         RTG_REG(const void *, colours, a0),
++                         RTG_REG(int32_t , colfmt, d3));         /* error */
++int32_t  rtg_set_border(RTG_REG(int32_t , pen, d0));
++int32_t  rtg_present(RTG_REG(const uint8_t *, pixels, a0),
++                     RTG_REG(int32_t , stride, d0),
++                     RTG_REG(const uint8_t *, dirty, a1));       /* error */
++int32_t  rtg_present_ex(RTG_REG(const RtgFrame *, f, a0));
++void     rtg_set_pacing(RTG_REG(uint32_t , frame_us, d0));    /* 0: off */
++int32_t  rtg_wait_frame(void);                                        /* us behind schedule (0 = on time) */
++const char *rtg_error_text(RTG_REG(int32_t , err, d0));
++void     rtg_get_stats(RTG_REG(RtgStats *, s, a0));
++
++/* LoadSeg module form (for AmiMSX): the first code hunk starts with
++ *   moveq #-1,d0 / rts              (not a program)
++ *   dc.l 'RTGF', RTGFW_API
++ *   jmp table, 6 bytes an entry, in the order of RTG_JT_* below.
++ * The caller LoadSegs PROGDIR:rtgfw.module, checks the magic and calls
++ * entry n at (segment start + 4 + 8 + 6 * n). Not built in v0. */
++enum { RTG_JT_QUERY, RTG_JT_OPEN, RTG_JT_CLOSE, RTG_JT_SET_PALETTE, RTG_JT_SET_BORDER,
++       RTG_JT_PRESENT, RTG_JT_PRESENT_EX, RTG_JT_SET_PACING, RTG_JT_WAIT_FRAME,
++       RTG_JT_ERROR_TEXT, RTG_JT_GET_STATS, RTG_JT_COUNT };
++
++/* ---- v0 extensions for the bench and diagnostics: C only, plain stack
++ * arguments, not in the jump table, may change. ---- */
++typedef struct RtgModeInfo {
++	uint32_t id;
++	uint16_t w, h;
++	uint8_t  fmt;        /* RTG_FMT_*, or RTG_FMT_NONE for formats rtgfw cannot write */
++	uint8_t  depth;      /* bits per pixel */
++	uint8_t  rawfmt;     /* P96 RGBFB_* (or CGX PIXFMT_* when P96 calls are not used) */
++	uint8_t  pad;
++	char     name[40];
++} RtgModeInfo;
++
++int         rtg_x_modes(RtgModeInfo *m, int max);       /* RTG modes; returns how many */
++const char *rtg_x_info(void);                           /* system, versions, lock method, self-checks */
++uint32_t    rtg_x_micros(void);                         /* E-clock time in microseconds (needs open or pacing) */
++uint32_t    rtg_x_eclock_hz(void);
++int         rtg_x_set_lock_method(int m);               /* 0 auto, 1 P96, 2 CGX; returns the method in use */
++int32_t     rtg_x_lock_cost(int n, uint32_t *us);       /* n lock+unlock pairs on the target bitmap */
++int32_t     rtg_x_sync_display(uint32_t timeout_us, uint32_t *waited_us); /* wait for every DispMessage */
++int32_t     rtg_x_lut_copy(const uint8_t *pix, int32_t stride, uint32_t *us); /* one WriteLUTPixelArray frame (CGX) */
++int32_t     rtg_x_read_pixel(int x, int y, uint32_t *rgb); /* read back the last written buffer, as 0x00RRGGBB */
++int32_t     rtg_x_read_frame(uint8_t *pens, uint32_t *clut); /* CLUT8: the whole shown screen (out_w x out_h pens) + its CLUT */
++int32_t     rtg_x_read_rgb(uint32_t *rgb);              /* any format: the whole shown screen as 0x00RRGGBB (out_w x out_h) */
++uint32_t    rtg_x_scan_info(uint32_t *high_pen_lines);  /* scanline mode in use (RTG_SCAN_*); lines drawn with pens 128+ in CLUT8 hard mode */
++
++#endif
+-- 
+2.50.0.windows.2
+

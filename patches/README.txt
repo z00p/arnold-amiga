@@ -1,16 +1,16 @@
-Arnold for Amiga 1.1 - patch set and Amiga build
+Arnold for Amiga 1.2 - patch set and Amiga build
 =================================================
 26 October 2026.  Arnold (c) Kevin Thacker, GPL-2.0.  Amiga port by John Stringer.
 
 This package holds the changes made to Arnold while porting it to 68k AmigaOS 3.x (AGA),
 as patches against the upstream source, plus a ready-to-run Amiga build.
 
-  patches/   37 patches (git format-patch) against rofl0r's GitHub mirror of Arnold,
+  patches/   39 patches (git format-patch) against rofl0r's GitHub mirror of Arnold,
              https://github.com/rofl0r/arnold, master at e5dce08
              ("fix prototype of LoadFile()", 4 Sep 2026)
   amiga/     the Amiga build: drawer Arnold with the program, icons, presets, the Plus
              system cartridge and a user README
-  source/    the complete source of this build (the upstream tree with all 37 patches
+  source/    the complete source of this build (the upstream tree with all 39 patches
              applied), for the GPL
 
 
@@ -20,8 +20,9 @@ Applying the patches
   git checkout e5dce08
   git am /path/to/patches/*.patch
 
-Each patch stands on its own and builds. Patches 1-35 touch only src/cpc (the core);
-36 adds src/amiga and 37 adds src/headless. The core changes are all marked "Amiga port"
+Each patch stands on its own and builds. Patches 1-36 touch only src/cpc (the core);
+37 adds the RTG display framework (src/amiga/rtgfw, MIT licence), 38 adds src/amiga
+and 39 adds src/headless. The core changes are all marked "Amiga port"
 in comments, and every behaviour change can be switched off with a define (below).
 
 
@@ -174,11 +175,21 @@ Monitor and tape:
        The tape level (1/8 of full scale, as CPCEC) mixed into the host's sound
        block while a host sets TapeAudio_On; off, nothing changes.
 
+1.2 (the hires changed-line fix):
+
+ 0036  render: the changed-line hook names the surface row in scanline mode
+       In scanline mode (a host's hires picture) CPC line i goes to surface row
+       2i, but the hook named row i, so a host converting only changed rows kept
+       stale lines on screen. Normal (lores) output is unchanged.
+
 Tools:
 
  0010  Diagnostics for hardware tracing (TRACE_HW, PAL_COUNT; off by default)
- 0036  AmigaOS host: Arnold for Amiga (src/amiga, built with bebbo's amiga-gcc)
- 0037  Headless test host (src/headless: frame checksums, PPM, key scripts, WAV,
+ 0037  RTG display framework for the AmigaOS host (src/amiga/rtgfw): rtgfw,
+       Copyright (c) 2026 Zoopster, under the MIT licence (its LICENSE file), not
+       the GPL; a separate work vendored unchanged. Only the Amiga host uses it.
+ 0038  AmigaOS host: Arnold for Amiga (src/amiga, built with bebbo's amiga-gcc)
+ 0039  Headless test host (src/headless: frame checksums, PPM, key scripts, WAV,
        disk insert / write-back / sector dumps)
 
 
@@ -211,7 +222,8 @@ Amiga build
 See amiga/Arnold/README.txt. In short: CPC 6128 Plus / GX4000 cartridges (.cpr), disks
 (.dsk, with the system cartridge's BASIC and AMSDOS) and snapshots (.sna). It needs an
 AGA Amiga with a 68040 or better (PiStorm/Emu68, 68060, BigMig), with sound through Paula.
-Help opens the menu.
+Help opens the menu. New in 1.2: an optional RTG screen (experimental, with scanlines and
+the Arnold RTG preset) and Games.db, settings for known games by image CRC-32.
 
 Builds: Arnold (68040, -O2), Arnold-040-Max (-O3), Arnold-060 and Arnold-060-Max
 (68060), Arnold-030 (68030; runs, but too slow for games). All are soft-float, with

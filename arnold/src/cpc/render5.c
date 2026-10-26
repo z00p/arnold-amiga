@@ -1608,7 +1608,10 @@ void    Render_DumpScreen4(void)
 							if (k < n)
 							{
 								for (; k < n; k++) d[k] = s[k];
-								Render_LineChangedHook(Render_ScreenYOffset + i);
+								/* hires (ScanLines): the surface pitch was doubled above, so CPC line i is
+								 * surface row 2i (every other row is left black), not row i; marking row i
+								 * left the changed rows stale on the AGA screen (1.2 fix; lores: i, as before) */
+								Render_LineChangedHook(Render_ScreenYOffset + (ScanLines ? (i << 1) : i));
 							}
 						}
 						else

@@ -26,7 +26,16 @@ and asked for it to keep the Arnold name.
   screenshots. Workbench presets with ToolTypes. Per-game key remap (`REMAP=RSHIFT:M`; a
   remapped key gives only its new key, so Right Shift then no longer works as Shift), with a
   key-map editor and presets in the Controls menu.
-- Joystick in port 2, two-button and CD32 pads, keyboard as joystick.
+- Joystick in port 2, two-button and CD32 pads, keyboard as joystick (joy keys mode 3: X / Space
+  are fire 1, for R-Type's beam).
+- RTG screen (experimental, `RTG`): on an RTG board with an 8-bit mode (the PiStorm's VideoCore,
+  WinUAE's uaegfx) the emulation and the menu show on an RTG screen instead of AGA, with optional
+  scanlines (`SCANLINES=`: Hard 25/50/75%, Blended light/normal/strong; on a PiStorm at 960x540,
+  exactly half of its 1080p output). The "Arnold RTG" preset starts there with Hard 50%; N in the
+  menu cycles the scanline options. Off by default: the AGA screen is unchanged.
+- Game settings database (`Games.db` in the drawer): settings for known games (wide, full height,
+  key remap, joy keys), found by the CRC-32 of the cartridge, disk or tape; a game's own
+  Save for game settings always win.
 
 Disks: changes a program makes (SAVE, high scores, FORMAT) are written back to the .dsk
 file, with the original kept once as `<name>.dsk.bak` (option "Write disks back",
@@ -54,7 +63,8 @@ Arnold for Amiga targets PiStorm/Emu68-class machines.
 The release zip holds the Amiga drawer (five builds: 68040 and 68060, each at -O2 and -O3,
 and a 68030 build; all soft-float), icons, presets, the Plus system cartridge, the CPC 464/664/6128 system ROMs
 and a user README. See the
-Releases page.
+Releases page. The RTG code uses the RTG display framework (rtgfw, MIT licence; its
+licence text is `LICENSE-rtgfw` in the package and `arnold/src/amiga/rtgfw/LICENSE` here).
 
 ## Core fixes
 
@@ -91,7 +101,8 @@ skipped, Plus sprites merged only where they cover the line and only at the pixe
 | Path | What |
 |---|---|
 | `arnold/src/cpc` | Arnold core with the port's changes (each marked "Amiga port") |
-| `arnold/src/amiga` | AmigaOS host: AGA screen and c2p, Paula sound, menu, prefs, Workbench, key scripts |
+| `arnold/src/amiga` | AmigaOS host: AGA screen and c2p, RTG screen, Paula sound, menu, prefs, Games.db, Workbench, key scripts |
+| `arnold/src/amiga/rtgfw` | The RTG display framework (vendored, MIT) |
 | `arnold/src/headless` | Headless x86 host for pixel-exact checks, disk tests and WAV output |
 | `patches/` | The changes as a patch series against upstream Arnold |
 | `tools/` | Build and check scripts (below) |

@@ -43,9 +43,10 @@ enum { G_CART, G_CARTLOAD, G_CARTEJECT, G_DISKA, G_DISKALOAD, G_DISKAEJECT,
 /* menu item ids (nm_UserData) */
 enum { M_NONE, M_LOADCART, M_LOADA, M_LOADB, M_EJECTALL, M_KEYS, M_SHOT, M_SAVE, M_SAVEGAME, M_FORGETGAME, M_QUIT,
        M_SOUND, M_HIRES, M_SKIP0, M_SKIP1, M_SKIP2, M_SKIP3, M_SKIP5, M_REF1, M_REF2, M_REF3, M_REF4,
-       M_JOY0, M_JOY1, M_JOY2, M_PAD0, M_PAD1, M_SPEED50, M_SPEEDDISP,
+       M_JOY0, M_JOY1, M_JOY2, M_JOY3, M_PAD0, M_PAD1, M_SPEED50, M_SPEEDDISP,
        M_VIDAUTO, M_VIDPAL, M_VIDNTSC, M_TALL, M_WIDE, M_DISKWRITE, M_MODEL464, M_MODEL664, M_MODEL6128, M_MODELPLUS, M_MODELGX,
-       M_LOADTAPE, M_REWIND, M_FASTTAPE, M_TAPESOUND, M_KEYEDIT, M_KEYMAPSUB, M_PRESET0 };   /* M_PRESET0 last: the presets follow it */
+       M_LOADTAPE, M_REWIND, M_FASTTAPE, M_TAPESOUND, M_KEYEDIT, M_KEYMAPSUB, M_RTG,
+       M_SCAN0, M_SCAN1, M_SCAN2, M_SCAN3, M_SCAN4, M_SCAN5, M_SCAN6, M_PRESET0 };   /* M_PRESET0 last: the presets follow it */
 #define MAXPRESETS 12   /* menu entries for KeyMap_Presets (keymaplogic.c) */
 #define MENU_REOPEN (-2)   /* menu_pick: the video mode changed, open the screen again */
 
@@ -77,7 +78,7 @@ static char wintitle[96];
 static const int skip_values[] = { 0, 1, 2, 3, 5 };
 static const char *skip_short[] = { "off", "1", "2", "3", "5" };
 static const char *refresh_short[] = { "all", "1/2", "1/3", "1/4" };
-static const char *joykey_short[] = { "off", "cursors", "QAOP" };
+static const char *joykey_short[] = { "off", "cursors", "QAOP", "cursors X" };
 static const char *pad_short[] = { "normal", "CD32" };
 /* the cycle gadgets' choices (NULL-terminated for GadTools) */
 static STRPTR model_labels[] = { (STRPTR)"CPC 464", (STRPTR)"CPC 664", (STRPTR)"CPC 6128", (STRPTR)"CPC 6128 Plus", (STRPTR)"GX4000", NULL };
@@ -134,6 +135,7 @@ static struct NewMenu nm[] = {
 	{ NM_SUB, (STRPTR)"Off", NULL, CHECKIT, X(0), (APTR)M_JOY0 },
 	{ NM_SUB, (STRPTR)"Cursors + Z fire / X fire 2", NULL, CHECKIT, X(1), (APTR)M_JOY1 },
 	{ NM_SUB, (STRPTR)"Q A O P + Space fire / M fire 2", NULL, CHECKIT, X(2), (APTR)M_JOY2 },
+	{ NM_SUB, (STRPTR)"Cursors + X fire / Z fire 2", NULL, CHECKIT, X(3), (APTR)M_JOY3 },
 	{ NM_ITEM, (STRPTR)"Pad in port 2", NULL, 0, 0, NULL },
 	{ NM_SUB, (STRPTR)"Normal joystick / 2-button pad", NULL, CHECKIT, X(0), (APTR)M_PAD0 },
 	{ NM_SUB, (STRPTR)"CD32 pad", NULL, CHECKIT, X(1), (APTR)M_PAD1 },
@@ -146,6 +148,15 @@ static struct NewMenu nm[] = {
 	{ NM_SUB, (STRPTR)"NTSC", NULL, CHECKIT, X(2), (APTR)M_VIDNTSC },
 	{ NM_ITEM, (STRPTR)"Full height (all 272 lines)", NULL, CHECKIT | MENUTOGGLE, 0, (APTR)M_TALL },
 	{ NM_ITEM, (STRPTR)"Wide (all 384 columns)", NULL, CHECKIT | MENUTOGGLE, 0, (APTR)M_WIDE },
+	{ NM_ITEM, (STRPTR)"RTG screen", (STRPTR)"D", CHECKIT | MENUTOGGLE, 0, (APTR)M_RTG },
+	{ NM_ITEM, (STRPTR)"RTG scanlines", NULL, 0, 0, NULL },   /* 1.2: SYS_SCAN_* in menu order; the key N in the menu picks the next one */
+	{ NM_SUB, (STRPTR)"Off (sharp 1x picture)", NULL, CHECKIT, X(0), (APTR)M_SCAN0 },
+	{ NM_SUB, (STRPTR)"Hard 25%", NULL, CHECKIT, X(1), (APTR)M_SCAN1 },
+	{ NM_SUB, (STRPTR)"Hard 50%", NULL, CHECKIT, X(2), (APTR)M_SCAN2 },
+	{ NM_SUB, (STRPTR)"Hard 75%", NULL, CHECKIT, X(3), (APTR)M_SCAN3 },
+	{ NM_SUB, (STRPTR)"Blended light", NULL, CHECKIT, X(4), (APTR)M_SCAN4 },
+	{ NM_SUB, (STRPTR)"Blended", NULL, CHECKIT, X(5), (APTR)M_SCAN5 },
+	{ NM_SUB, (STRPTR)"Blended strong", NULL, CHECKIT, X(6), (APTR)M_SCAN6 },
 	{ NM_ITEM, (STRPTR)"Game speed", NULL, 0, 0, NULL },
 	{ NM_SUB, (STRPTR)"50 Hz (correct)", NULL, CHECKIT, X(0), (APTR)M_SPEED50 },
 	{ NM_SUB, (STRPTR)"Follow display (NTSC: 20% fast)", NULL, CHECKIT, X(1), (APTR)M_SPEEDDISP },
@@ -249,15 +260,17 @@ static int video_of(struct SysMenu *m) { return m->video >= 0 && m->video <= 2 ?
 static void draw_settings(struct SysMenu *m)
 {
 	char l[96], mid[96], comp[96], out[96];
-	int n, jk = m->joykeys >= 0 && m->joykeys <= 2 ? m->joykeys : 0, rf = refresh_index(m->refresh);
+	int n, jk = m->joykeys >= 0 && m->joykeys <= 3 ? m->joykeys : 0, rf = refresh_index(m->refresh);
+	static const char *const scan_short[SYS_SCANS] = { "RTG", "RTG+25", "RTG+50", "RTG+75", "RTG+bl-", "RTG+bl", "RTG+bl+" };
+	const char *scrn = m->rtg ? (m->hires ? "RTG-hi" : scan_short[m->scan > 0 && m->scan < SYS_SCANS ? m->scan : 0]) : (m->hires ? "hires" : "lores");
 	sprintf(l, "Sound %s  Screen %s  Skip %s  Refresh %s  Joykeys %s  Pad %s",
-		m->sound ? "on" : "off", m->hires ? "hires" : "lores", skip_short[skip_index(m->skip)],
+		m->sound ? "on" : "off", scrn, skip_short[skip_index(m->skip)],
 		refresh_short[rf], joykey_short[jk], pad_short[m->pad ? 1 : 0]);
 	sprintf(mid, "Sound %s  Screen %s  Skip %s  Ref %s  Joy %s  Pad %s",
-		m->sound ? "on" : "off", m->hires ? "hires" : "lores", skip_short[skip_index(m->skip)],
+		m->sound ? "on" : "off", scrn, skip_short[skip_index(m->skip)],
 		refresh_short[rf], joykey_short[jk], pad_short[m->pad ? 1 : 0]);
 	sprintf(comp, "Snd %s Scr %s Skip %s Ref %s Joy %s Pad %s",
-		m->sound ? "on" : "off", m->hires ? "hires" : "lores", skip_short[skip_index(m->skip)],
+		m->sound ? "on" : "off", scrn, skip_short[skip_index(m->skip)],
 		refresh_short[rf], joykey_short[jk], pad_short[m->pad ? 1 : 0]);
 	KeyMap_FitLine(out, 74, l, mid, comp, m->remap);   /* 74 chars: the window ends at 8 px per char from x 20 */   /* adds "Keys: RShift=M" (or "Keys: 3 remapped") */
 	for (n = strlen(out); n < 74; n++) out[n] = ' ';
@@ -274,7 +287,7 @@ static int ask_file(const char *title, char *buf)
 	strcpy(drawer, buf);
 	p = (char *)PathPart((STRPTR)drawer); *p = 0;
 	fr = AllocAslRequestTags(ASL_FileRequest,
-		ASLFR_TitleText, (ULONG)title, ASLFR_Window, (ULONG)mwin,
+		ASLFR_TitleText, (ULONG)title, ASLFR_Window, (ULONG)mwin, ASLFR_Screen, (ULONG)mscr,   /* on the menu's own screen (RTG or AGA) */
 		ASLFR_InitialDrawer, (ULONG)drawer, ASLFR_InitialFile, (ULONG)FilePart((STRPTR)buf),
 		ASLFR_RejectIcons, TRUE, TAG_DONE);
 	if (!fr) return 0;
@@ -325,13 +338,34 @@ static struct Gadget *cycle(struct Gadget *g, struct NewGadget *ng, int y, int i
 	return gad[id] = CreateGadget(CYCLE_KIND, g, ng, GTCY_Labels, (ULONG)labels, GTCY_Active, active, TAG_DONE);
 }
 
+/* A menu screen with everything on it. The next menu is opened BEFORE the old one is closed
+ * (RTG, 26 Oct 2026): nothing else (Workbench, an AGA screen) shows in between, whether the
+ * next menu is a Save Prefs, an option that reopens it, or the one after Help. */
+struct MenuHold { struct Screen *scr; struct Window *win; struct Menu *strip; struct Gadget *gl; APTR vi; int rtg; };
+static int menu_rtg;                 /* the open menu screen is an RTG screen */
+int Sys_MenuOnRtg(void) { return mscr && menu_rtg; }
+void (*Sys_MenuOpenedHook)(void);
+
+static void menu_detach(struct MenuHold *h)
+{
+	h->scr = mscr; h->win = mwin; h->strip = menustrip; h->gl = glist; h->vi = vi; h->rtg = menu_rtg;
+	mscr = NULL; mwin = NULL; menustrip = NULL; glist = NULL; vi = NULL; menu_rtg = 0;
+}
+
+static void menu_free(struct MenuHold *h)
+{
+	if (h->win) { ClearMenuStrip(h->win); CloseWindow(h->win); h->win = NULL; }
+	if (h->strip) { FreeMenus(h->strip); h->strip = NULL; }
+	if (h->gl) { FreeGadgets(h->gl); h->gl = NULL; }
+	if (h->vi) { FreeVisualInfo(h->vi); h->vi = NULL; }
+	if (h->scr) { CloseScreen(h->scr); h->scr = NULL; Sys_Log("menu: closed (%s screen)", h->rtg ? "RTG" : "AGA"); }
+}
+
 static void close_menu(void)
 {
-	if (mwin) { ClearMenuStrip(mwin); CloseWindow(mwin); mwin = NULL; }
-	if (menustrip) { FreeMenus(menustrip); menustrip = NULL; }
-	if (glist) { FreeGadgets(glist); glist = NULL; }
-	if (vi) { FreeVisualInfo(vi); vi = NULL; }
-	if (mscr) { CloseScreen(mscr); mscr = NULL; }
+	struct MenuHold h;
+	menu_detach(&h);
+	menu_free(&h);
 }
 
 static void draw_frame(struct SysMenu *m)
@@ -359,8 +393,9 @@ static void set_checks(struct SysMenu *m)
 {
 	int i;
 	int on[] = { M_SKIP0 + skip_index(m->skip), M_REF1 + refresh_index(m->refresh),
-	             M_JOY0 + (m->joykeys >= 0 && m->joykeys <= 2 ? m->joykeys : 0), M_PAD0 + (m->pad ? 1 : 0),
-	             M_SPEED50 + (m->speed ? 1 : 0), M_VIDAUTO + video_of(m), M_MODEL464 + model_of(m) };
+	             M_JOY0 + (m->joykeys >= 0 && m->joykeys <= 3 ? m->joykeys : 0), M_PAD0 + (m->pad ? 1 : 0),
+	             M_SPEED50 + (m->speed ? 1 : 0), M_VIDAUTO + video_of(m), M_MODEL464 + model_of(m),
+	             M_SCAN0 + (m->scan > 0 && m->scan < SYS_SCANS ? m->scan : 0) };
 	for (i = 0; nmx[i].nm_Type != NM_END; i++) {
 		int id = (int)(ULONG)nmx[i].nm_UserData, k, want = 0;
 		if (!(nmx[i].nm_Flags & CHECKIT)) continue;
@@ -370,6 +405,7 @@ static void set_checks(struct SysMenu *m)
 		if (id == M_HIRES) want = m->hires ? 1 : 0;
 		if (id == M_TALL) want = m->tall ? 1 : 0;
 		if (id == M_WIDE) want = m->wide ? 1 : 0;
+		if (id == M_RTG) want = m->rtg ? 1 : 0;
 		if (id == M_DISKWRITE) want = m->diskwrite ? 1 : 0;
 		if (id == M_FASTTAPE) want = m->fasttape ? 1 : 0;
 		if (id == M_TAPESOUND) want = m->tapesound ? 1 : 0;
@@ -412,7 +448,7 @@ static int open_menu(struct SysMenu *m)
 	struct Gadget *g;
 	struct DimensionInfo dims;
 	ULONG modeid = Sys_ModeID(HIRES_KEY);
-	int sh = 256, wh;
+	int sh = 256, wh, wl = 0, wt;
 
 	layout();
 	/* pens 8-15: the logo picture's colours */
@@ -429,6 +465,27 @@ static int open_menu(struct SysMenu *m)
 		sh = dims.Nominal.MaxY - dims.Nominal.MinY + 1;
 	if (sh < 200) sh = 200;
 	if (sh > 256) sh = 256;
+	/* RTG screen on (26 Oct 2026): the menu on an 8-bit RTG screen too (the smallest mode of
+	 * 640x256 or more), so the picture stays on the RTG output (HDMI) between play and menu;
+	 * the 640-wide window is centred on it. No RTG mode, or refused: the AGA menu screen. */
+	mscr = NULL; menu_rtg = 0;
+	if (m->rtg && !Sys_RtgDead) {
+		int rw, rh;
+		ULONG rid = Sys_RtgMenuMode(&rw, &rh);
+		if (!rid) { Sys_RtgDead = 1; if (!m->status[0]) strcpy(m->status, "RTG screen: no RTG board or 8-bit mode, AGA used."); }
+		if (rid) {
+			mscr = OpenScreenTags(NULL, SA_Width, rw, SA_Height, rh, SA_Depth, 8,
+				SA_DisplayID, rid, SA_Font, (ULONG)&topaz8,
+				SA_Title, (ULONG)"Arnold - Amstrad CPC / CPC Plus emulator.  (c) Kevin Thacker, GPL-2.0", SA_Pens, (ULONG)menupens,
+				SA_ShowTitle, TRUE, SA_Colors32, (ULONG)menupal, TAG_DONE);
+			if (mscr) { sh = rh; wl = (rw - 640) / 2; menu_rtg = 1; Sys_Log("menu: RTG screen mode %08lx, %dx%d", (unsigned long)rid, rw, rh); }
+			else {
+				Sys_Log("menu: RTG screen mode %08lx refused, AGA menu screen", (unsigned long)rid);
+				Sys_RtgDead = 1; if (!m->status[0]) strcpy(m->status, "RTG screen: refused, AGA used.");
+			}
+		}
+	}
+	if (!mscr) {
 	mscr = OpenScreenTags(NULL, SA_Width, 640, SA_Height, sh, SA_Depth, 4,
 		SA_DisplayID, modeid, SA_Font, (ULONG)&topaz8,
 		SA_Title, (ULONG)"Arnold - Amstrad CPC / CPC Plus emulator.  (c) Kevin Thacker, GPL-2.0", SA_Pens, (ULONG)menupens,
@@ -437,12 +494,15 @@ static int open_menu(struct SysMenu *m)
 		SA_AutoScroll, TRUE, TAG_DONE);
 	if (!mscr) return 0;
 	Sys_Log("menu: screen mode %08lx, %d lines", (unsigned long)modeid, sh);
+	}
 	vi = GetVisualInfo(mscr, TAG_DONE);
 	if (!vi) { close_menu(); return 0; }
 	OX = mscr->WBorLeft;
 	OY = mscr->WBorTop + mscr->Font->ta_YSize + 1;
 	wh = OY + inner_h + mscr->WBorBottom;
 	if (wh > sh - mscr->BarHeight - 1) wh = sh - mscr->BarHeight - 1;
+	wt = mscr->BarHeight + 1;
+	if (sh > 256 && sh - wt - wh > 1) wt += (sh - wt - wh) / 2;   /* RTG screen (taller than any AGA one): centred */
 	g = CreateContext(&glist);
 	memset(&ng, 0, sizeof ng);
 	ng.ng_TextAttr = &topaz8; ng.ng_VisualInfo = vi;
@@ -460,8 +520,8 @@ static int open_menu(struct SysMenu *m)
 	if (!g) { close_menu(); return 0; }
 	if (!make_menus(m)) { close_menu(); return 0; }
 	/* version, credit and build time (date and hh:mm) in the title bar */
-	sprintf(wintitle, "Arnold v1.1 for Amiga - core: Kevin Thacker - built %.6s %.4s %.5s", __DATE__, __DATE__ + 7, __TIME__);
-	mwin = OpenWindowTags(NULL, WA_CustomScreen, (ULONG)mscr, WA_Left, 0, WA_Top, mscr->BarHeight + 1,
+	sprintf(wintitle, "Arnold v1.2 for Amiga - core: Kevin Thacker - built %.6s %.4s %.5s", __DATE__, __DATE__ + 7, __TIME__);
+	mwin = OpenWindowTags(NULL, WA_CustomScreen, (ULONG)mscr, WA_Left, wl, WA_Top, wt,
 		WA_Width, 640, WA_Height, wh,
 		WA_Title, (ULONG)wintitle,
 		WA_DepthGadget, TRUE, WA_CloseGadget, TRUE, WA_DragBar, FALSE,
@@ -476,7 +536,7 @@ static int open_menu(struct SysMenu *m)
 	{
 		char line[SYS_PATH + 32];
 		snprintf(line, sizeof line, "%s  %sPrefs: %s%s", m->status[0] ? m->status : (m->can_continue ? "Paused: Help returns here, Continue resumes." : "Ready."),
-			m->tapepos, m->prefs[0] ? (char *)FilePart((STRPTR)m->prefs) : "(none)", m->game_prefs ? " +game" : "");
+			m->tapepos, m->prefs[0] ? (char *)FilePart((STRPTR)m->prefs) : "(none)", m->game_prefs == 2 ? " +db" : m->game_prefs ? " +game" : "");
 		m->status[0] = 0;
 		status(line);
 	}
@@ -528,6 +588,27 @@ static void edit_keymap(struct SysMenu *m)
 	ActivateWindow(mwin);   /* the editor was the active window: give the keyboard back */
 	draw_settings(m);
 }
+/* RTG screen ticked or unticked: the menu (and, from Continue or Power ON, the picture) switches at once */
+static void rtg_set(struct SysMenu *m, int on)
+{
+	m->rtg = on;
+	if (on) Sys_RtgDead = 0;   /* ticked again: try once more */
+	strcpy(m->status, !on ? "RTG screen off: the AGA screen from here on."
+		: Sys_RtgAvailable() ? "RTG screen on: the menu and the picture stay on it."
+		: "RTG screen: no RTG board or 8-bit mode found, AGA stays.");
+}
+
+/* RTG scanlines chosen (Display menu, or N in the menu for the next one): used from the next Continue / Power ON */
+static void scan_set(struct SysMenu *m, int k)
+{
+	static const char *const what[SYS_SCANS] = { "off (the sharp 1x picture)", "hard 25%", "hard 50%", "hard 75%",
+		"blended light", "blended", "blended strong" };
+	char t[96];
+	m->scan = k >= 0 && k < SYS_SCANS ? k : 0;
+	sprintf(t, "RTG scanlines: %s.%s", what[m->scan], m->rtg ? " Continue shows it." : " Tick RTG screen to see them.");
+	status(t);
+}
+
 static int menu_pick(struct SysMenu *m, struct MenuItem *item)
 {
 	int id = (int)(ULONG)GTMENUITEM_USERDATA(item);
@@ -553,12 +634,21 @@ static int menu_pick(struct SysMenu *m, struct MenuItem *item)
 	case M_SHOT: if (m->can_continue) return SYS_MENU_SHOT; status("Screenshot: nothing is running yet."); break;
 	case M_SAVE: return SYS_MENU_SAVE;
 	case M_SAVEGAME: return SYS_MENU_SAVEGAME;
-	case M_FORGETGAME: if (m->game_prefs) return SYS_MENU_FORGETGAME; status("This cartridge has no game settings."); break;
+	case M_FORGETGAME:
+		if (m->game_prefs == 2) { status("These settings come from Games.db: Save for game overrides them."); break; }
+		if (m->game_prefs) return SYS_MENU_FORGETGAME;
+		status("This cartridge has no game settings.");
+		break;
 	case M_QUIT: return SYS_MENU_QUIT;
 	case M_SOUND: m->sound = checked; break;
 	case M_HIRES: m->hires = checked; break;
 	case M_TALL: m->tall = checked; break;
 	case M_WIDE: m->wide = checked; break;
+	case M_RTG: rtg_set(m, checked);
+		return MENU_REOPEN;
+	case M_SCAN0: case M_SCAN1: case M_SCAN2: case M_SCAN3: case M_SCAN4: case M_SCAN5: case M_SCAN6:
+		scan_set(m, id - M_SCAN0);
+		break;
 	case M_DISKWRITE: m->diskwrite = checked;
 		status(checked ? "Disks: changes are written back to the .dsk files." : "Disks: changes are kept until Power ON or Exit only.");
 		break;
@@ -570,11 +660,11 @@ static int menu_pick(struct SysMenu *m, struct MenuItem *item)
 		break;
 	case M_SKIP0: case M_SKIP1: case M_SKIP2: case M_SKIP3: case M_SKIP5: m->skip = skip_values[id - M_SKIP0]; break;
 	case M_REF1: case M_REF2: case M_REF3: case M_REF4: m->refresh = id - M_REF1 + 1; break;
-	case M_JOY0: case M_JOY1: case M_JOY2: m->joykeys = id - M_JOY0; break;
+	case M_JOY0: case M_JOY1: case M_JOY2: case M_JOY3: m->joykeys = id - M_JOY0; break;
 	case M_PAD0: case M_PAD1: m->pad = id - M_PAD0; break;
 	case M_SPEED50: case M_SPEEDDISP: m->speed = id - M_SPEED50; set_cycle(G_SPEED, m->speed); break;
 	case M_VIDAUTO: case M_VIDPAL: case M_VIDNTSC:
-		if (m->video != id - M_VIDAUTO) { m->video = id - M_VIDAUTO; return MENU_REOPEN; }
+		if (m->video != id - M_VIDAUTO) { m->video = id - M_VIDAUTO; if (menu_rtg) { set_cycle(G_VIDEO, m->video); break; } return MENU_REOPEN; }
 		break;
 	case M_MODEL464: case M_MODEL664: case M_MODEL6128: case M_MODELPLUS: case M_MODELGX:
 		set_model(m, id - M_MODEL464); set_cycle(G_MODEL, m->model); break;
@@ -589,16 +679,19 @@ int Sys_Menu(struct SysMenu *m)
 {
 	int result = SYS_MENU_QUIT, done, reopen;
 	struct IntuiMessage *msg;
+	struct MenuHold old;
 
 	if (!GadToolsBase) GadToolsBase = OpenLibrary((STRPTR)"gadtools.library", 37);
 	if (!AslBase) AslBase = OpenLibrary((STRPTR)"asl.library", 37);
 	if (!GadToolsBase || !AslBase) return SYS_MENU_QUIT;
-	close_menu();   /* one left open by the last call (e.g. a Power ON that failed) */
+	menu_detach(&old);   /* one left open by the last call (a Power ON that failed, Save Prefs on RTG): closed once the new one is up */
 
 	/* a new video mode closes the screen and opens it again in that mode */
 	do {
 		Sys_VideoMode = video_of(m);
-		if (!open_menu(m)) return SYS_MENU_QUIT;
+		if (!open_menu(m)) { menu_free(&old); return SYS_MENU_QUIT; }
+		menu_free(&old);
+		if (Sys_MenuOpenedHook) { void (*h)(void) = Sys_MenuOpenedHook; Sys_MenuOpenedHook = NULL; h(); }
 		done = reopen = 0;
 		while (!done) {
 			WaitPort(mwin->UserPort);
@@ -624,7 +717,7 @@ int Sys_Menu(struct SysMenu *m)
 				else if (cls == IDCMP_RAWKEY) {
 					if (Sys_MenuKeyLog) { if (!mkeylog) mkeylog = fopen("PROGDIR:menukeys.log", "w"); if (mkeylog) { fprintf(mkeylog, "%02x\n", code); fflush(mkeylog); } }
 					/* Shortcuts (rawkeys): Help/C Continue, P Power ON, R Reset, Q Quit,
-					 * S Save Prefs, G Save for game, E Edit key map, K Keyboard picture, X Screenshot. */
+					 * S Save Prefs, G Save for game, D RTG screen on/off, N next RTG scanlines, L Load cartridge, E Edit key map, K Keyboard picture, X Screenshot. */
 					switch (code) {
 					case 0x5f: case 0x33: if (m->can_continue) { result = SYS_MENU_CONTINUE; done = 1; } break;
 					case 0x19: result = SYS_MENU_POWER; done = 1; break;
@@ -634,6 +727,9 @@ int Sys_Menu(struct SysMenu *m)
 					case 0x32: if (m->can_continue) { result = SYS_MENU_SHOT; done = 1; } break;
 					case 0x12: edit_keymap(m); if (menus_dirty) { menus_dirty = 0; refresh_menus(m); } break;
 					case 0x24: result = SYS_MENU_SAVEGAME; done = 1; break;
+					case 0x22: rtg_set(m, !m->rtg); reopen = 1; done = 1; break;
+					case 0x36: scan_set(m, (m->scan + 1) % SYS_SCANS); refresh_menus(m); draw_settings(m); break;   /* N: next RTG scanlines */
+					case 0x28: take_strings(m); if (ask_file("Insert cartridge (.cpr)", m->cart)) set_string(G_CART, m->cart); break;   /* L: Load cartridge */   /* D: the RTG screen (Display menu) */
 					case 0x27: Sys_ShowPicture(mscr, "PROGDIR:Keyboard.iff"); redraw_after_picture(m); break;
 					}
 				}
@@ -657,7 +753,7 @@ int Sys_Menu(struct SysMenu *m)
 						m->speed = code ? 1 : 0; refresh_menus(m);
 						status(m->speed ? "Game speed: follows the display (60 Hz: 20% fast)." : "Game speed: the CPC's 50 Hz on any display.");
 						break;
-					case G_VIDEO: if (code <= 2 && code != video_of(m)) { m->video = code; reopen = 1; done = 1; } break;
+					case G_VIDEO: if (code <= 2 && code != video_of(m)) { m->video = code; if (!menu_rtg) { reopen = 1; done = 1; } } break;
 					}
 				}
 			}
@@ -666,8 +762,8 @@ int Sys_Menu(struct SysMenu *m)
 		/* 19 Oct 2026 (John): the menu screen stays open until the host has opened
 		 * the emulation screen in front of it (Sys_MenuClose), so Power ON or
 		 * Continue no longer flashes the Workbench for a frame or two */
-		if (reopen) close_menu();
-		if (reopen) sprintf(m->status, "Video mode: %s.", (char *)video_labels[video_of(m)]);
+		if (reopen) menu_detach(&old);   /* freed when the next one is open */
+		if (reopen && !m->status[0]) sprintf(m->status, "Video mode: %s.", (char *)video_labels[video_of(m)]);
 	} while (reopen);
 	return result;
 }
@@ -676,5 +772,5 @@ void Sys_MenuError(const char *text)
 {
 	struct EasyStruct es = { sizeof(struct EasyStruct), 0, (STRPTR)"Arnold", (STRPTR)"%s", (STRPTR)"OK" };
 	Sys_Log("error: %s", text);
-	EasyRequest(NULL, &es, NULL, (ULONG)text);
+	EasyRequest(mwin, &es, NULL, (ULONG)text);   /* mwin: on the menu's own screen (RTG or AGA); NULL = the default public screen */
 }

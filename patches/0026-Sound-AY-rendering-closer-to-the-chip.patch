@@ -1,7 +1,7 @@
-From d01dd1fa40bc3a4a71d580d352d40488c4d74652 Mon Sep 17 00:00:00 2001
+From 7829b27ff7cb7245bc3d5406038bbd71f062db37 Mon Sep 17 00:00:00 2001
 From: John Stringer <jcec_1@yahoo.co.uk>
-Date: Mon, 26 Oct 2026 07:40:39 +0000
-Subject: [PATCH 26/37] Sound: AY rendering closer to the chip
+Date: Mon, 26 Oct 2026 13:39:59 +0000
+Subject: [PATCH 26/39] Sound: AY rendering closer to the chip
 
 Measured against a reference AY render (and CPCEC): tones were point-sampled
 (aliasing), hardware envelopes ran an octave high and one-shot shapes

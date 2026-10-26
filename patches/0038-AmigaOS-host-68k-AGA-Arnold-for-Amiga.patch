@@ -1,36 +1,39 @@
-From 182b0d7158ed74f1c4455fe1ea9aebd6c6d9a740 Mon Sep 17 00:00:00 2001
+From 0d4e52fbc2c9668d188e975aba9cc49bf13801cd Mon Sep 17 00:00:00 2001
 From: John Stringer <jcec_1@yahoo.co.uk>
-Date: Mon, 26 Oct 2026 07:40:43 +0000
-Subject: [PATCH 36/37] AmigaOS host (68k AGA): Arnold for Amiga
+Date: Mon, 26 Oct 2026 13:40:04 +0000
+Subject: [PATCH 38/39] AmigaOS host (68k AGA): Arnold for Amiga
 
 src/amiga: the AmigaOS 3.x host (AGA screen with chunky-to-planar and triple
-buffering, Paula sound, rawkey keyboard matrix, joystick/CD32 pads and keys as
-joystick, GadTools menu, prefs and per-game settings, Workbench icons and
-presets, screenshots, key scripts for test runs). Built with bebbo's
+buffering, an optional RTG screen through rtgfw, Paula sound, rawkey keyboard
+matrix, joystick/CD32 pads and keys as joystick, GadTools menu, prefs,
+per-game settings and a game settings database (Games.db), Workbench icons
+and presets, screenshots, key scripts for test runs). Built with bebbo's
 amiga-gcc (-noixemul): see src/amiga/Makefile.
 
 Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
 ---
- src/amiga/Makefile       |   38 +
+ src/amiga/Makefile       |   45 +
  src/amiga/amiga_iff.c    |  103 +++
- src/amiga/amiga_keymap.c |  239 ++++++
+ src/amiga/amiga_keymap.c |  239 +++++
  src/amiga/amiga_logo.c   |  153 ++++
  src/amiga/amiga_logo.h   |    6 +
- src/amiga/amiga_menu.c   |  680 ++++++++++++++++
- src/amiga/amiga_sys.c    | 1605 ++++++++++++++++++++++++++++++++++++++
- src/amiga/amiga_sys.h    |  132 ++++
- src/amiga/amiga_wb.c     |  221 ++++++
- src/amiga/audio_conv.h   |   46 ++
- src/amiga/c2p_sh.h       |   48 ++
- src/amiga/host_amiga.c   | 1085 ++++++++++++++++++++++++++
- src/amiga/keymaplogic.c  |  135 ++++
+ src/amiga/amiga_menu.c   |  776 ++++++++++++++++
+ src/amiga/amiga_sys.c    | 1855 ++++++++++++++++++++++++++++++++++++++
+ src/amiga/amiga_sys.h    |  158 ++++
+ src/amiga/amiga_wb.c     |  236 +++++
+ src/amiga/audio_conv.h   |   46 +
+ src/amiga/c2p_sh.h       |   48 +
+ src/amiga/gamedb.c       |  157 ++++
+ src/amiga/gamedb.h       |   42 +
+ src/amiga/host_amiga.c   | 1137 +++++++++++++++++++++++
+ src/amiga/keymaplogic.c  |  135 +++
  src/amiga/keymaplogic.h  |   34 +
- src/amiga/keyscript.c    |  144 ++++
+ src/amiga/keyscript.c    |  144 +++
  src/amiga/keyscript.h    |   12 +
  src/amiga/padtest.c      |  125 +++
- src/amiga/screenshot.c   |  115 +++
+ src/amiga/screenshot.c   |  116 +++
  src/amiga/screenshot.h   |    7 +
- 19 files changed, 4928 insertions(+)
+ 21 files changed, 5574 insertions(+)
  create mode 100644 src/amiga/Makefile
  create mode 100644 src/amiga/amiga_iff.c
  create mode 100644 src/amiga/amiga_keymap.c
@@ -42,6 +45,8 @@ Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
  create mode 100644 src/amiga/amiga_wb.c
  create mode 100644 src/amiga/audio_conv.h
  create mode 100644 src/amiga/c2p_sh.h
+ create mode 100644 src/amiga/gamedb.c
+ create mode 100644 src/amiga/gamedb.h
  create mode 100644 src/amiga/host_amiga.c
  create mode 100644 src/amiga/keymaplogic.c
  create mode 100644 src/amiga/keymaplogic.h
@@ -53,10 +58,10 @@ Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
 
 diff --git a/src/amiga/Makefile b/src/amiga/Makefile
 new file mode 100644
-index 0000000..181666e
+index 0000000..ca74aa9
 --- /dev/null
 +++ b/src/amiga/Makefile
-@@ -0,0 +1,38 @@
+@@ -0,0 +1,45 @@
 +# Arnold (Kevin Thacker, GPL-2.0) for AmigaOS (AGA, 68040+ / PiStorm Emu68).
 +# Needs bebbo's m68k-amigaos-gcc on the PATH (WSL: /opt/amiga/bin).
 +#   make            -> Arnold (68040)
@@ -75,7 +80,8 @@ index 0000000..181666e
 +# objects.mak may have CRLF line endings (Windows checkout): strip \r first.
 +CORE := $(addprefix ../,$(shell tr -d '\r' < ../objects.mak | sed -n '/^CPC_O=/,/^$$/p' | tr -d '\\' | sed 's/CPC_O=//;s/\.o/.c/g'))
 +OBJDIR ?= obj-$(CPU)
-+OBJS := $(patsubst ../%.c,$(OBJDIR)/%.o,$(CORE)) $(OBJDIR)/host_amiga.o $(OBJDIR)/amiga_sys.o $(OBJDIR)/amiga_menu.o $(OBJDIR)/amiga_wb.o $(OBJDIR)/amiga_iff.o $(OBJDIR)/amiga_logo.o $(OBJDIR)/screenshot.o $(OBJDIR)/keyscript.o $(OBJDIR)/keymaplogic.o $(OBJDIR)/amiga_keymap.o
++OBJS := $(patsubst ../%.c,$(OBJDIR)/%.o,$(CORE)) $(OBJDIR)/host_amiga.o $(OBJDIR)/amiga_sys.o $(OBJDIR)/amiga_menu.o $(OBJDIR)/amiga_wb.o $(OBJDIR)/amiga_iff.o $(OBJDIR)/amiga_logo.o $(OBJDIR)/screenshot.o $(OBJDIR)/keyscript.o $(OBJDIR)/keymaplogic.o $(OBJDIR)/amiga_keymap.o $(OBJDIR)/gamedb.o \
++	$(OBJDIR)/rtgfw.o $(OBJDIR)/rtg_conv.o
 +TARGET ?= $(if $(filter 68040,$(CPU)),Arnold,Arnold-$(subst 680,0,$(CPU)))
 +
 +all: $(TARGET)
@@ -86,6 +92,12 @@ index 0000000..181666e
 +$(OBJDIR)/%.o: ../%.c
 +	@mkdir -p $(dir $@)
 +	$(CC) $(CFLAGS) -c -o $@ $<
++
++# rtgfw (RTG pilot, 26 Oct 2026): the vendored MIT framework (rtgfw/SOURCE.txt), last in
++# the link so it doesn't move the hot code; gnu99 as in its own build
++$(OBJDIR)/%.o: rtgfw/src/%.c rtgfw/src/rtgfw.h rtgfw/src/rtg_conv.h
++	@mkdir -p $(dir $@)
++	$(CC) $(CFLAGS) -std=gnu99 -Irtgfw/src -c -o $@ $<
 +
 +$(OBJDIR)/%.o: %.c amiga_sys.h
 +	@mkdir -p $(dir $@)
@@ -622,10 +634,10 @@ index 0000000..b22b3c7
 +#endif
 diff --git a/src/amiga/amiga_menu.c b/src/amiga/amiga_menu.c
 new file mode 100644
-index 0000000..e7229f6
+index 0000000..44ddeeb
 --- /dev/null
 +++ b/src/amiga/amiga_menu.c
-@@ -0,0 +1,680 @@
+@@ -0,0 +1,776 @@
 +/* Arnold on AmigaOS: the menu screen (GadTools), styled after the OS 3.2 prefs
 + * editors. 17 Oct 2026 (John): the settings live in pull-down menus (Options,
 + * Controls, Display) and the window keeps what changes from game to game.
@@ -671,9 +683,10 @@ index 0000000..e7229f6
 +/* menu item ids (nm_UserData) */
 +enum { M_NONE, M_LOADCART, M_LOADA, M_LOADB, M_EJECTALL, M_KEYS, M_SHOT, M_SAVE, M_SAVEGAME, M_FORGETGAME, M_QUIT,
 +       M_SOUND, M_HIRES, M_SKIP0, M_SKIP1, M_SKIP2, M_SKIP3, M_SKIP5, M_REF1, M_REF2, M_REF3, M_REF4,
-+       M_JOY0, M_JOY1, M_JOY2, M_PAD0, M_PAD1, M_SPEED50, M_SPEEDDISP,
++       M_JOY0, M_JOY1, M_JOY2, M_JOY3, M_PAD0, M_PAD1, M_SPEED50, M_SPEEDDISP,
 +       M_VIDAUTO, M_VIDPAL, M_VIDNTSC, M_TALL, M_WIDE, M_DISKWRITE, M_MODEL464, M_MODEL664, M_MODEL6128, M_MODELPLUS, M_MODELGX,
-+       M_LOADTAPE, M_REWIND, M_FASTTAPE, M_TAPESOUND, M_KEYEDIT, M_KEYMAPSUB, M_PRESET0 };   /* M_PRESET0 last: the presets follow it */
++       M_LOADTAPE, M_REWIND, M_FASTTAPE, M_TAPESOUND, M_KEYEDIT, M_KEYMAPSUB, M_RTG,
++       M_SCAN0, M_SCAN1, M_SCAN2, M_SCAN3, M_SCAN4, M_SCAN5, M_SCAN6, M_PRESET0 };   /* M_PRESET0 last: the presets follow it */
 +#define MAXPRESETS 12   /* menu entries for KeyMap_Presets (keymaplogic.c) */
 +#define MENU_REOPEN (-2)   /* menu_pick: the video mode changed, open the screen again */
 +
@@ -705,7 +718,7 @@ index 0000000..e7229f6
 +static const int skip_values[] = { 0, 1, 2, 3, 5 };
 +static const char *skip_short[] = { "off", "1", "2", "3", "5" };
 +static const char *refresh_short[] = { "all", "1/2", "1/3", "1/4" };
-+static const char *joykey_short[] = { "off", "cursors", "QAOP" };
++static const char *joykey_short[] = { "off", "cursors", "QAOP", "cursors X" };
 +static const char *pad_short[] = { "normal", "CD32" };
 +/* the cycle gadgets' choices (NULL-terminated for GadTools) */
 +static STRPTR model_labels[] = { (STRPTR)"CPC 464", (STRPTR)"CPC 664", (STRPTR)"CPC 6128", (STRPTR)"CPC 6128 Plus", (STRPTR)"GX4000", NULL };
@@ -762,6 +775,7 @@ index 0000000..e7229f6
 +	{ NM_SUB, (STRPTR)"Off", NULL, CHECKIT, X(0), (APTR)M_JOY0 },
 +	{ NM_SUB, (STRPTR)"Cursors + Z fire / X fire 2", NULL, CHECKIT, X(1), (APTR)M_JOY1 },
 +	{ NM_SUB, (STRPTR)"Q A O P + Space fire / M fire 2", NULL, CHECKIT, X(2), (APTR)M_JOY2 },
++	{ NM_SUB, (STRPTR)"Cursors + X fire / Z fire 2", NULL, CHECKIT, X(3), (APTR)M_JOY3 },
 +	{ NM_ITEM, (STRPTR)"Pad in port 2", NULL, 0, 0, NULL },
 +	{ NM_SUB, (STRPTR)"Normal joystick / 2-button pad", NULL, CHECKIT, X(0), (APTR)M_PAD0 },
 +	{ NM_SUB, (STRPTR)"CD32 pad", NULL, CHECKIT, X(1), (APTR)M_PAD1 },
@@ -774,6 +788,15 @@ index 0000000..e7229f6
 +	{ NM_SUB, (STRPTR)"NTSC", NULL, CHECKIT, X(2), (APTR)M_VIDNTSC },
 +	{ NM_ITEM, (STRPTR)"Full height (all 272 lines)", NULL, CHECKIT | MENUTOGGLE, 0, (APTR)M_TALL },
 +	{ NM_ITEM, (STRPTR)"Wide (all 384 columns)", NULL, CHECKIT | MENUTOGGLE, 0, (APTR)M_WIDE },
++	{ NM_ITEM, (STRPTR)"RTG screen", (STRPTR)"D", CHECKIT | MENUTOGGLE, 0, (APTR)M_RTG },
++	{ NM_ITEM, (STRPTR)"RTG scanlines", NULL, 0, 0, NULL },   /* 1.2: SYS_SCAN_* in menu order; the key N in the menu picks the next one */
++	{ NM_SUB, (STRPTR)"Off (sharp 1x picture)", NULL, CHECKIT, X(0), (APTR)M_SCAN0 },
++	{ NM_SUB, (STRPTR)"Hard 25%", NULL, CHECKIT, X(1), (APTR)M_SCAN1 },
++	{ NM_SUB, (STRPTR)"Hard 50%", NULL, CHECKIT, X(2), (APTR)M_SCAN2 },
++	{ NM_SUB, (STRPTR)"Hard 75%", NULL, CHECKIT, X(3), (APTR)M_SCAN3 },
++	{ NM_SUB, (STRPTR)"Blended light", NULL, CHECKIT, X(4), (APTR)M_SCAN4 },
++	{ NM_SUB, (STRPTR)"Blended", NULL, CHECKIT, X(5), (APTR)M_SCAN5 },
++	{ NM_SUB, (STRPTR)"Blended strong", NULL, CHECKIT, X(6), (APTR)M_SCAN6 },
 +	{ NM_ITEM, (STRPTR)"Game speed", NULL, 0, 0, NULL },
 +	{ NM_SUB, (STRPTR)"50 Hz (correct)", NULL, CHECKIT, X(0), (APTR)M_SPEED50 },
 +	{ NM_SUB, (STRPTR)"Follow display (NTSC: 20% fast)", NULL, CHECKIT, X(1), (APTR)M_SPEEDDISP },
@@ -877,15 +900,17 @@ index 0000000..e7229f6
 +static void draw_settings(struct SysMenu *m)
 +{
 +	char l[96], mid[96], comp[96], out[96];
-+	int n, jk = m->joykeys >= 0 && m->joykeys <= 2 ? m->joykeys : 0, rf = refresh_index(m->refresh);
++	int n, jk = m->joykeys >= 0 && m->joykeys <= 3 ? m->joykeys : 0, rf = refresh_index(m->refresh);
++	static const char *const scan_short[SYS_SCANS] = { "RTG", "RTG+25", "RTG+50", "RTG+75", "RTG+bl-", "RTG+bl", "RTG+bl+" };
++	const char *scrn = m->rtg ? (m->hires ? "RTG-hi" : scan_short[m->scan > 0 && m->scan < SYS_SCANS ? m->scan : 0]) : (m->hires ? "hires" : "lores");
 +	sprintf(l, "Sound %s  Screen %s  Skip %s  Refresh %s  Joykeys %s  Pad %s",
-+		m->sound ? "on" : "off", m->hires ? "hires" : "lores", skip_short[skip_index(m->skip)],
++		m->sound ? "on" : "off", scrn, skip_short[skip_index(m->skip)],
 +		refresh_short[rf], joykey_short[jk], pad_short[m->pad ? 1 : 0]);
 +	sprintf(mid, "Sound %s  Screen %s  Skip %s  Ref %s  Joy %s  Pad %s",
-+		m->sound ? "on" : "off", m->hires ? "hires" : "lores", skip_short[skip_index(m->skip)],
++		m->sound ? "on" : "off", scrn, skip_short[skip_index(m->skip)],
 +		refresh_short[rf], joykey_short[jk], pad_short[m->pad ? 1 : 0]);
 +	sprintf(comp, "Snd %s Scr %s Skip %s Ref %s Joy %s Pad %s",
-+		m->sound ? "on" : "off", m->hires ? "hires" : "lores", skip_short[skip_index(m->skip)],
++		m->sound ? "on" : "off", scrn, skip_short[skip_index(m->skip)],
 +		refresh_short[rf], joykey_short[jk], pad_short[m->pad ? 1 : 0]);
 +	KeyMap_FitLine(out, 74, l, mid, comp, m->remap);   /* 74 chars: the window ends at 8 px per char from x 20 */   /* adds "Keys: RShift=M" (or "Keys: 3 remapped") */
 +	for (n = strlen(out); n < 74; n++) out[n] = ' ';
@@ -902,7 +927,7 @@ index 0000000..e7229f6
 +	strcpy(drawer, buf);
 +	p = (char *)PathPart((STRPTR)drawer); *p = 0;
 +	fr = AllocAslRequestTags(ASL_FileRequest,
-+		ASLFR_TitleText, (ULONG)title, ASLFR_Window, (ULONG)mwin,
++		ASLFR_TitleText, (ULONG)title, ASLFR_Window, (ULONG)mwin, ASLFR_Screen, (ULONG)mscr,   /* on the menu's own screen (RTG or AGA) */
 +		ASLFR_InitialDrawer, (ULONG)drawer, ASLFR_InitialFile, (ULONG)FilePart((STRPTR)buf),
 +		ASLFR_RejectIcons, TRUE, TAG_DONE);
 +	if (!fr) return 0;
@@ -953,13 +978,34 @@ index 0000000..e7229f6
 +	return gad[id] = CreateGadget(CYCLE_KIND, g, ng, GTCY_Labels, (ULONG)labels, GTCY_Active, active, TAG_DONE);
 +}
 +
++/* A menu screen with everything on it. The next menu is opened BEFORE the old one is closed
++ * (RTG, 26 Oct 2026): nothing else (Workbench, an AGA screen) shows in between, whether the
++ * next menu is a Save Prefs, an option that reopens it, or the one after Help. */
++struct MenuHold { struct Screen *scr; struct Window *win; struct Menu *strip; struct Gadget *gl; APTR vi; int rtg; };
++static int menu_rtg;                 /* the open menu screen is an RTG screen */
++int Sys_MenuOnRtg(void) { return mscr && menu_rtg; }
++void (*Sys_MenuOpenedHook)(void);
++
++static void menu_detach(struct MenuHold *h)
++{
++	h->scr = mscr; h->win = mwin; h->strip = menustrip; h->gl = glist; h->vi = vi; h->rtg = menu_rtg;
++	mscr = NULL; mwin = NULL; menustrip = NULL; glist = NULL; vi = NULL; menu_rtg = 0;
++}
++
++static void menu_free(struct MenuHold *h)
++{
++	if (h->win) { ClearMenuStrip(h->win); CloseWindow(h->win); h->win = NULL; }
++	if (h->strip) { FreeMenus(h->strip); h->strip = NULL; }
++	if (h->gl) { FreeGadgets(h->gl); h->gl = NULL; }
++	if (h->vi) { FreeVisualInfo(h->vi); h->vi = NULL; }
++	if (h->scr) { CloseScreen(h->scr); h->scr = NULL; Sys_Log("menu: closed (%s screen)", h->rtg ? "RTG" : "AGA"); }
++}
++
 +static void close_menu(void)
 +{
-+	if (mwin) { ClearMenuStrip(mwin); CloseWindow(mwin); mwin = NULL; }
-+	if (menustrip) { FreeMenus(menustrip); menustrip = NULL; }
-+	if (glist) { FreeGadgets(glist); glist = NULL; }
-+	if (vi) { FreeVisualInfo(vi); vi = NULL; }
-+	if (mscr) { CloseScreen(mscr); mscr = NULL; }
++	struct MenuHold h;
++	menu_detach(&h);
++	menu_free(&h);
 +}
 +
 +static void draw_frame(struct SysMenu *m)
@@ -987,8 +1033,9 @@ index 0000000..e7229f6
 +{
 +	int i;
 +	int on[] = { M_SKIP0 + skip_index(m->skip), M_REF1 + refresh_index(m->refresh),
-+	             M_JOY0 + (m->joykeys >= 0 && m->joykeys <= 2 ? m->joykeys : 0), M_PAD0 + (m->pad ? 1 : 0),
-+	             M_SPEED50 + (m->speed ? 1 : 0), M_VIDAUTO + video_of(m), M_MODEL464 + model_of(m) };
++	             M_JOY0 + (m->joykeys >= 0 && m->joykeys <= 3 ? m->joykeys : 0), M_PAD0 + (m->pad ? 1 : 0),
++	             M_SPEED50 + (m->speed ? 1 : 0), M_VIDAUTO + video_of(m), M_MODEL464 + model_of(m),
++	             M_SCAN0 + (m->scan > 0 && m->scan < SYS_SCANS ? m->scan : 0) };
 +	for (i = 0; nmx[i].nm_Type != NM_END; i++) {
 +		int id = (int)(ULONG)nmx[i].nm_UserData, k, want = 0;
 +		if (!(nmx[i].nm_Flags & CHECKIT)) continue;
@@ -998,6 +1045,7 @@ index 0000000..e7229f6
 +		if (id == M_HIRES) want = m->hires ? 1 : 0;
 +		if (id == M_TALL) want = m->tall ? 1 : 0;
 +		if (id == M_WIDE) want = m->wide ? 1 : 0;
++		if (id == M_RTG) want = m->rtg ? 1 : 0;
 +		if (id == M_DISKWRITE) want = m->diskwrite ? 1 : 0;
 +		if (id == M_FASTTAPE) want = m->fasttape ? 1 : 0;
 +		if (id == M_TAPESOUND) want = m->tapesound ? 1 : 0;
@@ -1040,7 +1088,7 @@ index 0000000..e7229f6
 +	struct Gadget *g;
 +	struct DimensionInfo dims;
 +	ULONG modeid = Sys_ModeID(HIRES_KEY);
-+	int sh = 256, wh;
++	int sh = 256, wh, wl = 0, wt;
 +
 +	layout();
 +	/* pens 8-15: the logo picture's colours */
@@ -1057,6 +1105,27 @@ index 0000000..e7229f6
 +		sh = dims.Nominal.MaxY - dims.Nominal.MinY + 1;
 +	if (sh < 200) sh = 200;
 +	if (sh > 256) sh = 256;
++	/* RTG screen on (26 Oct 2026): the menu on an 8-bit RTG screen too (the smallest mode of
++	 * 640x256 or more), so the picture stays on the RTG output (HDMI) between play and menu;
++	 * the 640-wide window is centred on it. No RTG mode, or refused: the AGA menu screen. */
++	mscr = NULL; menu_rtg = 0;
++	if (m->rtg && !Sys_RtgDead) {
++		int rw, rh;
++		ULONG rid = Sys_RtgMenuMode(&rw, &rh);
++		if (!rid) { Sys_RtgDead = 1; if (!m->status[0]) strcpy(m->status, "RTG screen: no RTG board or 8-bit mode, AGA used."); }
++		if (rid) {
++			mscr = OpenScreenTags(NULL, SA_Width, rw, SA_Height, rh, SA_Depth, 8,
++				SA_DisplayID, rid, SA_Font, (ULONG)&topaz8,
++				SA_Title, (ULONG)"Arnold - Amstrad CPC / CPC Plus emulator.  (c) Kevin Thacker, GPL-2.0", SA_Pens, (ULONG)menupens,
++				SA_ShowTitle, TRUE, SA_Colors32, (ULONG)menupal, TAG_DONE);
++			if (mscr) { sh = rh; wl = (rw - 640) / 2; menu_rtg = 1; Sys_Log("menu: RTG screen mode %08lx, %dx%d", (unsigned long)rid, rw, rh); }
++			else {
++				Sys_Log("menu: RTG screen mode %08lx refused, AGA menu screen", (unsigned long)rid);
++				Sys_RtgDead = 1; if (!m->status[0]) strcpy(m->status, "RTG screen: refused, AGA used.");
++			}
++		}
++	}
++	if (!mscr) {
 +	mscr = OpenScreenTags(NULL, SA_Width, 640, SA_Height, sh, SA_Depth, 4,
 +		SA_DisplayID, modeid, SA_Font, (ULONG)&topaz8,
 +		SA_Title, (ULONG)"Arnold - Amstrad CPC / CPC Plus emulator.  (c) Kevin Thacker, GPL-2.0", SA_Pens, (ULONG)menupens,
@@ -1065,12 +1134,15 @@ index 0000000..e7229f6
 +		SA_AutoScroll, TRUE, TAG_DONE);
 +	if (!mscr) return 0;
 +	Sys_Log("menu: screen mode %08lx, %d lines", (unsigned long)modeid, sh);
++	}
 +	vi = GetVisualInfo(mscr, TAG_DONE);
 +	if (!vi) { close_menu(); return 0; }
 +	OX = mscr->WBorLeft;
 +	OY = mscr->WBorTop + mscr->Font->ta_YSize + 1;
 +	wh = OY + inner_h + mscr->WBorBottom;
 +	if (wh > sh - mscr->BarHeight - 1) wh = sh - mscr->BarHeight - 1;
++	wt = mscr->BarHeight + 1;
++	if (sh > 256 && sh - wt - wh > 1) wt += (sh - wt - wh) / 2;   /* RTG screen (taller than any AGA one): centred */
 +	g = CreateContext(&glist);
 +	memset(&ng, 0, sizeof ng);
 +	ng.ng_TextAttr = &topaz8; ng.ng_VisualInfo = vi;
@@ -1088,8 +1160,8 @@ index 0000000..e7229f6
 +	if (!g) { close_menu(); return 0; }
 +	if (!make_menus(m)) { close_menu(); return 0; }
 +	/* version, credit and build time (date and hh:mm) in the title bar */
-+	sprintf(wintitle, "Arnold v1.1 for Amiga - core: Kevin Thacker - built %.6s %.4s %.5s", __DATE__, __DATE__ + 7, __TIME__);
-+	mwin = OpenWindowTags(NULL, WA_CustomScreen, (ULONG)mscr, WA_Left, 0, WA_Top, mscr->BarHeight + 1,
++	sprintf(wintitle, "Arnold v1.2 for Amiga - core: Kevin Thacker - built %.6s %.4s %.5s", __DATE__, __DATE__ + 7, __TIME__);
++	mwin = OpenWindowTags(NULL, WA_CustomScreen, (ULONG)mscr, WA_Left, wl, WA_Top, wt,
 +		WA_Width, 640, WA_Height, wh,
 +		WA_Title, (ULONG)wintitle,
 +		WA_DepthGadget, TRUE, WA_CloseGadget, TRUE, WA_DragBar, FALSE,
@@ -1104,7 +1176,7 @@ index 0000000..e7229f6
 +	{
 +		char line[SYS_PATH + 32];
 +		snprintf(line, sizeof line, "%s  %sPrefs: %s%s", m->status[0] ? m->status : (m->can_continue ? "Paused: Help returns here, Continue resumes." : "Ready."),
-+			m->tapepos, m->prefs[0] ? (char *)FilePart((STRPTR)m->prefs) : "(none)", m->game_prefs ? " +game" : "");
++			m->tapepos, m->prefs[0] ? (char *)FilePart((STRPTR)m->prefs) : "(none)", m->game_prefs == 2 ? " +db" : m->game_prefs ? " +game" : "");
 +		m->status[0] = 0;
 +		status(line);
 +	}
@@ -1156,6 +1228,27 @@ index 0000000..e7229f6
 +	ActivateWindow(mwin);   /* the editor was the active window: give the keyboard back */
 +	draw_settings(m);
 +}
++/* RTG screen ticked or unticked: the menu (and, from Continue or Power ON, the picture) switches at once */
++static void rtg_set(struct SysMenu *m, int on)
++{
++	m->rtg = on;
++	if (on) Sys_RtgDead = 0;   /* ticked again: try once more */
++	strcpy(m->status, !on ? "RTG screen off: the AGA screen from here on."
++		: Sys_RtgAvailable() ? "RTG screen on: the menu and the picture stay on it."
++		: "RTG screen: no RTG board or 8-bit mode found, AGA stays.");
++}
++
++/* RTG scanlines chosen (Display menu, or N in the menu for the next one): used from the next Continue / Power ON */
++static void scan_set(struct SysMenu *m, int k)
++{
++	static const char *const what[SYS_SCANS] = { "off (the sharp 1x picture)", "hard 25%", "hard 50%", "hard 75%",
++		"blended light", "blended", "blended strong" };
++	char t[96];
++	m->scan = k >= 0 && k < SYS_SCANS ? k : 0;
++	sprintf(t, "RTG scanlines: %s.%s", what[m->scan], m->rtg ? " Continue shows it." : " Tick RTG screen to see them.");
++	status(t);
++}
++
 +static int menu_pick(struct SysMenu *m, struct MenuItem *item)
 +{
 +	int id = (int)(ULONG)GTMENUITEM_USERDATA(item);
@@ -1181,12 +1274,21 @@ index 0000000..e7229f6
 +	case M_SHOT: if (m->can_continue) return SYS_MENU_SHOT; status("Screenshot: nothing is running yet."); break;
 +	case M_SAVE: return SYS_MENU_SAVE;
 +	case M_SAVEGAME: return SYS_MENU_SAVEGAME;
-+	case M_FORGETGAME: if (m->game_prefs) return SYS_MENU_FORGETGAME; status("This cartridge has no game settings."); break;
++	case M_FORGETGAME:
++		if (m->game_prefs == 2) { status("These settings come from Games.db: Save for game overrides them."); break; }
++		if (m->game_prefs) return SYS_MENU_FORGETGAME;
++		status("This cartridge has no game settings.");
++		break;
 +	case M_QUIT: return SYS_MENU_QUIT;
 +	case M_SOUND: m->sound = checked; break;
 +	case M_HIRES: m->hires = checked; break;
 +	case M_TALL: m->tall = checked; break;
 +	case M_WIDE: m->wide = checked; break;
++	case M_RTG: rtg_set(m, checked);
++		return MENU_REOPEN;
++	case M_SCAN0: case M_SCAN1: case M_SCAN2: case M_SCAN3: case M_SCAN4: case M_SCAN5: case M_SCAN6:
++		scan_set(m, id - M_SCAN0);
++		break;
 +	case M_DISKWRITE: m->diskwrite = checked;
 +		status(checked ? "Disks: changes are written back to the .dsk files." : "Disks: changes are kept until Power ON or Exit only.");
 +		break;
@@ -1198,11 +1300,11 @@ index 0000000..e7229f6
 +		break;
 +	case M_SKIP0: case M_SKIP1: case M_SKIP2: case M_SKIP3: case M_SKIP5: m->skip = skip_values[id - M_SKIP0]; break;
 +	case M_REF1: case M_REF2: case M_REF3: case M_REF4: m->refresh = id - M_REF1 + 1; break;
-+	case M_JOY0: case M_JOY1: case M_JOY2: m->joykeys = id - M_JOY0; break;
++	case M_JOY0: case M_JOY1: case M_JOY2: case M_JOY3: m->joykeys = id - M_JOY0; break;
 +	case M_PAD0: case M_PAD1: m->pad = id - M_PAD0; break;
 +	case M_SPEED50: case M_SPEEDDISP: m->speed = id - M_SPEED50; set_cycle(G_SPEED, m->speed); break;
 +	case M_VIDAUTO: case M_VIDPAL: case M_VIDNTSC:
-+		if (m->video != id - M_VIDAUTO) { m->video = id - M_VIDAUTO; return MENU_REOPEN; }
++		if (m->video != id - M_VIDAUTO) { m->video = id - M_VIDAUTO; if (menu_rtg) { set_cycle(G_VIDEO, m->video); break; } return MENU_REOPEN; }
 +		break;
 +	case M_MODEL464: case M_MODEL664: case M_MODEL6128: case M_MODELPLUS: case M_MODELGX:
 +		set_model(m, id - M_MODEL464); set_cycle(G_MODEL, m->model); break;
@@ -1217,16 +1319,19 @@ index 0000000..e7229f6
 +{
 +	int result = SYS_MENU_QUIT, done, reopen;
 +	struct IntuiMessage *msg;
++	struct MenuHold old;
 +
 +	if (!GadToolsBase) GadToolsBase = OpenLibrary((STRPTR)"gadtools.library", 37);
 +	if (!AslBase) AslBase = OpenLibrary((STRPTR)"asl.library", 37);
 +	if (!GadToolsBase || !AslBase) return SYS_MENU_QUIT;
-+	close_menu();   /* one left open by the last call (e.g. a Power ON that failed) */
++	menu_detach(&old);   /* one left open by the last call (a Power ON that failed, Save Prefs on RTG): closed once the new one is up */
 +
 +	/* a new video mode closes the screen and opens it again in that mode */
 +	do {
 +		Sys_VideoMode = video_of(m);
-+		if (!open_menu(m)) return SYS_MENU_QUIT;
++		if (!open_menu(m)) { menu_free(&old); return SYS_MENU_QUIT; }
++		menu_free(&old);
++		if (Sys_MenuOpenedHook) { void (*h)(void) = Sys_MenuOpenedHook; Sys_MenuOpenedHook = NULL; h(); }
 +		done = reopen = 0;
 +		while (!done) {
 +			WaitPort(mwin->UserPort);
@@ -1252,7 +1357,7 @@ index 0000000..e7229f6
 +				else if (cls == IDCMP_RAWKEY) {
 +					if (Sys_MenuKeyLog) { if (!mkeylog) mkeylog = fopen("PROGDIR:menukeys.log", "w"); if (mkeylog) { fprintf(mkeylog, "%02x\n", code); fflush(mkeylog); } }
 +					/* Shortcuts (rawkeys): Help/C Continue, P Power ON, R Reset, Q Quit,
-+					 * S Save Prefs, G Save for game, E Edit key map, K Keyboard picture, X Screenshot. */
++					 * S Save Prefs, G Save for game, D RTG screen on/off, N next RTG scanlines, L Load cartridge, E Edit key map, K Keyboard picture, X Screenshot. */
 +					switch (code) {
 +					case 0x5f: case 0x33: if (m->can_continue) { result = SYS_MENU_CONTINUE; done = 1; } break;
 +					case 0x19: result = SYS_MENU_POWER; done = 1; break;
@@ -1262,6 +1367,9 @@ index 0000000..e7229f6
 +					case 0x32: if (m->can_continue) { result = SYS_MENU_SHOT; done = 1; } break;
 +					case 0x12: edit_keymap(m); if (menus_dirty) { menus_dirty = 0; refresh_menus(m); } break;
 +					case 0x24: result = SYS_MENU_SAVEGAME; done = 1; break;
++					case 0x22: rtg_set(m, !m->rtg); reopen = 1; done = 1; break;
++					case 0x36: scan_set(m, (m->scan + 1) % SYS_SCANS); refresh_menus(m); draw_settings(m); break;   /* N: next RTG scanlines */
++					case 0x28: take_strings(m); if (ask_file("Insert cartridge (.cpr)", m->cart)) set_string(G_CART, m->cart); break;   /* L: Load cartridge */   /* D: the RTG screen (Display menu) */
 +					case 0x27: Sys_ShowPicture(mscr, "PROGDIR:Keyboard.iff"); redraw_after_picture(m); break;
 +					}
 +				}
@@ -1285,7 +1393,7 @@ index 0000000..e7229f6
 +						m->speed = code ? 1 : 0; refresh_menus(m);
 +						status(m->speed ? "Game speed: follows the display (60 Hz: 20% fast)." : "Game speed: the CPC's 50 Hz on any display.");
 +						break;
-+					case G_VIDEO: if (code <= 2 && code != video_of(m)) { m->video = code; reopen = 1; done = 1; } break;
++					case G_VIDEO: if (code <= 2 && code != video_of(m)) { m->video = code; if (!menu_rtg) { reopen = 1; done = 1; } } break;
 +					}
 +				}
 +			}
@@ -1294,8 +1402,8 @@ index 0000000..e7229f6
 +		/* 19 Oct 2026 (John): the menu screen stays open until the host has opened
 +		 * the emulation screen in front of it (Sys_MenuClose), so Power ON or
 +		 * Continue no longer flashes the Workbench for a frame or two */
-+		if (reopen) close_menu();
-+		if (reopen) sprintf(m->status, "Video mode: %s.", (char *)video_labels[video_of(m)]);
++		if (reopen) menu_detach(&old);   /* freed when the next one is open */
++		if (reopen && !m->status[0]) sprintf(m->status, "Video mode: %s.", (char *)video_labels[video_of(m)]);
 +	} while (reopen);
 +	return result;
 +}
@@ -1304,14 +1412,14 @@ index 0000000..e7229f6
 +{
 +	struct EasyStruct es = { sizeof(struct EasyStruct), 0, (STRPTR)"Arnold", (STRPTR)"%s", (STRPTR)"OK" };
 +	Sys_Log("error: %s", text);
-+	EasyRequest(NULL, &es, NULL, (ULONG)text);
++	EasyRequest(mwin, &es, NULL, (ULONG)text);   /* mwin: on the menu's own screen (RTG or AGA); NULL = the default public screen */
 +}
 diff --git a/src/amiga/amiga_sys.c b/src/amiga/amiga_sys.c
 new file mode 100644
-index 0000000..583bda0
+index 0000000..376b4d9
 --- /dev/null
 +++ b/src/amiga/amiga_sys.c
-@@ -0,0 +1,1605 @@
+@@ -0,0 +1,1855 @@
 +/* Arnold on AmigaOS: screen, c2p, palette, keyboard and joystick.
 + * AmigaOS 3.x, AGA. Built with bebbo's m68k-amigaos-gcc, -noixemul. */
 +#include <exec/types.h>
@@ -1341,7 +1449,7 @@ index 0000000..583bda0
 +#include <stdarg.h>
 +
 +unsigned long __stack = 256 * 1024;   /* libnix: enlarge the stack at start */
-+static const char ver[] __attribute__((used)) = "$VER: Arnold 1.1 (26.10.2026) Amiga port, GPL-2.0";
++static const char ver[] __attribute__((used)) = "$VER: Arnold 1.2 (26.10.2026) Amiga port, GPL-2.0";
 +
 +/* ---- diagnostic log ---- */
 +static FILE *logf;
@@ -1818,7 +1926,7 @@ index 0000000..583bda0
 +	 * sits in a 263-line frame: its bottom ~38 lines are lost and the picture
 +	 * looks low. Put the PAL beam back (what the machine booted with). Not for an
 +	 * NTSC mode (VIDEO=NTSC) or an NTSC machine. NO_PALBEAM: leave it. */
-+	if (!Sys_Display50Hz() && (GfxBase->DisplayFlags & PAL)
++	if (!Sys_RtgActive && !Sys_Display50Hz() && (GfxBase->DisplayFlags & PAL)
 +	 && ((modeid & MONITOR_ID_MASK) == PAL_MONITOR_ID || (modeid & MONITOR_ID_MASK) == DEFAULT_MONITOR_ID)) {
 +		unsigned long was = Sys_DisplayFrameUs;
 +		custom.beamcon0 = DISPLAYPAL;
@@ -1848,6 +1956,250 @@ index 0000000..583bda0
 +	return e * 5;
 +}
 +
++/* ---- RTG screen (pilot, 26 Oct 2026; DESIGN.md 9.2 of rtg-framework) ----
++ * The single-buffer way (John's choice after the A1200 bench: ChangeScreenBuffer waits for
++ * the 60 Hz HDMI flip there, ~8-9 ms): rtgfw opens one 8-bit CLUT RTG screen and a backdrop
++ * window, and every shown frame writes the core's changed chunky lines straight into that
++ * screen's bitmap under a lock (path A + C), with the changed palette range loaded once a
++ * frame. The chunky frame is shown whole (384x272, or 768x272 hires at 1:2), centred in the
++ * smallest fitting mode, the surround in pen 0 = the CPC border colour (the colour-0 rule).
++ * No c2p, shadow, vertical shift or AGA buffers. Tearing is possible (no flip). Pacing and
++ * Paula are untouched: the native VBlank keeps running under an RTG screen and is measured
++ * as for AGA. RTGBLIT: an off-screen bitmap and a blit (for comparison); RTGBUF=3: three
++ * screen buffers. If no RTG board or mode is found, the AGA screen opens as before. */
++#include "rtgfw/src/rtgfw.h"
++#include "screenshot.h"
++int Sys_RtgWanted, Sys_RtgActive, Sys_RtgBlit, Sys_RtgBuffers = 1, Sys_RtgGrabOn;
++/* Scanlines on the RTG screen (1.2, 26 Oct 2026; rtgfw RtgOpen.scan): SYS_SCAN_* = the Scanlines
++ * setting. Off is the 1x picture as before. The others draw the picture at 2x (each CPC pixel
++ * 2x2) into a bigger RTG mode, the lower row of each pair being the scanline: hard = the line
++ * dimmed (8-bit CLUT: dimmed colours in CLUT 128-255), blended = the line and the line below
++ * averaged and dimmed (16/32-bit screen). The mode: 960x540 if there is one (exactly 2x to a
++ * 1080p HDMI output: the PiStorm's hdmi_mode=82; 270 of the 272 lines fit, the top and bottom
++ * border lines are cut), else the smallest mode of 768x544 or more (768x576, 800x600, ...).
++ * RTGDEPTH=8|16|32 and SCANMODE=<w>x<h> (tests) override the depth and the mode size. */
++int Sys_RtgScan, Sys_RtgDepth, Sys_RtgScanW, Sys_RtgScanH;
++static const unsigned char scan_kind[SYS_SCANS] = { RTG_SCAN_OFF, RTG_SCAN_HARD, RTG_SCAN_HARD, RTG_SCAN_HARD, RTG_SCAN_BLEND, RTG_SCAN_BLEND, RTG_SCAN_BLEND };
++static const unsigned char scan_pct[SYS_SCANS] = { 0, 25, 50, 75, 25, 50, 75 };
++#define BLEND_DEPTH 32                /* blended scanlines: 32-bit (exact colours); RTGDEPTH=16 for RGB565 */
++static int rtg_scan_open;             /* the scanline setting of the RTG screen open now (for the log at close) */
++int Sys_RtgDead;                    /* RTG failed once (screen or menu): AGA is used until the user ticks RTG again */
++char Sys_RtgStatus[80];
++static int rtg_avail = -1;          /* -1: not asked yet */
++static RtgOpen rtg_o;
++static unsigned long rtg_errs;
++/* Hires (768x544 chunky, render5.c ScanLines): since 1.2 the core's line-changed hook names
++ * the surface row a line was copied to (Render_ScreenYOffset + 2i), so hires uses the line
++ * marks like lores; the pilot's "every line every frame" workaround is gone. */
++
++static void rtg_log(const char *line) { Sys_Log("%s", line); }
++
++int Sys_RtgAvailable(void)
++{
++	if (rtg_avail < 0) {
++		RtgCaps c;
++		int e;
++		memset(&c, 0, sizeof c);
++		c.size = sizeof c;
++		e = rtg_query(&c);
++		rtg_avail = e == RTG_OK && (c.depths & 1);
++		Sys_Log("rtg: query: %s, system %d, depths %d, library v%d, board '%s': 8-bit RTG screen %s",
++			e == RTG_OK ? "ok" : rtg_error_text(e), (int)c.system, (int)c.depths, (int)c.lib_version, c.board, rtg_avail ? "available" : "not available");
++	}
++	return rtg_avail;
++}
++
++unsigned long Sys_RtgMenuMode(int *w, int *h)
++{
++	/* ALL the modes: the PiStorm's VideoCore lists 588 (the pilot read only the first 128, the
++	 * small ones, so on the real A1200 no 640-wide 8-bit mode was ever found and the menu opened
++	 * on the AGA screen: found 26 Oct 2026 at the first double-click of the Arnold RTG icon) */
++	enum { MAXMODES = 2048 };
++	RtgModeInfo *m;
++	int n, i, best = -1;
++	if (!Sys_RtgAvailable()) return 0;
++	m = AllocVec(MAXMODES * sizeof(RtgModeInfo), MEMF_ANY);
++	if (!m) { Sys_Log("rtg: no memory for the mode list"); return 0; }
++	n = rtg_x_modes(m, MAXMODES);
++	Sys_Log("rtg: %d RTG modes listed for the menu screen", n);
++	for (i = 0; i < n; i++) {
++		if (m[i].fmt != RTG_FMT_CLUT8 || m[i].w < 640 || m[i].h < 256) continue;
++		if (best < 0 || (long)m[i].w * m[i].h < (long)m[best].w * m[best].h) best = i;
++	}
++	if (best < 0) { FreeVec(m); Sys_Log("rtg: no 8-bit RTG mode of 640x256 or more for the menu"); return 0; }
++	*w = m[best].w; *h = m[best].h;
++	{ unsigned long id = m[best].id; FreeVec(m); return id; }
++}
++
++/* the scanline mode: SCANMODE's size, else 960x540, in the wanted depth (0 if none: rtgfw picks
++ * the smallest mode of at least 2x the picture) */
++static unsigned long rtg_scan_mode(int depth, int *w, int *h)
++{
++	enum { MAXMODES = 2048 };
++	RtgModeInfo *m;
++	int n, i, ww = Sys_RtgScanW ? Sys_RtgScanW : 960, wh = Sys_RtgScanH ? Sys_RtgScanH : 540;
++	unsigned long id = 0;
++	m = AllocVec(MAXMODES * sizeof(RtgModeInfo), MEMF_ANY);
++	if (!m) return 0;
++	n = rtg_x_modes(m, MAXMODES);
++	for (i = 0; i < n && !id; i++) {
++		int g = m[i].fmt == RTG_FMT_CLUT8 ? 8 : (m[i].fmt == RTG_FMT_RGB565 || m[i].fmt == RTG_FMT_RGB565PC) ? 16 : m[i].fmt >= RTG_FMT_ARGB32 && m[i].fmt <= RTG_FMT_RGBA32 ? 32 : 0;
++		if (g == depth && m[i].w == ww && m[i].h == wh) { id = m[i].id; *w = m[i].w; *h = m[i].h; }
++	}
++	FreeVec(m);
++	if (!id) Sys_Log("rtg: scanlines: no %dx%d %d-bit mode, the smallest of 768x544 or more", ww, wh, depth);
++	return id;
++}
++
++static int rtg_open_display(int cw, int ch, int hires)
++{
++	int e, sc = Sys_RtgScan > 0 && Sys_RtgScan < SYS_SCANS ? Sys_RtgScan : 0;
++	memset(&rtg_o, 0, sizeof rtg_o);
++	rtg_o.size = sizeof rtg_o; rtg_o.api = RTGFW_API;
++	rtg_o.src_w = cw; rtg_o.src_h = ch; rtg_o.vis_w = cw; rtg_o.vis_h = ch;   /* all of it: no WIDE/TALL crops */
++	rtg_o.aspect_x = 1; rtg_o.aspect_y = (hires && ch <= 300) ? 2 : 1;   /* the hires chunky frame is 768x544: its lines are doubled already */
++	if (sc && ch > 300) { Sys_Log("rtg: scanlines are for the lores picture: off in hires"); sc = 0; }
++	rtg_o.depth = scan_kind[sc] == RTG_SCAN_BLEND ? BLEND_DEPTH : 8;
++	if (Sys_RtgDepth == 8 || Sys_RtgDepth == 16 || Sys_RtgDepth == 32) rtg_o.depth = Sys_RtgDepth;
++	if (scan_kind[sc] == RTG_SCAN_BLEND && rtg_o.depth == 8) rtg_o.depth = 16;
++	rtg_o.scan = scan_kind[sc]; rtg_o.scan_pct = scan_pct[sc];
++	if (sc && Sys_RtgAvailable()) {
++		int mw = 0, mh = 0;
++		unsigned long id = rtg_scan_mode(rtg_o.depth, &mw, &mh);
++		if (id) {
++			/* the picture at 2x in that mode: what does not fit is cut evenly (960x540: 270 lines, 1 off top and bottom) */
++			rtg_o.mode_id = id;
++			if (rtg_o.vis_h * 2 > mh) { rtg_o.vis_h = mh / 2; rtg_o.vis_y = (ch - rtg_o.vis_h) / 2; }
++			if (rtg_o.vis_w * 2 > mw) { rtg_o.vis_w = mw / 2; rtg_o.vis_x = (cw - rtg_o.vis_w) / 2; }
++		}
++	}
++	rtg_o.buffers = Sys_RtgBlit ? 1 : (Sys_RtgBuffers >= 1 && Sys_RtgBuffers <= 3 ? Sys_RtgBuffers : 1);
++	rtg_o.border_pen = 0;
++	rtg_o.flags = RTG_F_LOG | (Sys_RtgBlit ? RTG_F_BLIT : 0);
++	rtg_o.content_hz100 = 5000;
++	rtg_o.log = rtg_log;
++	if (!Sys_RtgAvailable()) e = RTG_E_NOMODE;
++	else e = rtg_open(&rtg_o);
++	if (e != RTG_OK) {
++		Sys_Log("rtg: open failed (%s): using the AGA screen", rtg_error_text(e));
++		snprintf(Sys_RtgStatus, sizeof Sys_RtgStatus, "RTG screen: %s, AGA used.",
++			e == RTG_E_NOLIB || e == RTG_E_NOMODE ? "no RTG board or 8-bit mode" : rtg_error_text(e));
++		if (e == RTG_E_NOLIB || e == RTG_E_NOMODE) rtg_avail = 0;
++		Sys_RtgDead = 1;                  /* fall back once: no retry on every Help */
++		return 0;
++	}
++	line_dirty = AllocMem(CH, MEMF_ANY);
++	if (!line_dirty) { rtg_close(); strcpy(Sys_RtgStatus, "RTG screen: out of memory, AGA used."); Sys_RtgDead = 1; return 0; }
++	memset(line_dirty, 1, CH);            /* the first present writes every line */
++	scr = rtg_o.out_screen;
++	win = rtg_o.out_window;
++	/* as the AGA window: take wheel events ourselves (Intuition would make cursor keys of them) */
++	ModifyIDCMP(win, IDCMP_RAWKEY | IDCMP_MOUSEBUTTONS | IDCMP_EXTENDEDMOUSE);
++	Sys_RtgActive = 1;
++	Sys_VShiftOn = 0; Sys_VShiftOn_Last = 0;
++	SW = cw; SH = ch; XOFF = YOFF = 0;
++	flipped = 0; shown = 0; safe_out = disp_out = 0;
++	pal32[0] = 256UL << 16;
++	pal32[1 + 256 * 3] = 0;
++	pal32[1 + SYS_OSD_PEN * 3] = 0xFFFFFFFF; pal32[2 + SYS_OSD_PEN * 3] = 0xDDDDDDDD; pal32[3 + SYS_OSD_PEN * 3] = 0;
++	pal_dirty = 1; pal_dirty_all = 1;
++	rtg_errs = 0;
++	Sys_Log("rtg: screen %08lx %dx%d, picture %dx%d at %d,%d (x%d,%d), format %d, %s, chip free %lu", (unsigned long)rtg_o.out_mode_id,
++		(int)rtg_o.out_w, (int)rtg_o.out_h, cw * rtg_o.out_scale_x, ch * rtg_o.out_scale_y, (int)rtg_o.out_x, (int)rtg_o.out_y,
++		(int)rtg_o.out_scale_x, (int)rtg_o.out_scale_y, (int)rtg_o.out_fmt,
++		rtg_o.out_buffers == 0 ? "off-screen bitmap + blit" : rtg_o.out_buffers == 1 ? "single buffer, direct writes" : "screen buffers",
++		(unsigned long)AvailMem(MEMF_CHIP));
++	rtg_scan_open = sc;
++	if (sc) Sys_Log("rtg: scanlines %s (%s %d%%), lines %d-%d of the frame shown", Sys_ScanWords[sc],
++		scan_kind[sc] == RTG_SCAN_HARD ? "hard" : "blended", (int)scan_pct[sc], (int)rtg_o.vis_y, (int)(rtg_o.vis_y + rtg_o.vis_h - 1));
++	measure_vblank(rtg_o.out_mode_id);    /* the native VBlank: pacing and Paula as on AGA */
++	Sys_Log("display: open (RTG)");
++	return 1;
++}
++
++static void rtg_show(const unsigned char *chunky, int pitch)
++{
++	static ULONG rgb[256];
++	unsigned long t0 = Sys_Micros(), t1;
++	RtgStats s0, s1;
++	int e;
++	rtg_get_stats(&s0);
++	if (Sys_PalAll) pal_dirty = pal_dirty_all = 1;
++	if (pal_dirty) {
++		int i, lo, hi;
++		if (pal_dirty_all) { pal_lo = 0; pal_hi = 255; pal_dirty_all = 0; }
++		lo = pal_lo; hi = pal_hi;
++		for (i = lo; i <= hi; i++)
++			rgb[i] = ((pal32[1 + i * 3] >> 24) << 16) | ((pal32[2 + i * 3] >> 24) << 8) | (pal32[3 + i * 3] >> 24);
++		rtg_set_palette(0, lo, hi - lo + 1, rgb + lo, RTG_RGB24);   /* loaded by rtg_present (LoadRGB32 of that range) */
++		pal_dirty = 0;
++		Sys_Perf.palette_loads++;
++	}
++	e = rtg_present(chunky, pitch, Sys_AllLines ? NULL : line_dirty);
++	memset(line_dirty, 0, CH);            /* a skipped frame's lines stay owed inside rtgfw */
++	if (e != RTG_OK && rtg_errs++ < 10) Sys_Log("rtg: present: %s (frame %lu)", rtg_error_text(e), frames);
++	rtg_get_stats(&s1);
++	Sys_Perf.c2p_lines += s1.lines_written - s0.lines_written;
++	Sys_Perf.c2p_chip_longs += (s1.bytes_written - s0.bytes_written) >> 2;   /* RTG: bytes written to the board / 4 */
++	Sys_Perf.c2p_frames++;
++	Sys_Perf.line_bytes = SW;             /* one byte a pixel */
++	frames++;
++	t1 = Sys_Micros(); Sys_Perf.c2p_us += t1 - t0;
++}
++
++int Sys_RtgGrab(const char *name, const unsigned char *chunky, int pitch)
++{
++	static unsigned char pal[256][3];
++	static ULONG clut[256];
++	unsigned char *pens;
++	int i, e, w, h;
++	if (!Sys_RtgActive) return 0;
++	rtg_show(chunky, pitch);              /* TURBO shows every 25th frame only: make sure this one is on the screen */
++	w = rtg_o.out_w; h = rtg_o.out_h;
++	if (rtg_o.out_fmt != RTG_FMT_CLUT8) {
++		/* 16/32-bit screen (blended scanlines): the screen as RGB, saved as a PPM beside the name */
++		uint32_t *rgb = AllocVec((long)w * h * 4, MEMF_ANY);
++		char ppm[300];
++		FILE *f;
++		long k;
++		if (!rgb) return 0;
++		e = rtg_x_read_rgb(rgb);
++		strncpy(ppm, name, sizeof ppm - 5); ppm[sizeof ppm - 5] = 0;
++		{ char *dot = strrchr(ppm, '.'); if (dot) *dot = 0; }
++		strcat(ppm, ".ppm");
++		if (e == RTG_OK && (f = fopen(ppm, "wb"))) {
++			unsigned char *row = (unsigned char *)rgb;   /* rewritten in place: 4 bytes in, 3 out */
++			fprintf(f, "P6\n%d %d\n255\n", w, h);
++			for (k = 0; k < (long)w * h; k++) { uint32_t v = rgb[k]; row[3 * k] = v >> 16; row[3 * k + 1] = v >> 8; row[3 * k + 2] = v; }
++			fwrite(row, 3, (long)w * h, f);
++			fclose(f);
++		} else Sys_Log("rtg: grab %s: %s", ppm, e == RTG_OK ? "can't write" : rtg_error_text(e));
++		FreeVec(rgb);
++		return e == RTG_OK;
++	}
++	pens = malloc((long)w * h);
++	if (!pens) return 0;
++	e = rtg_x_read_frame(pens, (uint32_t *)clut);
++	if (e == RTG_OK) {
++		for (i = 0; i < 256; i++) { pal[i][0] = clut[i] >> 16; pal[i][1] = clut[i] >> 8; pal[i][2] = clut[i]; }
++		Screenshot_SavePNG(name, pens, w, h, w, pal);
++	} else Sys_Log("rtg: grab %s: %s", name, rtg_error_text(e));
++	free(pens);
++	return e == RTG_OK;
++}
++
++static void rtg_close_display(void)
++{
++	uint32_t hl = 0;
++	if (rtg_scan_open && rtg_x_scan_info(&hl) == RTG_SCAN_HARD && hl && rtg_o.out_fmt == RTG_FMT_CLUT8)
++		Sys_Log("rtg: scanlines: %lu lines had pens 128+ (their scanline is not dimmed)", (unsigned long)hl);
++	rtg_close();                          /* waits for any buffer messages, closes the window and screen */
++	scr = NULL; win = NULL;
++	if (line_dirty) { FreeMem(line_dirty, CH); line_dirty = NULL; }
++	Sys_RtgActive = 0;
++	Sys_Log("display: closed (RTG)");
++}
++
 +int Sys_OpenDisplay(int cw, int ch, int hires)
 +{
 +	struct Rectangle rect;
@@ -1858,6 +2210,7 @@ index 0000000..583bda0
 +	flipped = 0;
 +	c2p_init();
 +	quit_requested = 0; kq_head = kq_tail = 0;
++	if (Sys_RtgWanted && !Sys_RtgDead && rtg_open_display(cw, ch, hires)) return 1;   /* else the AGA screen, as before */
 +	/* Standard overscan, not MAX: MAX's rectangle starts further left than a
 +	 * monitor shows (first WinUAE run: the left border was off the screen). */
 +	if (!QueryOverscan(modeid, &rect, OSCAN_STANDARD)) {
@@ -2078,6 +2431,7 @@ index 0000000..583bda0
 +{
 +	struct Message *m;
 +	int j;
++	if (!safeport) return;   /* RTG screen (no AGA buffers) or no display */
 +	while ((m = GetMsg(safeport))) {
 +		for (j = 0; j < NBUF; j++)
 +			if (sb[j] && m == &sb[j]->sb_DBufInfo->dbi_SafeMessage) { buf_safe[safe_for[j]] = 1; safe_pend[j] = 0; }
@@ -2089,6 +2443,7 @@ index 0000000..583bda0
 +{
 +	struct Message *m;
 +	int j;
++	if (!dispport) return;   /* RTG screen: Sys_WaitFrame calls this every frame, and GetMsg(NULL) reads low memory */
 +	while ((m = GetMsg(dispport))) {
 +		for (j = 0; j < NBUF; j++)
 +			if (sb[j] && m == &sb[j]->sb_DBufInfo->dbi_DispMessage) disp_pend[j] = 0;
@@ -2099,6 +2454,7 @@ index 0000000..583bda0
 +void Sys_CloseDisplay(void)
 +{
 +	int i;
++	if (Sys_RtgActive) { rtg_close_display(); return; }
 +	while (safe_out > 0) { WaitPort(safeport); collect_safe(); }
 +	while (disp_out > 0) { WaitPort(dispport); collect_disp(); }
 +#ifdef VSHIFT
@@ -2142,7 +2498,7 @@ index 0000000..583bda0
 +	if (line_dirty) { FreeMem(line_dirty, CH); line_dirty = NULL; }
 +	for (i = 0; i < NBUF; i++) if (line_lvl[i]) { FreeVec(line_lvl[i]); line_lvl[i] = NULL; }
 +	for (i = 0; i < NBUF; i++) if (shadow[i]) { FreeVec(shadow[i]); shadow[i] = NULL; }
-+	if (scr) { CloseScreen(scr); scr = NULL; }
++	if (scr) { CloseScreen(scr); scr = NULL; Sys_Log("display: closed"); }
 +	if (safeport) { DeleteMsgPort(safeport); safeport = NULL; }
 +	if (dispport) { DeleteMsgPort(dispport); dispport = NULL; }
 +}
@@ -2214,6 +2570,7 @@ index 0000000..583bda0
 +	struct BitMap *bm;
 +	int y, next, bit, wr, moved;
 +
++	if (Sys_RtgActive) { rtg_show(chunky, pitch); return; }
 +	if (!scr) return;
 +	t0 = Sys_Micros();
 +	next = (shown + 1) % NBUF;
@@ -2786,6 +3143,7 @@ index 0000000..583bda0
 +{
 +	Sys_Log("message: %s", text);
 +	struct EasyStruct es = { sizeof(struct EasyStruct), 0, "Arnold", "%s", "OK" };
++	if (Sys_RtgActive) { EasyRequest(win, &es, NULL, (ULONG)text); return; }   /* on the RTG screen, which stays up */
 +	if (scr) Sys_CloseDisplay();
 +	EasyRequest(NULL, &es, NULL, (ULONG)text);
 +}
@@ -2919,10 +3277,10 @@ index 0000000..583bda0
 +}
 diff --git a/src/amiga/amiga_sys.h b/src/amiga/amiga_sys.h
 new file mode 100644
-index 0000000..1c4c068
+index 0000000..3bc1365
 --- /dev/null
 +++ b/src/amiga/amiga_sys.h
-@@ -0,0 +1,132 @@
+@@ -0,0 +1,158 @@
 +/* Arnold on AmigaOS: the OS-facing half of the host. No Arnold headers here
 + * (cpcglob.h has its own BOOL, which clashes with exec/types.h), so
 + * host_amiga.c talks to the Amiga through this small interface only. */
@@ -2978,7 +3336,7 @@ index 0000000..1c4c068
 +	int wide;                /* full-width screen: up to all 384 CPC columns (lores overscan), for games drawn to the left/right border */
 +	int tall;                /* full-height screen: all 272 CPC lines (PAL overscan), for games drawn into the top/bottom border */
 +	int skip, refresh;       /* frame skip (max in a row, 0 off) and fixed refresh (1 = every frame) */
-+	int joykeys;             /* keyboard as joystick: 0 off, 1 cursors, 2 QAOP */
++	int joykeys;             /* keyboard as joystick: 0 off, 1 cursors, 2 QAOP, 3 cursors + X fire */
 +	int pad;                 /* port 2 pad: 0 standard 2-button joystick, 1 CD32 pad */
 +	int speed;               /* game speed: 0 the CPC's 50 Hz (E-clock timer off PAL), 1 follow the display */
 +	int video;               /* video mode of both screens: 0 Auto (as Workbench), 1 PAL, 2 NTSC */
@@ -2986,7 +3344,7 @@ index 0000000..1c4c068
 +	int running_model;       /* the model of the machine that is running (-1 none) */
 +	int can_continue;        /* a machine is running (Help brought us here) */
 +	char prefs[SYS_PATH];    /* shown in the status line */
-+	int game_prefs;          /* the cartridge has its own <file>.prefs (shown) */
++	int game_prefs;          /* 1: the game has its own <file>.prefs (+game), 2: settings from Games.db (+db) */
 +	char status[80];         /* one-off status line for the next menu (cleared) */
 +	char remap[128];         /* the key map (remap= text): the host fills it before the menu, takes it back after */
 +	int diskwrite;           /* write changed disks back to their .dsk files (22 Oct 2026) */
@@ -2995,6 +3353,8 @@ index 0000000..1c4c068
 +	int tapesound;           /* Tape sound: the tape signal is audible at real speed (25 Oct 2026) */
 +	int tape_rewind;         /* set by the menu: rewind the tape on Continue / Reset */
 +	char tapepos[32];        /* "Tape 3/5  " for the status line (host fills it) */
++	int rtg;                 /* RTG screen (experimental, 26 Oct 2026): the emulation (and the menu) on an RTG board's 8-bit screen */
++	int scan;                /* Scanlines on the RTG screen (SYS_SCAN_*, 1.2) */
 +};
 +enum { SYS_MODEL_464 = 0, SYS_MODEL_664, SYS_MODEL_6128, SYS_MODEL_PLUS, SYS_MODEL_GX4000, SYS_MODELS };
 +enum { SYS_MENU_QUIT = 0, SYS_MENU_POWER, SYS_MENU_CONTINUE, SYS_MENU_RESET, SYS_MENU_SAVE,
@@ -3004,11 +3364,13 @@ index 0000000..1c4c068
 +int  Sys_Menu(struct SysMenu *m);
 +void Sys_MenuClose(void);           /* closes the menu screen Sys_Menu leaves open (call after the emulation screen is up) */
 +void Sys_MenuError(const char *text);
++extern void (*Sys_MenuOpenedHook)(void);   /* called once a new menu screen is up (RTG: the host then closes the emulation screen, so nothing else shows between) */
++int  Sys_MenuOnRtg(void);           /* the menu screen open now is an RTG screen */
 +void Sys_ShowPicture(void *screen, const char *name);   /* amiga_iff.c: modal IFF viewer */
 +
 +/* Workbench start (amiga_wb.c): fills st from the icon's ToolTypes and a
 + * project icon; returns 1 when started from Workbench. */
-+struct SysStart { char prefs[SYS_PATH], media[SYS_PATH], remap[128]; int menu, hires, tall, wide, nosound, skip, refresh, joykeys, pad, speed, video, model, diskwrite, fasttape, tapesound; char tape[SYS_PATH]; };   /* skip -1, refresh 0, others -1: not given */
++struct SysStart { char prefs[SYS_PATH], media[SYS_PATH], remap[128]; int menu, hires, tall, wide, nosound, skip, refresh, joykeys, pad, speed, video, model, diskwrite, fasttape, tapesound, rtg, scan; char tape[SYS_PATH]; };   /* skip -1, refresh 0, others -1: not given */
 +int Sys_ParseModel(const char *v);   /* "464" "664" "6128" "PLUS" "GX4000" (any case) -> SYS_MODEL_*, -1 if not one */
 +int Sys_ParseVideo(const char *v);   /* "AUTO" "PAL" "NTSC" or 0-2 -> 0-2, -1 if not one */
 +int Sys_ParseSpeed(const char *v);   /* "50" or 0 -> 0, "DISPLAY" or 1 -> 1, -1 if not one */
@@ -3016,6 +3378,28 @@ index 0000000..1c4c068
 +int  Sys_WBStart(int argc, char **argv, struct SysStart *st);
 +
 +unsigned long Sys_Millis(void);
++
++/* RTG screen (pilot, 26 Oct 2026; rtgfw, the vendored MIT framework in rtgfw/). Single buffer:
++ * one 8-bit CLUT RTG screen written directly under a bitmap lock, only the changed lines, the
++ * palette loaded once a frame; no ChangeScreenBuffer, so nothing waits for the RTG refresh.
++ * Pacing and sound stay as on AGA. Off: the AGA code runs exactly as before. */
++extern int Sys_RtgWanted;            /* the next Sys_OpenDisplay tries the RTG screen first (menu.rtg) */
++extern int Sys_RtgActive;            /* the display open now is the RTG screen */
++extern int Sys_RtgBlit;              /* RTGBLIT (diagnostic): off-screen bitmap + blit of the changed lines */
++extern int Sys_RtgBuffers;           /* RTGBUF=1|3 (diagnostic): 3 = ChangeScreenBuffer triple buffering */
++extern int Sys_RtgDead;              /* RTG failed once: AGA until the user ticks RTG screen again (no retry on every Help) */
++extern int Sys_RtgGrabOn;            /* RTGGRAB (tests): every SNAP also reads the RTG screen back (rtg-NNNNN.png) */
++extern char Sys_RtgStatus[80];       /* why RTG fell back to AGA, for the next menu's status line ("" none) */
++int  Sys_RtgAvailable(void);         /* an RTG board with an 8-bit CLUT mode (asked once) */
++unsigned long Sys_RtgMenuMode(int *w, int *h);   /* the 8-bit RTG mode for the menu screen (>= 640x256), 0 if none */
++int  Sys_RtgGrab(const char *name, const unsigned char *chunky, int pitch);   /* RTG mode: show chunky, save the screen as a PNG */
++/* Scanlines on the RTG screen (1.2): Off, Hard 25/50/75% (8-bit), Blended light/normal/strong (32-bit) */
++enum { SYS_SCAN_OFF = 0, SYS_SCAN_H25, SYS_SCAN_H50, SYS_SCAN_H75, SYS_SCAN_BLIGHT, SYS_SCAN_BLEND, SYS_SCAN_BSTRONG, SYS_SCANS };
++extern int Sys_RtgScan;              /* SYS_SCAN_* for the next RTG screen (menu.scan) */
++extern int Sys_RtgDepth;             /* RTGDEPTH=8|16|32 (tests): the RTG screen's depth, 0 = by the scanline setting */
++extern int Sys_RtgScanW, Sys_RtgScanH;   /* SCANMODE=<w>x<h> (tests): the scanline mode size, 0 = 960x540 */
++extern const char *Sys_ScanWords[SYS_SCANS];   /* prefs words: off 25 50 75 blendlight blend blendstrong */
++int  Sys_ParseScan(const char *v);   /* a prefs word (any case; also hard25..hard75, 0) -> SYS_SCAN_*, -1 if not one */
 +
 +/* Performance counters (timer.device E-clock): time in c2p (conversion plus the
 + * chip RAM writes), time waiting for flips/VBlank, lines converted. */
@@ -3057,10 +3441,10 @@ index 0000000..1c4c068
 +#endif
 diff --git a/src/amiga/amiga_wb.c b/src/amiga/amiga_wb.c
 new file mode 100644
-index 0000000..56c612a
+index 0000000..e1526e1
 --- /dev/null
 +++ b/src/amiga/amiga_wb.c
-@@ -0,0 +1,221 @@
+@@ -0,0 +1,236 @@
 +/* Arnold on AmigaOS: Workbench start. With libnix, main() gets argc == 0 and
 + * argv == the WBStartup message. We read the PREFS ToolType from the icon we
 + * were started from (Arnold's own, or a preset project icon) and take a project icon
@@ -3117,6 +3501,10 @@ index 0000000..56c612a
 +	if (tt) st->fasttape = atoi(tt) ? 1 : 0;   /* FASTTAPE=0|1: fast tape loading (24 Oct 2026) */
 +	tt = (char *)FindToolType((STRPTR *)dobj->do_ToolTypes, (STRPTR)"TAPESOUND");
 +	if (tt) st->tapesound = (!*tt || atoi(tt)) ? 1 : 0;   /* TAPESOUND=0|1 (25 Oct 2026; a bare TAPESOUND means on) */
++	tt = (char *)FindToolType((STRPTR *)dobj->do_ToolTypes, (STRPTR)"RTG");
++	if (tt) st->rtg = (!*tt || atoi(tt)) ? 1 : 0;   /* RTG=0|1, a bare RTG means on: the RTG screen (pilot, 26 Oct 2026) */
++	tt = (char *)FindToolType((STRPTR *)dobj->do_ToolTypes, (STRPTR)"SCANLINES");
++	if (tt) st->scan = Sys_ParseScan(tt);   /* SCANLINES=OFF|25|50|75|BLENDLIGHT|BLEND|BLENDSTRONG (RTG screen, 1.2) */
 +	tt = (char *)FindToolType((STRPTR *)dobj->do_ToolTypes, (STRPTR)"TAPE");
 +	if (tt) strncpy(st->tape, tt, SYS_PATH - 1);   /* TAPE=<file.cdt> */
 +	FreeDiskObject(dobj);
@@ -3196,7 +3584,7 @@ index 0000000..56c612a
 +	struct WBArg *wa;
 +	memset(st, 0, sizeof *st);
 +	st->skip = -1;
-+	st->joykeys = -1; st->pad = -1; st->speed = -1; st->video = -1; st->model = -1; st->diskwrite = -1; st->fasttape = -1; st->tapesound = -1;
++	st->joykeys = -1; st->pad = -1; st->speed = -1; st->video = -1; st->model = -1; st->diskwrite = -1; st->fasttape = -1; st->tapesound = -1; st->rtg = -1; st->scan = -1;
 +	if (argc != 0) return 0;
 +	wbs = (struct WBStartup *)argv;
 +	if (!wbs || wbs->sm_NumArgs < 1) return 0;
@@ -3214,7 +3602,7 @@ index 0000000..56c612a
 +		memset(&pre, 0, sizeof pre);
 +		pre.skip = -1;
 +		pre.joykeys = -1; pre.pad = -1; pre.speed = -1; pre.video = -1; pre.model = -1; pre.diskwrite = -1;
-+		pre.fasttape = -1; pre.tapesound = -1;
++		pre.fasttape = -1; pre.tapesound = -1; pre.rtg = -1; pre.scan = -1;
 +		if (IconBase && read_tooltypes(wa[1].wa_Name, &pre) && pre.prefs[0]) {
 +			char dir[SYS_PATH];
 +			if (strchr(pre.prefs, ':') == NULL && NameFromLock(wa[1].wa_Lock, (STRPTR)dir, SYS_PATH)) {
@@ -3238,6 +3626,8 @@ index 0000000..56c612a
 +			if (pre.diskwrite >= 0) st->diskwrite = pre.diskwrite;
 +			if (pre.fasttape >= 0) st->fasttape = pre.fasttape;
 +			if (pre.tapesound >= 0) st->tapesound = pre.tapesound;
++			if (pre.rtg >= 0) st->rtg = pre.rtg;
++			if (pre.scan >= 0) st->scan = pre.scan;
 +			if (pre.tape[0]) strcpy(st->tape, pre.tape);
 +		} else if (NameFromLock(wa[1].wa_Lock, (STRPTR)st->media, SYS_PATH))
 +			AddPart((STRPTR)st->media, wa[1].wa_Name, SYS_PATH);
@@ -3250,6 +3640,9 @@ index 0000000..56c612a
 +const char *Sys_ModelNames[SYS_MODELS] = { "464", "664", "6128", "PLUS", "GX4000" };
 +const char *Sys_VideoNames[3] = { "AUTO", "PAL", "NTSC" };
 +const char *Sys_SpeedNames[2] = { "50", "DISPLAY" };
++const char *Sys_ScanWords[SYS_SCANS] = { "off", "25", "50", "75", "blendlight", "blend", "blendstrong" };
++static const char *scan_upper[SYS_SCANS] = { "OFF", "25", "50", "75", "BLENDLIGHT", "BLEND", "BLENDSTRONG" };
++static const char *scan_hard[4] = { "0", "HARD25", "HARD50", "HARD75" };
 +
 +static int word_index(const char *v, const char **names, int n)
 +{
@@ -3280,6 +3673,12 @@ index 0000000..56c612a
 +{
 +	int i = word_index(v, Sys_SpeedNames, 2);
 +	if (i < 0 && (v[0] == '0' || v[0] == '1') && !v[1]) i = v[0] - '0';
++	return i;
++}
++int Sys_ParseScan(const char *v)
++{
++	int i = word_index(v, scan_upper, SYS_SCANS);
++	if (i < 0) i = word_index(v, scan_hard, 4);
 +	return i;
 +}
 diff --git a/src/amiga/audio_conv.h b/src/amiga/audio_conv.h
@@ -3388,12 +3787,223 @@ index 0000000..a598fc2
 +	}
 +	return w;
 +}
+diff --git a/src/amiga/gamedb.c b/src/amiga/gamedb.c
+new file mode 100644
+index 0000000..5f27e14
+--- /dev/null
++++ b/src/amiga/gamedb.c
+@@ -0,0 +1,157 @@
++/* Game settings database: CRC-32 of the image and the Games.db parser (see gamedb.h). */
++#include <stdio.h>
++#include <string.h>
++#include "gamedb.h"
++
++unsigned long GameDB_Crc32Update(unsigned long crc, const unsigned char *p, unsigned long n)
++{
++	static unsigned long tab[256];
++	static int made;
++	unsigned long i, k;
++	if (!made) {
++		for (i = 0; i < 256; i++) {
++			unsigned long c = i;
++			for (k = 0; k < 8; k++) c = (c & 1) ? 0xEDB88320UL ^ (c >> 1) : c >> 1;
++			tab[i] = c;
++		}
++		made = 1;
++	}
++	crc = ~crc & 0xFFFFFFFFUL;
++	while (n--) crc = tab[(crc ^ *p++) & 0xFF] ^ (crc >> 8);
++	return ~crc & 0xFFFFFFFFUL;
++}
++
++int GameDB_CrcFile(const char *path, unsigned long *crc)
++{
++	unsigned char buf[4096];
++	unsigned long c = 0;
++	size_t n;
++	FILE *f = fopen(path, "rb");
++	if (!f) return 0;
++	while ((n = fread(buf, 1, sizeof buf, f)) > 0) c = GameDB_Crc32Update(c, buf, (unsigned long)n);
++	if (ferror(f)) { fclose(f); return 0; }
++	fclose(f);
++	*crc = c;
++	return 1;
++}
++
++/* one line into line[GDB_LINE]; a longer line is cut and its rest skipped, so it can
++ * never spill into the next line. 0 at the end of the file. */
++static int read_line(FILE *f, char *line)
++{
++	int n = 0, c;
++	for (;;) {
++		c = fgetc(f);
++		if (c == EOF) { line[n] = 0; return n > 0; }
++		if (c == '\n' || c == '\r') {
++			if (n == 0 && c == '\r') continue;   /* part of CR+LF, or an empty line: next */
++			break;
++		}
++		if (n < GDB_LINE - 1) line[n++] = (char)c;
++	}
++	line[n] = 0;
++	return 1;
++}
++
++/* "[1A2B3C4D] Title": 8 hex digits exactly; the CRC in *crc, the title (after the
++ * bracket, spaces skipped) in *title. 0 if the line is not a header. */
++static int parse_header(const char *s, unsigned long *crc, const char **title)
++{
++	unsigned long v = 0;
++	int i;
++	if (*s != '[') return 0;
++	s++;
++	for (i = 0; i < 8; i++, s++) {
++		int d;
++		if (*s >= '0' && *s <= '9') d = *s - '0';
++		else if (*s >= 'A' && *s <= 'F') d = *s - 'A' + 10;
++		else if (*s >= 'a' && *s <= 'f') d = *s - 'a' + 10;
++		else return 0;
++		v = (v << 4) | (unsigned long)d;
++	}
++	if (*s != ']') return 0;
++	s++;
++	while (*s == ' ' || *s == '\t') s++;
++	*crc = v; *title = s;
++	return 1;
++}
++
++int GameDB_Lookup(FILE *db, unsigned long crc, GameDB_SetFn set, void *user, char *title, int tsize)
++{
++	char line[GDB_LINE], *v, *k, *e;
++	unsigned long hc;
++	const char *t;
++	int matched = 0, in_block = 0, settings = 0;
++
++	if (title && tsize > 0) title[0] = 0;
++	if (!db) return 0;
++	crc &= 0xFFFFFFFFUL;
++	while (read_line(db, line)) {
++		k = line;
++		while (*k == ' ' || *k == '	') k++;
++		if (!*k || *k == ';' || *k == '#') continue;
++		if (*k == '[') {
++			if (!parse_header(k, &hc, &t)) continue;   /* a header we can't read: skipped */
++			if (settings) {                            /* a new game: the last block is over */
++				if (matched) break;
++				in_block = 0; settings = 0;
++			}
++			if (hc == crc) {
++				in_block = 1;
++				if (!matched && title && tsize > 0) { strncpy(title, t, (size_t)tsize - 1); title[tsize - 1] = 0; }
++				matched = 1;
++			}
++			continue;
++		}
++		v = strchr(k, '=');
++		if (!v) continue;
++		*v++ = 0;
++		e = k + strlen(k);                             /* trim the key's trailing blanks, the value's leading ones */
++		while (e > k && (e[-1] == ' ' || e[-1] == '	')) *--e = 0;
++		while (*v == ' ' || *v == '	') v++;
++		settings = 1;
++		if (in_block && set) set(k, v, user);
++	}
++	return matched;
++}
++
++unsigned long GameDB_LastCrc;
++int GameDB_LastCrcOk;
++
++int GameDB_Settings(const char *prefs_name, const char *disk_a, const char *dbpath,
++	GameDB_SetFn set, void *user, char *title, int tsize)
++{
++	char img[1024], line[GDB_LINE], *v;
++	unsigned long crc;
++	size_t n = strlen(prefs_name);
++	FILE *f;
++	int hit;
++
++	if (title && tsize > 0) title[0] = 0;
++	GameDB_LastCrcOk = 0;
++	f = fopen(prefs_name, "r");
++	if (f) {
++		while (read_line(f, line)) {
++			v = strchr(line, '=');
++			if (!v) continue;
++			*v++ = 0;
++			if (set) set(line, v, user);
++		}
++		fclose(f);
++		return GDB_PREFS;
++	}
++	if (n < 7 || n - 6 > sizeof img - 8) return GDB_NONE;
++	memcpy(img, prefs_name, n - 6); img[n - 6] = 0;   /* the image: the .prefs name without ".prefs" */
++	if (disk_a && disk_a[0] && !strcmp(img, disk_a)) {
++		strcat(img, ".bak");
++		f = fopen(img, "rb");
++		if (f) fclose(f); else img[n - 6] = 0;
++	}
++	if (!GameDB_CrcFile(img, &crc)) return GDB_NONE;
++	GameDB_LastCrc = crc; GameDB_LastCrcOk = 1;
++	f = fopen(dbpath, "r");
++	if (!f) return GDB_NONE;
++	hit = GameDB_Lookup(f, crc, set, user, title, tsize);
++	fclose(f);
++	return hit ? GDB_DB : GDB_NONE;
++}
+diff --git a/src/amiga/gamedb.h b/src/amiga/gamedb.h
+new file mode 100644
+index 0000000..818df89
+--- /dev/null
++++ b/src/amiga/gamedb.h
+@@ -0,0 +1,42 @@
++#ifndef GAMEDB_H
++#define GAMEDB_H
++/* Game settings database (Games.db, 1.2). Plain C, stdio only, no OS calls, so
++ * the parser is unit-tested on the PC (tools/gamedb_test.sh).
++ *
++ * File format (text, CR or LF line ends, lines up to GDB_LINE-1 characters):
++ *   ; comment            (also '#'), blank lines ignored
++ *   [A1B2C3D4] Title     header: the CRC-32 (8 hex digits) of a cartridge, disk A or
++ *                        tape image, then the title as a comment. Several headers in
++ *                        a row share the settings lines that follow them.
++ *   key=value            the settings of a game's .prefs file (sound, hires, joykeys,
++ *                        tall, wide, remap, diskwrite, fasttape, tapesound), applied
++ *                        to the headers just above them. Unknown keys are passed on
++ *                        too; the caller ignores what it does not know. */
++#include <stdio.h>
++
++#define GDB_LINE 192            /* longest line read (a remap= line is at most 6 + 127) */
++
++unsigned long GameDB_Crc32Update(unsigned long crc, const unsigned char *p, unsigned long n);   /* start with 0 */
++int GameDB_CrcFile(const char *path, unsigned long *crc);     /* 1 = read, 0 = can't open / read error */
++/* Reads db up to the block with this CRC and calls set(key, value, user) for each of
++ * its settings lines. title (may be NULL) gets the header's title. Returns 1 if the
++ * CRC has a block, 0 if not. Never writes outside the given buffers. */
++typedef void (*GameDB_SetFn)(const char *key, const char *val, void *user);
++int GameDB_Lookup(FILE *db, unsigned long crc, GameDB_SetFn set, void *user, char *title, int tsize);
++
++/* The settings a game starts with. prefs_name is the game's own settings file
++ * ("<image>.prefs"): if it opens, its lines go to set() and GDB_PREFS is returned
++ * (Save for game always wins). Otherwise the image it names is hashed, <image>.bak
++ * instead when disk_a is that image and the .bak exists (a disk's write-back
++ * renames the original to .bak the first time and never replaces it, so the hash
++ * of a disk that has been saved to is still that of the original), and the block
++ * of that CRC in the database file dbpath goes to set(): GDB_DB. GDB_NONE if there
++ * is neither. title (may be NULL) gets the database title on GDB_DB. */
++#define GDB_NONE 0
++#define GDB_PREFS 1
++#define GDB_DB 2
++extern unsigned long GameDB_LastCrc;   /* the CRC GameDB_Settings hashed last, valid when ... */
++extern int GameDB_LastCrcOk;           /* ... this is 1 (0: none computed: a .prefs file was used, or the image can't be read) */
++int GameDB_Settings(const char *prefs_name, const char *disk_a, const char *dbpath,
++	GameDB_SetFn set, void *user, char *title, int tsize);
++#endif
 diff --git a/src/amiga/host_amiga.c b/src/amiga/host_amiga.c
 new file mode 100644
-index 0000000..882fa0c
+index 0000000..4e412b8
 --- /dev/null
 +++ b/src/amiga/host_amiga.c
-@@ -0,0 +1,1085 @@
+@@ -0,0 +1,1137 @@
 +/* Arnold host for AmigaOS: implements src/cpc/host.h on top of amiga_sys.c.
 + * The core renders into an 8-bit chunky buffer (384 x 272, one byte per
 + * pixel, PaletteRemap indices); amiga_sys converts it to AGA bitplanes.
@@ -3413,6 +4023,7 @@ index 0000000..882fa0c
 +#include "screenshot.h"
 +#include "keyscript.h"
 +#include "keymaplogic.h"
++#include "gamedb.h"
 +#include <stdio.h>
 +#include <stdlib.h>
 +#include <string.h>
@@ -3432,6 +4043,7 @@ index 0000000..882fa0c
 +static int global_diskwrite = 1;      /* Write disks back: prefs diskwrite=, DISKWRITE=; a game's own prefs can turn it off */
 +static int global_fasttape = 1;       /* Fast tape: prefs fasttape=, FASTTAPE=; a game's own prefs can turn it off */
 +static int global_tapesound;   /* Tape sound (25 Oct 2026): prefs tapesound=, TAPESOUND=; per game too */
++static int global_scan;        /* RTG scanlines (1.2): prefs scanlines=, SCANLINES=; per game too */
 +/* Tapes (24 Oct 2026). The core plays a .cdt (cpc/tzxold.c) while the motor
 + * runs: port B bit 7 follows the pulses, timed by the Z80's cycles. Fast tape:
 + * while the motor runs and the tape has blocks left, frames are emulated but
@@ -3469,6 +4081,7 @@ index 0000000..882fa0c
 + * frame after next (it turns drawing on early, see arnold.c). */
 +static int gx_autostart;   /* frames until the GX4000 auto-start presses f2 (0 = off) */
 +static long help_after;    /* test: HELPAFTER=n presses Help once after n frames (0 = off) */
++static long help_every;    /* test: HELPEVERY=n presses Help n frames after every start or Continue (RTG pilot menu cycles) */
 +static int skip_max = 3, skip_run, refresh = 1;
 +static unsigned long refresh_count;
 +static long behind_us;
@@ -3570,6 +4183,10 @@ index 0000000..882fa0c
 +	extern unsigned char *chunky; extern int W, H; extern unsigned char hostpal[256][3];
 +	sprintf(name, "%s/%05ld.png", snapdir, script_frame);
 +	Screenshot_SavePNG(name, chunky, W, H, W, hostpal);
++	if (Sys_RtgGrabOn && Sys_RtgActive) {   /* RTGGRAB: what the RTG screen really holds, beside the CPC frame */
++		sprintf(name, "%s/rtg-%05ld.png", snapdir, script_frame);
++		Sys_RtgGrab(name, chunky, W);
++	}
 +}
 +static unsigned char audio_tmp[4096];
 +static unsigned long audio_tmp_len;
@@ -3742,8 +4359,10 @@ index 0000000..882fa0c
 +
 +/* Keyboard as joystick (16 Oct 2026). joykeys: 0 = off (the keyboard is the CPC
 + * keyboard; Space also gives fire 2 and Right Alt is fire 2), 1 = cursor keys
-+ * move, Z / Ctrl fire 1, X / Space fire 2, 2 = QAOP move, Space fire 1, M fire 2.
-+ * In modes 1 and 2 those keys drive only the joystick. The keyboard's joystick
++ * move, Z / Ctrl fire 1, X / Space fire 2, 2 = QAOP move, Space fire 1, M fire 2,
++ * 3 (1.2) = cursors move, X / Space fire 1, Z / Ctrl fire 2 (mode 1's fire keys
++ * swapped: R-Type reads fire 1 only, so charging the beam needs X).
++ * In modes 1 to 3 those keys drive only the joystick. The keyboard's joystick
 + * bits (kb_joy) are ORed with the real joystick every frame, so the pad and the
 + * keys can be used together and releasing one never cancels the other; any
 + * number of keys may be held at once. */
@@ -3754,7 +4373,9 @@ index 0000000..882fa0c
 +	{1, 0x31, SYS_JOY_FIRE1}, {1, 0x63, SYS_JOY_FIRE1}, {1, 0x32, SYS_JOY_FIRE2}, {1, 0x40, SYS_JOY_FIRE2},
 +	{2, 0x10, SYS_JOY_UP}, {2, 0x20, SYS_JOY_DOWN}, {2, 0x18, SYS_JOY_LEFT}, {2, 0x19, SYS_JOY_RIGHT},
 +	{2, 0x40, SYS_JOY_FIRE1}, {2, 0x37, SYS_JOY_FIRE2},
-+	{0, 0x40, SYS_JOY_FIRE2}, {1, 0x65, SYS_JOY_FIRE2}, {2, 0x65, SYS_JOY_FIRE2}, {0, 0x65, SYS_JOY_FIRE2},
++	{3, 0x4c, SYS_JOY_UP}, {3, 0x4d, SYS_JOY_DOWN}, {3, 0x4f, SYS_JOY_LEFT}, {3, 0x4e, SYS_JOY_RIGHT},
++	{3, 0x32, SYS_JOY_FIRE1}, {3, 0x40, SYS_JOY_FIRE1}, {3, 0x31, SYS_JOY_FIRE2}, {3, 0x63, SYS_JOY_FIRE2},
++	{0, 0x40, SYS_JOY_FIRE2}, {1, 0x65, SYS_JOY_FIRE2}, {2, 0x65, SYS_JOY_FIRE2}, {3, 0x65, SYS_JOY_FIRE2}, {0, 0x65, SYS_JOY_FIRE2},
 +};
 +/* returns 1 if the key belongs to the joystick only (no CPC key) */
 +static int joykey(int code, int down)
@@ -3870,7 +4491,7 @@ index 0000000..882fa0c
 +		if (gx_autostart == 6) CPC_SetKey(CPC_KEY_F2);
 +		if (gx_autostart == 0) CPC_ClearKey(CPC_KEY_F2);
 +	}
-+	if (help_after > 0 && --help_after == 0) Sys_RequestQuit();
++	if (help_after > 0 && --help_after == 0) { Sys_RequestQuit(); help_after = help_every; }
 +	if (Sys_Poll()) return TRUE;
 +	while (Sys_GetKey(&code, &down, &qual)) host_key(code, down, qual);
 +	joy = Sys_ReadJoystick() | kb_joy;
@@ -3964,6 +4585,8 @@ index 0000000..882fa0c
 +		else if (!strcmp(line, "diskwrite")) menu.diskwrite = atoi(v) ? 1 : 0;
 +		else if (!strcmp(line, "fasttape")) menu.fasttape = atoi(v) ? 1 : 0;
 +		else if (!strcmp(line, "tapesound")) menu.tapesound = atoi(v) ? 1 : 0;
++		else if (!strcmp(line, "rtg")) menu.rtg = atoi(v) ? 1 : 0;
++		else if (!strcmp(line, "scanlines")) { int k = Sys_ParseScan(v); if (k >= 0) menu.scan = k; }
 +		else if (!strcmp(line, "tape")) strncpy(menu.tape, v, SYS_PATH - 1);
 +	}
 +	fclose(f);
@@ -3979,9 +4602,11 @@ index 0000000..882fa0c
 +		Sys_SpeedNames[menu.speed ? 1 : 0], Sys_VideoNames[menu.video >= 0 && menu.video <= 2 ? menu.video : 0],
 +		Sys_ModelNames[menu.model >= 0 && menu.model < SYS_MODELS ? menu.model : SYS_MODEL_PLUS], menu.cart, menu.diska, menu.diskb);
 +	fprintf(f, "tall=%d\nwide=%d\n", menu.tall, menu.wide);
++	fprintf(f, "rtg=%d\n", menu.rtg);
 +	fprintf(f, "diskwrite=%d\n", global_diskwrite);
 +	fprintf(f, "fasttape=%d\ntape=%s\n", global_fasttape, menu.tape);
 +	fprintf(f, "tapesound=%d\n", global_tapesound);
++	fprintf(f, "scanlines=%s\n", Sys_ScanWords[global_scan > 0 && global_scan < SYS_SCANS ? global_scan : 0]);
 +	if (global_remap[0]) fprintf(f, "remap=%s\n", global_remap);
 +	fclose(f);
 +}
@@ -3990,7 +4615,7 @@ index 0000000..882fa0c
 + * full height, key remap), applied when that game is powered on; the global
 + * prefs come back otherwise. A disk game (the Plus with the system cartridge,
 + * or a plain CPC, with a disk in drive A) uses <disk A>.prefs (20 Oct 2026). */
-+static int global_sound, global_hires, global_tall, global_wide;
++static int global_sound, global_hires, global_tall, global_wide, global_rtg;   /* menu.game_prefs: 0 none, 1 <game>.prefs, 2 Games.db */
 +static void game_prefs_name(char *out)
 +{
 +	const char *c = menu.cart, *e = c + strlen(c);
@@ -4002,33 +4627,39 @@ index 0000000..882fa0c
 +	sprintf(out, "%s.prefs", menu.diska[0] && (!plus || system) ? menu.diska : menu.cart);
 +}
 +
++/* one settings line of a game's .prefs or of its Games.db block */
++static void game_setting(const char *key, const char *v)
++{
++	if (!strcmp(key, "sound")) menu.sound = atoi(v);
++	else if (!strcmp(key, "hires")) menu.hires = atoi(v);
++	else if (!strcmp(key, "joykeys")) joykeys = atoi(v);
++	else if (!strcmp(key, "tall")) menu.tall = atoi(v);
++	else if (!strcmp(key, "wide")) menu.wide = atoi(v);
++	else if (!strcmp(key, "rtg")) menu.rtg = atoi(v) ? 1 : 0;
++	else if (!strcmp(key, "scanlines")) { int k = Sys_ParseScan(v); if (k >= 0) menu.scan = k; }
++	else if (!strcmp(key, "remap")) remap_parse(v);
++	else if (!strcmp(key, "diskwrite")) menu.diskwrite = atoi(v) ? 1 : 0;
++	else if (!strcmp(key, "fasttape")) menu.fasttape = atoi(v) ? 1 : 0;
++	else if (!strcmp(key, "tapesound")) menu.tapesound = atoi(v) ? 1 : 0;
++}
++static void db_setting(const char *key, const char *v, void *u) { (void)u; game_setting(key, v); }
++
++/* Game settings (1.2): <game>.prefs, else the PROGDIR:Games.db block with the CRC-32 of
++ * the image (gamedb.c; a disk's original, see GameDB_Settings). Save for game always
++ * wins. menu.game_prefs: 1 = .prefs ("+game"), 2 = Games.db ("+db"). */
++#define GAMES_DB "PROGDIR:Games.db"
 +static void game_prefs_apply(void)
 +{
-+	char name[SYS_PATH + 8], line[SYS_PATH + 16], *v;   /* a remap= line can be 6 + 127 characters */
-+	FILE *f;
-+	menu.sound = global_sound; menu.hires = global_hires; menu.game_prefs = 0; menu.tall = global_tall; menu.wide = global_wide;
++	char name[SYS_PATH + 8], title[64];
++	menu.sound = global_sound; menu.hires = global_hires; menu.game_prefs = 0; menu.tall = global_tall; menu.wide = global_wide; menu.rtg = global_rtg;
 +	menu.diskwrite = global_diskwrite;
-+	menu.fasttape = global_fasttape; menu.tapesound = global_tapesound;
++	menu.fasttape = global_fasttape; menu.tapesound = global_tapesound; menu.scan = global_scan;
 +	joykeys = global_joykeys;
 +	if (strcmp(remap_str, global_remap)) remap_parse(global_remap);
 +	game_prefs_name(name);
-+	f = fopen(name, "r");
-+	if (!f) return;
-+	while (fgets(line, sizeof line, f)) {
-+		line[strcspn(line, "\r\n")] = 0;
-+		v = strchr(line, '='); if (!v) continue; *v++ = 0;
-+		if (!strcmp(line, "sound")) menu.sound = atoi(v);
-+		else if (!strcmp(line, "hires")) menu.hires = atoi(v);
-+		else if (!strcmp(line, "joykeys")) joykeys = atoi(v);
-+		else if (!strcmp(line, "tall")) menu.tall = atoi(v);
-+		else if (!strcmp(line, "wide")) menu.wide = atoi(v);
-+		else if (!strcmp(line, "remap")) remap_parse(v);
-+		else if (!strcmp(line, "diskwrite")) menu.diskwrite = atoi(v) ? 1 : 0;
-+		else if (!strcmp(line, "fasttape")) menu.fasttape = atoi(v) ? 1 : 0;
-+		else if (!strcmp(line, "tapesound")) menu.tapesound = atoi(v) ? 1 : 0;
-+	}
-+	fclose(f);
-+	menu.game_prefs = 1;
++	menu.game_prefs = GameDB_Settings(name, menu.diska, GAMES_DB, db_setting, NULL, title, sizeof title);
++	if (menu.game_prefs == GDB_DB) Sys_Log("Games.db: '%s' (CRC %08lX) for %s", title, GameDB_LastCrc, name);
++	else if (!menu.game_prefs && GameDB_LastCrcOk) Sys_Log("Games.db: no entry for CRC %08lX (%s)", GameDB_LastCrc, name);
 +}
 +
 +static void game_prefs_save(void)
@@ -4039,10 +4670,12 @@ index 0000000..882fa0c
 +	f = fopen(name, "w");
 +	if (!f) { sprintf(msg, "Can't write game settings\n%s", name); Sys_MenuError(msg); return; }
 +	fprintf(f, "; Arnold game settings\nsound=%d\nhires=%d\njoykeys=%d\ntall=%d\nwide=%d\n", menu.sound, menu.hires, joykeys, menu.tall, menu.wide);
++	if (menu.rtg != global_rtg) fprintf(f, "rtg=%d\n", menu.rtg);
 +	if (remap_str[0]) fprintf(f, "remap=%s\n", remap_str);
 +	if (menu.diskwrite != global_diskwrite) fprintf(f, "diskwrite=%d\n", menu.diskwrite);
 +	if (menu.fasttape != global_fasttape) fprintf(f, "fasttape=%d\n", menu.fasttape);
 +	if (menu.tapesound != global_tapesound) fprintf(f, "tapesound=%d\n", menu.tapesound);
++	if (menu.scan != global_scan) fprintf(f, "scanlines=%s\n", Sys_ScanWords[menu.scan > 0 && menu.scan < SYS_SCANS ? menu.scan : 0]);
 +	fclose(f);
 +	menu.game_prefs = 1;
 +}
@@ -4053,9 +4686,9 @@ index 0000000..882fa0c
 +	game_prefs_name(name);
 +	remove(name);
 +	menu.game_prefs = 0;
-+	menu.sound = global_sound; menu.hires = global_hires; joykeys = global_joykeys; menu.tall = global_tall; menu.wide = global_wide;
++	menu.sound = global_sound; menu.hires = global_hires; joykeys = global_joykeys; menu.tall = global_tall; menu.wide = global_wide; menu.rtg = global_rtg;
 +	menu.diskwrite = global_diskwrite;
-+	menu.fasttape = global_fasttape; menu.tapesound = global_tapesound;
++	menu.fasttape = global_fasttape; menu.tapesound = global_tapesound; menu.scan = global_scan;
 +	remap_parse(global_remap);
 +}
 +
@@ -4270,6 +4903,13 @@ index 0000000..882fa0c
 +
 +extern void (*Render_LineChangedHook)(int SurfaceLine);
 +
++/* RTG: after Help the emulation screen stays up until the menu screen is open in front of it
++ * (Sys_Menu calls this), so neither Workbench nor an AGA screen shows in between */
++static void release_emulation_display(void)
++{
++	if (display_open) { Sys_CloseDisplay(); display_open = 0; }
++}
++
 +static int open_emulation(void)
 +{
 +	Render_LineChangedHook = Sys_MarkLineDirty;   /* convert only lines the core changed */
@@ -4278,8 +4918,10 @@ index 0000000..882fa0c
 +	if (display_open) { Sys_CloseDisplay(); display_open = 0; }
 +	Sys_WideScreen = menu.wide;
 +	Sys_TallScreen = menu.tall;   /* TALL: all 272 lines (amiga_sys.c) */
++	Sys_RtgWanted = menu.rtg;     /* RTG screen (pilot): tried first, the AGA screen if there is none */
++	Sys_RtgScan = menu.scan;      /* RTG scanlines (1.2) */
 +	Render_SetRenderingAccuracyForWindowedMode(menu.hires ? RENDERING_ACCURACY_HIGH : RENDERING_ACCURACY_LOW);
-+	if (!Render_SetDisplayWindowed()) { Sys_MenuError("Can't open the AGA screen"); return 0; }
++	if (!Render_SetDisplayWindowed()) { Sys_MenuError("Can't open the display"); return 0; }
 +	/* Timing (19 Oct 2026). A 50 Hz display: one CPC frame per VBlank and Paula
 +	 * fed from the VBlank, as tuned on PAL. Any other rate (NTSC 60 Hz):
 +	 * - Game speed "50 Hz": the E-clock paces the frames, Paula's own interrupt
@@ -4290,14 +4932,17 @@ index 0000000..882fa0c
 +	 *   with the period shortened so the blocks keep up. */
 +	{
 +		unsigned long clk = Sys_ChipClock(), fus, target;
-+		int period, audint, timer;
++		int period, audint, timer, speed = menu.speed;
++		/* RTG screen: there is no RTG VBlank to follow (rtgfw never waits for the board's
++		 * refresh), so "Follow display" means the CPC's 50 Hz there (DESIGN.md 7) */
++		if (Sys_RtgActive && speed) { speed = 0; Sys_Log("pacing: RTG screen: Follow display has no meaning, the CPC's 50 Hz"); }
 +		if (Sys_Display50Hz()) { period = AUD_PERIOD; audint = 0; timer = 0; fus = 20000; }
 +		else {
-+			target = menu.speed ? Sys_DisplayFrameUs : 19968;
++			target = speed ? Sys_DisplayFrameUs : 19968;
 +			period = (int)(((unsigned long long)target * clk + 444ULL * 500000ULL) / (444ULL * 1000000ULL));
 +			if (period < 124) period = 124;
-+			audint = 1; timer = !menu.speed;
-+			fus = menu.speed ? Sys_DisplayFrameUs : (unsigned long)(444ULL * period * 1000000ULL / clk);
++			audint = 1; timer = !speed;
++			fus = speed ? Sys_DisplayFrameUs : (unsigned long)(444ULL * period * 1000000ULL / clk);
 +		}
 +		Sys_SetPacing(timer, fus);
 +		if (audio_open && (period != aud_period || audint != aud_int)) { Sys_AudioClose(); audio_open = 0; }
@@ -4311,7 +4956,7 @@ index 0000000..882fa0c
 +	 * same direction then did nothing until that key was tapped again);
 +	 * joy_prev 0: the next frame sets whatever is really held */
 +	kb_joy = 0; joy_prev = 0;
-+	Sys_Log("emulation: screen open, sound %s", audio_open ? "on" : "off");
++	Sys_Log("emulation: screen open%s, sound %s", Sys_RtgActive ? " (RTG)" : "", audio_open ? "on" : "off");
 +	return 1;
 +}
 +
@@ -4319,7 +4964,7 @@ index 0000000..882fa0c
 +{
 +	unsigned char *data; unsigned long len;
 +	const char *sna = NULL;
-+	int i, want_menu = 0, ndisk = 0, action, nosound = 0, hires = 0, tall = 0, wide = 0, media_given = 0;
++	int i, want_menu = 0, ndisk = 0, action, nosound = 0, hires = 0, tall = 0, wide = 0, media_given = 0, rtg = -1, scan = -1;
 +	struct SysStart st;
 +
 +	KeyScript_AmigaKey = amiga_key_code;   /* before KEYS= loads a script */
@@ -4350,6 +4995,8 @@ index 0000000..882fa0c
 +		if (st.diskwrite >= 0) menu.diskwrite = st.diskwrite;
 +		if (st.fasttape >= 0) menu.fasttape = st.fasttape;
 +		if (st.tapesound >= 0) menu.tapesound = st.tapesound;
++		if (st.scan >= 0) scan = st.scan;
++		if (st.rtg >= 0) rtg = st.rtg;
 +		if (st.tape[0]) strncpy(menu.tape, st.tape, SYS_PATH - 1);
 +		if (has_ext(st.media, ".cpr")) { strncpy(menu.cart, st.media, SYS_PATH - 1); media_given = 1; }
 +		else if (has_ext(st.media, ".dsk")) { strncpy(menu.diska, st.media, SYS_PATH - 1); menu.diskb[0] = 0; media_given = 1; }
@@ -4384,6 +5031,14 @@ index 0000000..882fa0c
 +			else if (!kwncmp(argv[i], "FASTTAPE=", 9)) menu.fasttape = atoi(argv[i] + 9) ? 1 : 0;
 +			else if (!kwncmp(argv[i], "TAPESOUND=", 10)) menu.tapesound = atoi(argv[i] + 10) ? 1 : 0;
 +			else if (!kwcmp(argv[i], "TAPESOUND")) menu.tapesound = 1;
++			else if (!kwcmp(argv[i], "RTG")) rtg = 1;                       /* RTG screen (pilot, 26 Oct 2026) */
++			else if (!kwncmp(argv[i], "RTG=", 4)) rtg = atoi(argv[i] + 4) ? 1 : 0;
++			else if (!kwcmp(argv[i], "RTGBLIT")) Sys_RtgBlit = 1;           /* diagnostic: off-screen bitmap + blit */
++			else if (!kwncmp(argv[i], "RTGBUF=", 7)) Sys_RtgBuffers = atoi(argv[i] + 7);   /* diagnostic: 3 = screen buffers */
++			else if (!kwcmp(argv[i], "RTGGRAB")) Sys_RtgGrabOn = 1;         /* tests: SNAP also saves the RTG screen */
++			else if (!kwncmp(argv[i], "SCANLINES=", 10)) { int k = Sys_ParseScan(argv[i] + 10); if (k >= 0) scan = k; }   /* RTG scanlines (1.2) */
++			else if (!kwncmp(argv[i], "RTGDEPTH=", 9)) Sys_RtgDepth = atoi(argv[i] + 9);   /* tests: 8, 16 or 32 */
++			else if (!kwncmp(argv[i], "SCANMODE=", 9)) { char *x = strchr(argv[i] + 9, 'x'); if (!x) x = strchr(argv[i] + 9, 'X'); Sys_RtgScanW = atoi(argv[i] + 9); Sys_RtgScanH = x ? atoi(x + 1) : 0; }   /* tests: the scanline mode size */
 +			else if (!kwncmp(argv[i], "TAPE=", 5)) { strncpy(menu.tape, argv[i] + 5, SYS_PATH - 1); media_given = 1; }
 +			else if (!kwcmp(argv[i], "BENCH")) {
 +				/* machine timings to the Shell and PROGDIR:bench.txt, then exit */
@@ -4399,6 +5054,7 @@ index 0000000..882fa0c
 +			else if (!kwcmp(argv[i], "WIDE")) wide = 1;
 +			else if (!kwcmp(argv[i], "MENU")) want_menu = 1;
 +			else if (!kwncmp(argv[i], "HELPAFTER=", 10)) help_after = atol(argv[i] + 10);
++			else if (!kwncmp(argv[i], "HELPEVERY=", 10)) help_after = help_every = atol(argv[i] + 10);
 +			else if (!kwncmp(argv[i], "P=", 2)) ;
 +			else if (has_ext(argv[i], ".cpr")) { strncpy(menu.cart, argv[i], SYS_PATH - 1); media_given = 1; }
 +			else if (has_ext(argv[i], ".dsk")) { if (!ndisk) menu.diskb[0] = 0; strncpy(ndisk++ ? menu.diskb : menu.diska, argv[i], SYS_PATH - 1); media_given = 1; }
@@ -4414,9 +5070,11 @@ index 0000000..882fa0c
 +	if (hires) menu.hires = 1;
 +	if (tall) menu.tall = 1;
 +	if (wide) menu.wide = 1;
++	if (rtg >= 0) menu.rtg = rtg;
++	if (scan >= 0) menu.scan = scan;
 +	global_sound = menu.sound; global_hires = menu.hires; global_joykeys = joykeys;
-+	global_tall = menu.tall; global_wide = menu.wide; strcpy(global_remap, remap_str); global_diskwrite = menu.diskwrite;
-+	global_fasttape = menu.fasttape; global_tapesound = menu.tapesound;
++	global_tall = menu.tall; global_wide = menu.wide; global_rtg = menu.rtg; strcpy(global_remap, remap_str); global_diskwrite = menu.diskwrite;
++	global_fasttape = menu.fasttape; global_tapesound = menu.tapesound; global_scan = menu.scan;
 +	if (!CPCEmulation_CheckEndianness()) { Sys_MenuError("Endianness check failed"); return 10; }
 +	CPC_Initialise();
 +	/* the test-mode label's colour: an entry the core leaves alone */
@@ -4438,15 +5096,18 @@ index 0000000..882fa0c
 +			menu.skip = skip_max; menu.refresh = refresh; menu.joykeys = joykeys; menu.pad = Sys_PadType;
 +			strcpy(menu.remap, remap_str);
 +			tape_pos();
++			if (Sys_RtgStatus[0]) { if (!menu.status[0]) strncpy(menu.status, Sys_RtgStatus, sizeof menu.status - 1); Sys_RtgStatus[0] = 0; }   /* RTG fell back to AGA */
 +			action = Sys_Menu(&menu);
 +			if (strcmp(menu.remap, remap_str)) remap_parse(menu.remap);   /* key map editor / preset */
 +			skip_max = menu.skip; refresh = menu.refresh > 0 ? menu.refresh : 1; joykeys = menu.joykeys; Sys_PadType = menu.pad;
 +			Sys_VideoMode = menu.video;
 +			{ extern unsigned long Sys_AudioIrqs(void); Sys_Log("menu action %d (audio interrupts so far %lu)", action, Sys_AudioIrqs()); }
-+			if (action != SYS_MENU_POWER && action != SYS_MENU_RESET && action != SYS_MENU_CONTINUE) Sys_MenuClose();
++			/* on an RTG menu, Save Prefs / Save for game / Forget / Screenshot keep its screen up (the next menu opens in front of it) */
++			if (action != SYS_MENU_POWER && action != SYS_MENU_RESET && action != SYS_MENU_CONTINUE
++			 && !(Sys_MenuOnRtg() && (action == SYS_MENU_SAVE || action == SYS_MENU_SAVEGAME || action == SYS_MENU_FORGETGAME || action == SYS_MENU_SHOT))) Sys_MenuClose();
 +			if (action == SYS_MENU_QUIT) break;
-+			if (!menu.game_prefs) { strcpy(global_remap, remap_str); global_sound = menu.sound; global_hires = menu.hires; global_joykeys = joykeys; global_tall = menu.tall; global_wide = menu.wide; global_diskwrite = menu.diskwrite; global_fasttape = menu.fasttape; global_tapesound = menu.tapesound; }
-+			if (action == SYS_MENU_SAVE) { int gs = menu.sound, gh = menu.hires, gt = menu.tall, gw = menu.wide; if (menu.game_prefs) { menu.sound = global_sound; menu.hires = global_hires; menu.tall = global_tall; menu.wide = global_wide; } else global_joykeys = joykeys; prefs_save(); menu.sound = gs; menu.hires = gh; menu.tall = gt; menu.wide = gw; continue; }
++			if (!menu.game_prefs) { strcpy(global_remap, remap_str); global_sound = menu.sound; global_hires = menu.hires; global_joykeys = joykeys; global_tall = menu.tall; global_wide = menu.wide; global_rtg = menu.rtg; global_diskwrite = menu.diskwrite; global_fasttape = menu.fasttape; global_tapesound = menu.tapesound; global_scan = menu.scan; }
++			if (action == SYS_MENU_SAVE) { int gs = menu.sound, gh = menu.hires, gt = menu.tall, gw = menu.wide, gr = menu.rtg; if (menu.game_prefs) { menu.sound = global_sound; menu.hires = global_hires; menu.tall = global_tall; menu.wide = global_wide; menu.rtg = global_rtg; } else global_joykeys = joykeys; prefs_save(); menu.sound = gs; menu.hires = gh; menu.tall = gt; menu.wide = gw; menu.rtg = gr; continue; }
 +			if (action == SYS_MENU_SAVEGAME) { game_prefs_save(); continue; }
 +			if (action == SYS_MENU_FORGETGAME) { game_prefs_forget(); continue; }
 +			if (action == SYS_MENU_SHOT) { screenshot(); continue; }
@@ -4460,7 +5121,8 @@ index 0000000..882fa0c
 +		CPCEmulation_Run();                 /* returns when Help is pressed (or a script QUIT) */
 +		Sys_Log("stopped after %lu frames", Sys_Millis() / 20);
 +		Sys_AudioPause();
-+		Sys_CloseDisplay(); display_open = 0;
++		if (Sys_RtgActive && !script_quit) Sys_MenuOpenedHook = release_emulation_display;   /* RTG: closed once the menu is up */
++		else { Sys_CloseDisplay(); display_open = 0; }
 +		if (script_quit) {
 +			char name[SYS_PATH + 8]; FILE *d;
 +			flush_disks("exit");   /* before "done": a test runner may stop the machine then */
@@ -4961,10 +5623,10 @@ index 0000000..fe7ebe0
 +}
 diff --git a/src/amiga/screenshot.c b/src/amiga/screenshot.c
 new file mode 100644
-index 0000000..061b41f
+index 0000000..83f30c4
 --- /dev/null
 +++ b/src/amiga/screenshot.c
-@@ -0,0 +1,115 @@
+@@ -0,0 +1,116 @@
 +/* Arnold on AmigaOS: save the last frame as IFF ILBM and PNG. Plain C, no
 + * OS calls: the frame is the host's 8-bit chunky buffer plus its palette.
 + * PNG: 8-bit indexed, zlib stream of stored (uncompressed) deflate blocks. */
@@ -5044,7 +5706,8 @@ index 0000000..061b41f
 +	unsigned char ihdr[13], hdr[5], *line;
 +	unsigned long a = 1, b = 0, idatlen, crc, raw = (unsigned long)(w + 1) * h, done = 0;
 +	int y, x;
-+	static unsigned char buf[1 + 768];
++	static unsigned char buf[1 + 4096];      /* 768 before 26 Oct 2026: the RTG grab writes whole RTG screens (up to 4096 wide) */
++	if (w > 4096) { if (f) fclose(f); return 0; }
 +	if (!f) return 0;
 +	crc_init();
 +	fwrite("\211PNG\r\n\032\n", 1, 8, f);

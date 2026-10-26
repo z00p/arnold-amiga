@@ -1,0 +1,28 @@
+; Arnold Games.db: settings a game starts with, found by the CRC-32 of its image.
+;
+; [CRC32] Title    CRC-32 of the cartridge (.cpr), the disk in drive A (.dsk) or the tape (.cdt)
+;                  file, as 8 hex digits, then the title (a comment, shown in Arnold.log).
+; key=value        the lines of a game's .prefs file: sound hires joykeys tall wide remap
+;                  diskwrite fasttape tapesound rtg scanlines. They belong to the [..]
+;                  line(s) above them.
+;                  Several [..] lines in a row (other releases of the game) share the settings.
+;
+; Used only when the game has no <game>.prefs: Save for game (Game menu) always wins. The menu
+; status line shows +db while these settings are in use. For a disk the ORIGINAL file is
+; hashed (<disk>.bak if it exists), so a disk that has been written back still matches.
+; Add your own: Arnold.log says "Games.db: ..." for a match; the CRC-32 of a file is also
+; shown there ("Games.db: no entry for CRC ...") when a game has no entry.
+
+[54B0034D] Sonic GX
+wide=1
+
+[E370FF4D] Pinball Dreams
+tall=1
+remap=RSHIFT:M
+
+[AD9964F4] Bomb Jack GX
+tall=1
+
+[C8A699DE] R-Type (128K)
+joykeys=3
+wide=1

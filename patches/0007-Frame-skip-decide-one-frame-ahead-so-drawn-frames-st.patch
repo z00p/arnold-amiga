@@ -1,7 +1,7 @@
-From ba7f6320ee25f23cc7cc9c1b9225bc74e6ed2837 Mon Sep 17 00:00:00 2001
+From 979b7160ce5899a9cf0de488ec3d42b7ac6fec3d Mon Sep 17 00:00:00 2001
 From: John Stringer <jcec_1@yahoo.co.uk>
-Date: Mon, 26 Oct 2026 07:40:33 +0000
-Subject: [PATCH 07/37] Frame skip: decide one frame ahead so drawn frames
+Date: Mon, 26 Oct 2026 13:39:51 +0000
+Subject: [PATCH 07/39] Frame skip: decide one frame ahead so drawn frames
  start cleanly
 
 The core's frame skip turns drawing back on at the frame boundary, which falls

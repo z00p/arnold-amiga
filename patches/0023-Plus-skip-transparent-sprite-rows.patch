@@ -1,7 +1,7 @@
-From 1568959cf48a99ed36692abbdf34627e04f8bcfd Mon Sep 17 00:00:00 2001
+From 4bdb416c0b49b1d5b7642e5e3105a07a22dff06c Mon Sep 17 00:00:00 2001
 From: John Stringer <jcec_1@yahoo.co.uk>
-Date: Mon, 26 Oct 2026 07:40:38 +0000
-Subject: [PATCH 23/37] Plus: skip transparent sprite rows
+Date: Mon, 26 Oct 2026 13:39:58 +0000
+Subject: [PATCH 23/39] Plus: skip transparent sprite rows
 
 A hardware sprite row whose 16 pixels are all pen 0 is skipped, and the pixel
 loop stops at the sprite's edge. Pixel-exact; about 11% less sprite time.

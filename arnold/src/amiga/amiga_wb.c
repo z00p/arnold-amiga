@@ -54,6 +54,10 @@ static int read_tooltypes(STRPTR name, struct SysStart *st)
 	if (tt) st->fasttape = atoi(tt) ? 1 : 0;   /* FASTTAPE=0|1: fast tape loading (24 Oct 2026) */
 	tt = (char *)FindToolType((STRPTR *)dobj->do_ToolTypes, (STRPTR)"TAPESOUND");
 	if (tt) st->tapesound = (!*tt || atoi(tt)) ? 1 : 0;   /* TAPESOUND=0|1 (25 Oct 2026; a bare TAPESOUND means on) */
+	tt = (char *)FindToolType((STRPTR *)dobj->do_ToolTypes, (STRPTR)"RTG");
+	if (tt) st->rtg = (!*tt || atoi(tt)) ? 1 : 0;   /* RTG=0|1, a bare RTG means on: the RTG screen (pilot, 26 Oct 2026) */
+	tt = (char *)FindToolType((STRPTR *)dobj->do_ToolTypes, (STRPTR)"SCANLINES");
+	if (tt) st->scan = Sys_ParseScan(tt);   /* SCANLINES=OFF|25|50|75|BLENDLIGHT|BLEND|BLENDSTRONG (RTG screen, 1.2) */
 	tt = (char *)FindToolType((STRPTR *)dobj->do_ToolTypes, (STRPTR)"TAPE");
 	if (tt) strncpy(st->tape, tt, SYS_PATH - 1);   /* TAPE=<file.cdt> */
 	FreeDiskObject(dobj);
@@ -133,7 +137,7 @@ int Sys_WBStart(int argc, char **argv, struct SysStart *st)
 	struct WBArg *wa;
 	memset(st, 0, sizeof *st);
 	st->skip = -1;
-	st->joykeys = -1; st->pad = -1; st->speed = -1; st->video = -1; st->model = -1; st->diskwrite = -1; st->fasttape = -1; st->tapesound = -1;
+	st->joykeys = -1; st->pad = -1; st->speed = -1; st->video = -1; st->model = -1; st->diskwrite = -1; st->fasttape = -1; st->tapesound = -1; st->rtg = -1; st->scan = -1;
 	if (argc != 0) return 0;
 	wbs = (struct WBStartup *)argv;
 	if (!wbs || wbs->sm_NumArgs < 1) return 0;
@@ -151,7 +155,7 @@ int Sys_WBStart(int argc, char **argv, struct SysStart *st)
 		memset(&pre, 0, sizeof pre);
 		pre.skip = -1;
 		pre.joykeys = -1; pre.pad = -1; pre.speed = -1; pre.video = -1; pre.model = -1; pre.diskwrite = -1;
-		pre.fasttape = -1; pre.tapesound = -1;
+		pre.fasttape = -1; pre.tapesound = -1; pre.rtg = -1; pre.scan = -1;
 		if (IconBase && read_tooltypes(wa[1].wa_Name, &pre) && pre.prefs[0]) {
 			char dir[SYS_PATH];
 			if (strchr(pre.prefs, ':') == NULL && NameFromLock(wa[1].wa_Lock, (STRPTR)dir, SYS_PATH)) {
@@ -175,6 +179,8 @@ int Sys_WBStart(int argc, char **argv, struct SysStart *st)
 			if (pre.diskwrite >= 0) st->diskwrite = pre.diskwrite;
 			if (pre.fasttape >= 0) st->fasttape = pre.fasttape;
 			if (pre.tapesound >= 0) st->tapesound = pre.tapesound;
+			if (pre.rtg >= 0) st->rtg = pre.rtg;
+			if (pre.scan >= 0) st->scan = pre.scan;
 			if (pre.tape[0]) strcpy(st->tape, pre.tape);
 		} else if (NameFromLock(wa[1].wa_Lock, (STRPTR)st->media, SYS_PATH))
 			AddPart((STRPTR)st->media, wa[1].wa_Name, SYS_PATH);
@@ -187,6 +193,9 @@ int Sys_WBStart(int argc, char **argv, struct SysStart *st)
 const char *Sys_ModelNames[SYS_MODELS] = { "464", "664", "6128", "PLUS", "GX4000" };
 const char *Sys_VideoNames[3] = { "AUTO", "PAL", "NTSC" };
 const char *Sys_SpeedNames[2] = { "50", "DISPLAY" };
+const char *Sys_ScanWords[SYS_SCANS] = { "off", "25", "50", "75", "blendlight", "blend", "blendstrong" };
+static const char *scan_upper[SYS_SCANS] = { "OFF", "25", "50", "75", "BLENDLIGHT", "BLEND", "BLENDSTRONG" };
+static const char *scan_hard[4] = { "0", "HARD25", "HARD50", "HARD75" };
 
 static int word_index(const char *v, const char **names, int n)
 {
@@ -217,5 +226,11 @@ int Sys_ParseSpeed(const char *v)
 {
 	int i = word_index(v, Sys_SpeedNames, 2);
 	if (i < 0 && (v[0] == '0' || v[0] == '1') && !v[1]) i = v[0] - '0';
+	return i;
+}
+int Sys_ParseScan(const char *v)
+{
+	int i = word_index(v, scan_upper, SYS_SCANS);
+	if (i < 0) i = word_index(v, scan_hard, 4);
 	return i;
 }

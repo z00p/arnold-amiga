@@ -17,6 +17,7 @@
 #include "screenshot.h"
 #include "keyscript.h"
 #include "keymaplogic.h"
+#include "gamedb.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -36,6 +37,7 @@ static struct SysMenu menu;
 static int global_diskwrite = 1;      /* Write disks back: prefs diskwrite=, DISKWRITE=; a game's own prefs can turn it off */
 static int global_fasttape = 1;       /* Fast tape: prefs fasttape=, FASTTAPE=; a game's own prefs can turn it off */
 static int global_tapesound;   /* Tape sound (25 Oct 2026): prefs tapesound=, TAPESOUND=; per game too */
+static int global_scan;        /* RTG scanlines (1.2): prefs scanlines=, SCANLINES=; per game too */
 /* Tapes (24 Oct 2026). The core plays a .cdt (cpc/tzxold.c) while the motor
  * runs: port B bit 7 follows the pulses, timed by the Z80's cycles. Fast tape:
  * while the motor runs and the tape has blocks left, frames are emulated but
@@ -73,6 +75,7 @@ static int script_quit;
  * frame after next (it turns drawing on early, see arnold.c). */
 static int gx_autostart;   /* frames until the GX4000 auto-start presses f2 (0 = off) */
 static long help_after;    /* test: HELPAFTER=n presses Help once after n frames (0 = off) */
+static long help_every;    /* test: HELPEVERY=n presses Help n frames after every start or Continue (RTG pilot menu cycles) */
 static int skip_max = 3, skip_run, refresh = 1;
 static unsigned long refresh_count;
 static long behind_us;
@@ -174,6 +177,10 @@ static void script_snap(void)
 	extern unsigned char *chunky; extern int W, H; extern unsigned char hostpal[256][3];
 	sprintf(name, "%s/%05ld.png", snapdir, script_frame);
 	Screenshot_SavePNG(name, chunky, W, H, W, hostpal);
+	if (Sys_RtgGrabOn && Sys_RtgActive) {   /* RTGGRAB: what the RTG screen really holds, beside the CPC frame */
+		sprintf(name, "%s/rtg-%05ld.png", snapdir, script_frame);
+		Sys_RtgGrab(name, chunky, W);
+	}
 }
 static unsigned char audio_tmp[4096];
 static unsigned long audio_tmp_len;
@@ -346,8 +353,10 @@ static unsigned joy_prev;
 
 /* Keyboard as joystick (16 Oct 2026). joykeys: 0 = off (the keyboard is the CPC
  * keyboard; Space also gives fire 2 and Right Alt is fire 2), 1 = cursor keys
- * move, Z / Ctrl fire 1, X / Space fire 2, 2 = QAOP move, Space fire 1, M fire 2.
- * In modes 1 and 2 those keys drive only the joystick. The keyboard's joystick
+ * move, Z / Ctrl fire 1, X / Space fire 2, 2 = QAOP move, Space fire 1, M fire 2,
+ * 3 (1.2) = cursors move, X / Space fire 1, Z / Ctrl fire 2 (mode 1's fire keys
+ * swapped: R-Type reads fire 1 only, so charging the beam needs X).
+ * In modes 1 to 3 those keys drive only the joystick. The keyboard's joystick
  * bits (kb_joy) are ORed with the real joystick every frame, so the pad and the
  * keys can be used together and releasing one never cancels the other; any
  * number of keys may be held at once. */
@@ -358,7 +367,9 @@ static const struct { unsigned char mode, code; unsigned bit; } joykey_map[] = {
 	{1, 0x31, SYS_JOY_FIRE1}, {1, 0x63, SYS_JOY_FIRE1}, {1, 0x32, SYS_JOY_FIRE2}, {1, 0x40, SYS_JOY_FIRE2},
 	{2, 0x10, SYS_JOY_UP}, {2, 0x20, SYS_JOY_DOWN}, {2, 0x18, SYS_JOY_LEFT}, {2, 0x19, SYS_JOY_RIGHT},
 	{2, 0x40, SYS_JOY_FIRE1}, {2, 0x37, SYS_JOY_FIRE2},
-	{0, 0x40, SYS_JOY_FIRE2}, {1, 0x65, SYS_JOY_FIRE2}, {2, 0x65, SYS_JOY_FIRE2}, {0, 0x65, SYS_JOY_FIRE2},
+	{3, 0x4c, SYS_JOY_UP}, {3, 0x4d, SYS_JOY_DOWN}, {3, 0x4f, SYS_JOY_LEFT}, {3, 0x4e, SYS_JOY_RIGHT},
+	{3, 0x32, SYS_JOY_FIRE1}, {3, 0x40, SYS_JOY_FIRE1}, {3, 0x31, SYS_JOY_FIRE2}, {3, 0x63, SYS_JOY_FIRE2},
+	{0, 0x40, SYS_JOY_FIRE2}, {1, 0x65, SYS_JOY_FIRE2}, {2, 0x65, SYS_JOY_FIRE2}, {3, 0x65, SYS_JOY_FIRE2}, {0, 0x65, SYS_JOY_FIRE2},
 };
 /* returns 1 if the key belongs to the joystick only (no CPC key) */
 static int joykey(int code, int down)
@@ -474,7 +485,7 @@ BOOL Host_ProcessSystemEvents(void)
 		if (gx_autostart == 6) CPC_SetKey(CPC_KEY_F2);
 		if (gx_autostart == 0) CPC_ClearKey(CPC_KEY_F2);
 	}
-	if (help_after > 0 && --help_after == 0) Sys_RequestQuit();
+	if (help_after > 0 && --help_after == 0) { Sys_RequestQuit(); help_after = help_every; }
 	if (Sys_Poll()) return TRUE;
 	while (Sys_GetKey(&code, &down, &qual)) host_key(code, down, qual);
 	joy = Sys_ReadJoystick() | kb_joy;
@@ -568,6 +579,8 @@ static void prefs_load(void)
 		else if (!strcmp(line, "diskwrite")) menu.diskwrite = atoi(v) ? 1 : 0;
 		else if (!strcmp(line, "fasttape")) menu.fasttape = atoi(v) ? 1 : 0;
 		else if (!strcmp(line, "tapesound")) menu.tapesound = atoi(v) ? 1 : 0;
+		else if (!strcmp(line, "rtg")) menu.rtg = atoi(v) ? 1 : 0;
+		else if (!strcmp(line, "scanlines")) { int k = Sys_ParseScan(v); if (k >= 0) menu.scan = k; }
 		else if (!strcmp(line, "tape")) strncpy(menu.tape, v, SYS_PATH - 1);
 	}
 	fclose(f);
@@ -583,9 +596,11 @@ static void prefs_save(void)
 		Sys_SpeedNames[menu.speed ? 1 : 0], Sys_VideoNames[menu.video >= 0 && menu.video <= 2 ? menu.video : 0],
 		Sys_ModelNames[menu.model >= 0 && menu.model < SYS_MODELS ? menu.model : SYS_MODEL_PLUS], menu.cart, menu.diska, menu.diskb);
 	fprintf(f, "tall=%d\nwide=%d\n", menu.tall, menu.wide);
+	fprintf(f, "rtg=%d\n", menu.rtg);
 	fprintf(f, "diskwrite=%d\n", global_diskwrite);
 	fprintf(f, "fasttape=%d\ntape=%s\n", global_fasttape, menu.tape);
 	fprintf(f, "tapesound=%d\n", global_tapesound);
+	fprintf(f, "scanlines=%s\n", Sys_ScanWords[global_scan > 0 && global_scan < SYS_SCANS ? global_scan : 0]);
 	if (global_remap[0]) fprintf(f, "remap=%s\n", global_remap);
 	fclose(f);
 }
@@ -594,7 +609,7 @@ static void prefs_save(void)
  * full height, key remap), applied when that game is powered on; the global
  * prefs come back otherwise. A disk game (the Plus with the system cartridge,
  * or a plain CPC, with a disk in drive A) uses <disk A>.prefs (20 Oct 2026). */
-static int global_sound, global_hires, global_tall, global_wide;
+static int global_sound, global_hires, global_tall, global_wide, global_rtg;   /* menu.game_prefs: 0 none, 1 <game>.prefs, 2 Games.db */
 static void game_prefs_name(char *out)
 {
 	const char *c = menu.cart, *e = c + strlen(c);
@@ -606,33 +621,39 @@ static void game_prefs_name(char *out)
 	sprintf(out, "%s.prefs", menu.diska[0] && (!plus || system) ? menu.diska : menu.cart);
 }
 
+/* one settings line of a game's .prefs or of its Games.db block */
+static void game_setting(const char *key, const char *v)
+{
+	if (!strcmp(key, "sound")) menu.sound = atoi(v);
+	else if (!strcmp(key, "hires")) menu.hires = atoi(v);
+	else if (!strcmp(key, "joykeys")) joykeys = atoi(v);
+	else if (!strcmp(key, "tall")) menu.tall = atoi(v);
+	else if (!strcmp(key, "wide")) menu.wide = atoi(v);
+	else if (!strcmp(key, "rtg")) menu.rtg = atoi(v) ? 1 : 0;
+	else if (!strcmp(key, "scanlines")) { int k = Sys_ParseScan(v); if (k >= 0) menu.scan = k; }
+	else if (!strcmp(key, "remap")) remap_parse(v);
+	else if (!strcmp(key, "diskwrite")) menu.diskwrite = atoi(v) ? 1 : 0;
+	else if (!strcmp(key, "fasttape")) menu.fasttape = atoi(v) ? 1 : 0;
+	else if (!strcmp(key, "tapesound")) menu.tapesound = atoi(v) ? 1 : 0;
+}
+static void db_setting(const char *key, const char *v, void *u) { (void)u; game_setting(key, v); }
+
+/* Game settings (1.2): <game>.prefs, else the PROGDIR:Games.db block with the CRC-32 of
+ * the image (gamedb.c; a disk's original, see GameDB_Settings). Save for game always
+ * wins. menu.game_prefs: 1 = .prefs ("+game"), 2 = Games.db ("+db"). */
+#define GAMES_DB "PROGDIR:Games.db"
 static void game_prefs_apply(void)
 {
-	char name[SYS_PATH + 8], line[SYS_PATH + 16], *v;   /* a remap= line can be 6 + 127 characters */
-	FILE *f;
-	menu.sound = global_sound; menu.hires = global_hires; menu.game_prefs = 0; menu.tall = global_tall; menu.wide = global_wide;
+	char name[SYS_PATH + 8], title[64];
+	menu.sound = global_sound; menu.hires = global_hires; menu.game_prefs = 0; menu.tall = global_tall; menu.wide = global_wide; menu.rtg = global_rtg;
 	menu.diskwrite = global_diskwrite;
-	menu.fasttape = global_fasttape; menu.tapesound = global_tapesound;
+	menu.fasttape = global_fasttape; menu.tapesound = global_tapesound; menu.scan = global_scan;
 	joykeys = global_joykeys;
 	if (strcmp(remap_str, global_remap)) remap_parse(global_remap);
 	game_prefs_name(name);
-	f = fopen(name, "r");
-	if (!f) return;
-	while (fgets(line, sizeof line, f)) {
-		line[strcspn(line, "\r\n")] = 0;
-		v = strchr(line, '='); if (!v) continue; *v++ = 0;
-		if (!strcmp(line, "sound")) menu.sound = atoi(v);
-		else if (!strcmp(line, "hires")) menu.hires = atoi(v);
-		else if (!strcmp(line, "joykeys")) joykeys = atoi(v);
-		else if (!strcmp(line, "tall")) menu.tall = atoi(v);
-		else if (!strcmp(line, "wide")) menu.wide = atoi(v);
-		else if (!strcmp(line, "remap")) remap_parse(v);
-		else if (!strcmp(line, "diskwrite")) menu.diskwrite = atoi(v) ? 1 : 0;
-		else if (!strcmp(line, "fasttape")) menu.fasttape = atoi(v) ? 1 : 0;
-		else if (!strcmp(line, "tapesound")) menu.tapesound = atoi(v) ? 1 : 0;
-	}
-	fclose(f);
-	menu.game_prefs = 1;
+	menu.game_prefs = GameDB_Settings(name, menu.diska, GAMES_DB, db_setting, NULL, title, sizeof title);
+	if (menu.game_prefs == GDB_DB) Sys_Log("Games.db: '%s' (CRC %08lX) for %s", title, GameDB_LastCrc, name);
+	else if (!menu.game_prefs && GameDB_LastCrcOk) Sys_Log("Games.db: no entry for CRC %08lX (%s)", GameDB_LastCrc, name);
 }
 
 static void game_prefs_save(void)
@@ -643,10 +664,12 @@ static void game_prefs_save(void)
 	f = fopen(name, "w");
 	if (!f) { sprintf(msg, "Can't write game settings\n%s", name); Sys_MenuError(msg); return; }
 	fprintf(f, "; Arnold game settings\nsound=%d\nhires=%d\njoykeys=%d\ntall=%d\nwide=%d\n", menu.sound, menu.hires, joykeys, menu.tall, menu.wide);
+	if (menu.rtg != global_rtg) fprintf(f, "rtg=%d\n", menu.rtg);
 	if (remap_str[0]) fprintf(f, "remap=%s\n", remap_str);
 	if (menu.diskwrite != global_diskwrite) fprintf(f, "diskwrite=%d\n", menu.diskwrite);
 	if (menu.fasttape != global_fasttape) fprintf(f, "fasttape=%d\n", menu.fasttape);
 	if (menu.tapesound != global_tapesound) fprintf(f, "tapesound=%d\n", menu.tapesound);
+	if (menu.scan != global_scan) fprintf(f, "scanlines=%s\n", Sys_ScanWords[menu.scan > 0 && menu.scan < SYS_SCANS ? menu.scan : 0]);
 	fclose(f);
 	menu.game_prefs = 1;
 }
@@ -657,9 +680,9 @@ static void game_prefs_forget(void)
 	game_prefs_name(name);
 	remove(name);
 	menu.game_prefs = 0;
-	menu.sound = global_sound; menu.hires = global_hires; joykeys = global_joykeys; menu.tall = global_tall; menu.wide = global_wide;
+	menu.sound = global_sound; menu.hires = global_hires; joykeys = global_joykeys; menu.tall = global_tall; menu.wide = global_wide; menu.rtg = global_rtg;
 	menu.diskwrite = global_diskwrite;
-	menu.fasttape = global_fasttape; menu.tapesound = global_tapesound;
+	menu.fasttape = global_fasttape; menu.tapesound = global_tapesound; menu.scan = global_scan;
 	remap_parse(global_remap);
 }
 
@@ -874,6 +897,13 @@ static int power_on(void)
 
 extern void (*Render_LineChangedHook)(int SurfaceLine);
 
+/* RTG: after Help the emulation screen stays up until the menu screen is open in front of it
+ * (Sys_Menu calls this), so neither Workbench nor an AGA screen shows in between */
+static void release_emulation_display(void)
+{
+	if (display_open) { Sys_CloseDisplay(); display_open = 0; }
+}
+
 static int open_emulation(void)
 {
 	Render_LineChangedHook = Sys_MarkLineDirty;   /* convert only lines the core changed */
@@ -882,8 +912,10 @@ static int open_emulation(void)
 	if (display_open) { Sys_CloseDisplay(); display_open = 0; }
 	Sys_WideScreen = menu.wide;
 	Sys_TallScreen = menu.tall;   /* TALL: all 272 lines (amiga_sys.c) */
+	Sys_RtgWanted = menu.rtg;     /* RTG screen (pilot): tried first, the AGA screen if there is none */
+	Sys_RtgScan = menu.scan;      /* RTG scanlines (1.2) */
 	Render_SetRenderingAccuracyForWindowedMode(menu.hires ? RENDERING_ACCURACY_HIGH : RENDERING_ACCURACY_LOW);
-	if (!Render_SetDisplayWindowed()) { Sys_MenuError("Can't open the AGA screen"); return 0; }
+	if (!Render_SetDisplayWindowed()) { Sys_MenuError("Can't open the display"); return 0; }
 	/* Timing (19 Oct 2026). A 50 Hz display: one CPC frame per VBlank and Paula
 	 * fed from the VBlank, as tuned on PAL. Any other rate (NTSC 60 Hz):
 	 * - Game speed "50 Hz": the E-clock paces the frames, Paula's own interrupt
@@ -894,14 +926,17 @@ static int open_emulation(void)
 	 *   with the period shortened so the blocks keep up. */
 	{
 		unsigned long clk = Sys_ChipClock(), fus, target;
-		int period, audint, timer;
+		int period, audint, timer, speed = menu.speed;
+		/* RTG screen: there is no RTG VBlank to follow (rtgfw never waits for the board's
+		 * refresh), so "Follow display" means the CPC's 50 Hz there (DESIGN.md 7) */
+		if (Sys_RtgActive && speed) { speed = 0; Sys_Log("pacing: RTG screen: Follow display has no meaning, the CPC's 50 Hz"); }
 		if (Sys_Display50Hz()) { period = AUD_PERIOD; audint = 0; timer = 0; fus = 20000; }
 		else {
-			target = menu.speed ? Sys_DisplayFrameUs : 19968;
+			target = speed ? Sys_DisplayFrameUs : 19968;
 			period = (int)(((unsigned long long)target * clk + 444ULL * 500000ULL) / (444ULL * 1000000ULL));
 			if (period < 124) period = 124;
-			audint = 1; timer = !menu.speed;
-			fus = menu.speed ? Sys_DisplayFrameUs : (unsigned long)(444ULL * period * 1000000ULL / clk);
+			audint = 1; timer = !speed;
+			fus = speed ? Sys_DisplayFrameUs : (unsigned long)(444ULL * period * 1000000ULL / clk);
 		}
 		Sys_SetPacing(timer, fus);
 		if (audio_open && (period != aud_period || audint != aud_int)) { Sys_AudioClose(); audio_open = 0; }
@@ -915,7 +950,7 @@ static int open_emulation(void)
 	 * same direction then did nothing until that key was tapped again);
 	 * joy_prev 0: the next frame sets whatever is really held */
 	kb_joy = 0; joy_prev = 0;
-	Sys_Log("emulation: screen open, sound %s", audio_open ? "on" : "off");
+	Sys_Log("emulation: screen open%s, sound %s", Sys_RtgActive ? " (RTG)" : "", audio_open ? "on" : "off");
 	return 1;
 }
 
@@ -923,7 +958,7 @@ int main(int argc, char **argv)
 {
 	unsigned char *data; unsigned long len;
 	const char *sna = NULL;
-	int i, want_menu = 0, ndisk = 0, action, nosound = 0, hires = 0, tall = 0, wide = 0, media_given = 0;
+	int i, want_menu = 0, ndisk = 0, action, nosound = 0, hires = 0, tall = 0, wide = 0, media_given = 0, rtg = -1, scan = -1;
 	struct SysStart st;
 
 	KeyScript_AmigaKey = amiga_key_code;   /* before KEYS= loads a script */
@@ -954,6 +989,8 @@ int main(int argc, char **argv)
 		if (st.diskwrite >= 0) menu.diskwrite = st.diskwrite;
 		if (st.fasttape >= 0) menu.fasttape = st.fasttape;
 		if (st.tapesound >= 0) menu.tapesound = st.tapesound;
+		if (st.scan >= 0) scan = st.scan;
+		if (st.rtg >= 0) rtg = st.rtg;
 		if (st.tape[0]) strncpy(menu.tape, st.tape, SYS_PATH - 1);
 		if (has_ext(st.media, ".cpr")) { strncpy(menu.cart, st.media, SYS_PATH - 1); media_given = 1; }
 		else if (has_ext(st.media, ".dsk")) { strncpy(menu.diska, st.media, SYS_PATH - 1); menu.diskb[0] = 0; media_given = 1; }
@@ -988,6 +1025,14 @@ int main(int argc, char **argv)
 			else if (!kwncmp(argv[i], "FASTTAPE=", 9)) menu.fasttape = atoi(argv[i] + 9) ? 1 : 0;
 			else if (!kwncmp(argv[i], "TAPESOUND=", 10)) menu.tapesound = atoi(argv[i] + 10) ? 1 : 0;
 			else if (!kwcmp(argv[i], "TAPESOUND")) menu.tapesound = 1;
+			else if (!kwcmp(argv[i], "RTG")) rtg = 1;                       /* RTG screen (pilot, 26 Oct 2026) */
+			else if (!kwncmp(argv[i], "RTG=", 4)) rtg = atoi(argv[i] + 4) ? 1 : 0;
+			else if (!kwcmp(argv[i], "RTGBLIT")) Sys_RtgBlit = 1;           /* diagnostic: off-screen bitmap + blit */
+			else if (!kwncmp(argv[i], "RTGBUF=", 7)) Sys_RtgBuffers = atoi(argv[i] + 7);   /* diagnostic: 3 = screen buffers */
+			else if (!kwcmp(argv[i], "RTGGRAB")) Sys_RtgGrabOn = 1;         /* tests: SNAP also saves the RTG screen */
+			else if (!kwncmp(argv[i], "SCANLINES=", 10)) { int k = Sys_ParseScan(argv[i] + 10); if (k >= 0) scan = k; }   /* RTG scanlines (1.2) */
+			else if (!kwncmp(argv[i], "RTGDEPTH=", 9)) Sys_RtgDepth = atoi(argv[i] + 9);   /* tests: 8, 16 or 32 */
+			else if (!kwncmp(argv[i], "SCANMODE=", 9)) { char *x = strchr(argv[i] + 9, 'x'); if (!x) x = strchr(argv[i] + 9, 'X'); Sys_RtgScanW = atoi(argv[i] + 9); Sys_RtgScanH = x ? atoi(x + 1) : 0; }   /* tests: the scanline mode size */
 			else if (!kwncmp(argv[i], "TAPE=", 5)) { strncpy(menu.tape, argv[i] + 5, SYS_PATH - 1); media_given = 1; }
 			else if (!kwcmp(argv[i], "BENCH")) {
 				/* machine timings to the Shell and PROGDIR:bench.txt, then exit */
@@ -1003,6 +1048,7 @@ int main(int argc, char **argv)
 			else if (!kwcmp(argv[i], "WIDE")) wide = 1;
 			else if (!kwcmp(argv[i], "MENU")) want_menu = 1;
 			else if (!kwncmp(argv[i], "HELPAFTER=", 10)) help_after = atol(argv[i] + 10);
+			else if (!kwncmp(argv[i], "HELPEVERY=", 10)) help_after = help_every = atol(argv[i] + 10);
 			else if (!kwncmp(argv[i], "P=", 2)) ;
 			else if (has_ext(argv[i], ".cpr")) { strncpy(menu.cart, argv[i], SYS_PATH - 1); media_given = 1; }
 			else if (has_ext(argv[i], ".dsk")) { if (!ndisk) menu.diskb[0] = 0; strncpy(ndisk++ ? menu.diskb : menu.diska, argv[i], SYS_PATH - 1); media_given = 1; }
@@ -1018,9 +1064,11 @@ int main(int argc, char **argv)
 	if (hires) menu.hires = 1;
 	if (tall) menu.tall = 1;
 	if (wide) menu.wide = 1;
+	if (rtg >= 0) menu.rtg = rtg;
+	if (scan >= 0) menu.scan = scan;
 	global_sound = menu.sound; global_hires = menu.hires; global_joykeys = joykeys;
-	global_tall = menu.tall; global_wide = menu.wide; strcpy(global_remap, remap_str); global_diskwrite = menu.diskwrite;
-	global_fasttape = menu.fasttape; global_tapesound = menu.tapesound;
+	global_tall = menu.tall; global_wide = menu.wide; global_rtg = menu.rtg; strcpy(global_remap, remap_str); global_diskwrite = menu.diskwrite;
+	global_fasttape = menu.fasttape; global_tapesound = menu.tapesound; global_scan = menu.scan;
 	if (!CPCEmulation_CheckEndianness()) { Sys_MenuError("Endianness check failed"); return 10; }
 	CPC_Initialise();
 	/* the test-mode label's colour: an entry the core leaves alone */
@@ -1042,15 +1090,18 @@ int main(int argc, char **argv)
 			menu.skip = skip_max; menu.refresh = refresh; menu.joykeys = joykeys; menu.pad = Sys_PadType;
 			strcpy(menu.remap, remap_str);
 			tape_pos();
+			if (Sys_RtgStatus[0]) { if (!menu.status[0]) strncpy(menu.status, Sys_RtgStatus, sizeof menu.status - 1); Sys_RtgStatus[0] = 0; }   /* RTG fell back to AGA */
 			action = Sys_Menu(&menu);
 			if (strcmp(menu.remap, remap_str)) remap_parse(menu.remap);   /* key map editor / preset */
 			skip_max = menu.skip; refresh = menu.refresh > 0 ? menu.refresh : 1; joykeys = menu.joykeys; Sys_PadType = menu.pad;
 			Sys_VideoMode = menu.video;
 			{ extern unsigned long Sys_AudioIrqs(void); Sys_Log("menu action %d (audio interrupts so far %lu)", action, Sys_AudioIrqs()); }
-			if (action != SYS_MENU_POWER && action != SYS_MENU_RESET && action != SYS_MENU_CONTINUE) Sys_MenuClose();
+			/* on an RTG menu, Save Prefs / Save for game / Forget / Screenshot keep its screen up (the next menu opens in front of it) */
+			if (action != SYS_MENU_POWER && action != SYS_MENU_RESET && action != SYS_MENU_CONTINUE
+			 && !(Sys_MenuOnRtg() && (action == SYS_MENU_SAVE || action == SYS_MENU_SAVEGAME || action == SYS_MENU_FORGETGAME || action == SYS_MENU_SHOT))) Sys_MenuClose();
 			if (action == SYS_MENU_QUIT) break;
-			if (!menu.game_prefs) { strcpy(global_remap, remap_str); global_sound = menu.sound; global_hires = menu.hires; global_joykeys = joykeys; global_tall = menu.tall; global_wide = menu.wide; global_diskwrite = menu.diskwrite; global_fasttape = menu.fasttape; global_tapesound = menu.tapesound; }
-			if (action == SYS_MENU_SAVE) { int gs = menu.sound, gh = menu.hires, gt = menu.tall, gw = menu.wide; if (menu.game_prefs) { menu.sound = global_sound; menu.hires = global_hires; menu.tall = global_tall; menu.wide = global_wide; } else global_joykeys = joykeys; prefs_save(); menu.sound = gs; menu.hires = gh; menu.tall = gt; menu.wide = gw; continue; }
+			if (!menu.game_prefs) { strcpy(global_remap, remap_str); global_sound = menu.sound; global_hires = menu.hires; global_joykeys = joykeys; global_tall = menu.tall; global_wide = menu.wide; global_rtg = menu.rtg; global_diskwrite = menu.diskwrite; global_fasttape = menu.fasttape; global_tapesound = menu.tapesound; global_scan = menu.scan; }
+			if (action == SYS_MENU_SAVE) { int gs = menu.sound, gh = menu.hires, gt = menu.tall, gw = menu.wide, gr = menu.rtg; if (menu.game_prefs) { menu.sound = global_sound; menu.hires = global_hires; menu.tall = global_tall; menu.wide = global_wide; menu.rtg = global_rtg; } else global_joykeys = joykeys; prefs_save(); menu.sound = gs; menu.hires = gh; menu.tall = gt; menu.wide = gw; menu.rtg = gr; continue; }
 			if (action == SYS_MENU_SAVEGAME) { game_prefs_save(); continue; }
 			if (action == SYS_MENU_FORGETGAME) { game_prefs_forget(); continue; }
 			if (action == SYS_MENU_SHOT) { screenshot(); continue; }
@@ -1064,7 +1115,8 @@ int main(int argc, char **argv)
 		CPCEmulation_Run();                 /* returns when Help is pressed (or a script QUIT) */
 		Sys_Log("stopped after %lu frames", Sys_Millis() / 20);
 		Sys_AudioPause();
-		Sys_CloseDisplay(); display_open = 0;
+		if (Sys_RtgActive && !script_quit) Sys_MenuOpenedHook = release_emulation_display;   /* RTG: closed once the menu is up */
+		else { Sys_CloseDisplay(); display_open = 0; }
 		if (script_quit) {
 			char name[SYS_PATH + 8]; FILE *d;
 			flush_disks("exit");   /* before "done": a test runner may stop the machine then */
