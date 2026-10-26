@@ -27,7 +27,7 @@
 #include <stdarg.h>
 
 unsigned long __stack = 256 * 1024;   /* libnix: enlarge the stack at start */
-static const char ver[] __attribute__((used)) = "$VER: Arnold 1.0 (24.10.2026) Amiga port, GPL-2.0";
+static const char ver[] __attribute__((used)) = "$VER: Arnold 1.1 (26.10.2026) Amiga port, GPL-2.0";
 
 /* ---- diagnostic log ---- */
 static FILE *logf;
@@ -87,6 +87,7 @@ static int safe_out, disp_out;    /* replies still outstanding */
 static int safe_pend[3], disp_pend[3];
 static struct BitMap *own_bm[3];   /* buffers 1-2: allocated by us with the screen's layout */
 static int shown;                 /* buffer on screen (or about to be) */
+static int flipped;               /* a ChangeScreenBuffer of this screen succeeded (shown is valid) */
 static int CW, CH;                /* chunky size */
 static int SW, SH;                /* screen size (<= chunky) */
 static int XOFF, YOFF;            /* centring of the screen in the chunky buffer */
@@ -122,7 +123,7 @@ static void draw_osd(struct BitMap *bm)
 }
 static unsigned long frames;
 static UWORD *blankptr;
-#define KQ 64
+#define KQ 128
 static UWORD keyq[KQ], keyqual[KQ];
 static int kq_head, kq_tail;
 static int quit_requested;
@@ -398,6 +399,7 @@ static int vs_choose(int b, int ndirty)
 	if (m0 < SH / 4 && (r < VS_MARGIN / 2 || r > VS_MARGIN + VS_MARGIN / 2)) { Sys_Perf.vs_recentres++; return VS_MARGIN; }
 	return r;
 }
+#endif   /* VSHIFT; AUDIT works with every buffer kind (NO_VSHIFT / NO_SHADOW builds link again) */
 
 /* AUDIT (vscroll, 20 Oct 2026; reassembler N5): after each conversion the
  * whole buffer is read back from chip RAM and compared with a plain c2p of
@@ -450,6 +452,7 @@ static void audit_copper(void)
 	}
 }
 
+#ifdef VSHIFT
 static void vs_place(int b, int r)
 {
 	struct BitMap *t = tall_bm[b];
@@ -538,6 +541,7 @@ int Sys_OpenDisplay(int cw, int ch, int hires)
 	int i, rw, rh, ntsc_max, wide_max;
 
 	CW = cw; CH = ch;
+	flipped = 0;
 	c2p_init();
 	quit_requested = 0; kq_head = kq_tail = 0;
 	/* Standard overscan, not MAX: MAX's rectangle starts further left than a
@@ -791,6 +795,17 @@ void Sys_CloseDisplay(void)
 		while (disp_out > 0) { WaitPort(dispport); collect_disp(); }
 	}
 #endif
+	/* Plain buffers (NOVSHIFT, or chip RAM too short for the tall areas): sb[0] is
+	 * the screen's own bitmap. Put it back on show too. CloseScreen frees the
+	 * bitmap that is installed (intuition.doc, AllocScreenBuffer NOTES), so with
+	 * buffer 1 or 2 on show it freed that one, and an own_bm[] bitmap (where the
+	 * OS accepts them) was then freed a second time below. As the vshift path. */
+	if (!Sys_VShiftOn && flipped && shown != 0 && sb[0] && scr && ChangeScreenBuffer(scr, sb[0])) {
+		safe_out++; disp_out++;
+		while (safe_out > 0) { WaitPort(safeport); collect_safe(); }
+		while (disp_out > 0) { WaitPort(dispport); collect_disp(); }
+	}
+	flipped = 0;
 	if (win) { ClearPointer(win); CloseWindow(win); win = NULL; }
 	if (blankptr) { FreeVec(blankptr); blankptr = NULL; }
 	for (i = 0; i < NBUF; i++) {
@@ -984,6 +999,7 @@ void Sys_ShowFrame(const unsigned char *chunky, int pitch)
 		buf_safe[shown] = 0;
 		buf_safe[next] = 0;
 		shown = next;
+		flipped = 1;
 		safe_out++; disp_out++;
 		safe_pend[next] = disp_pend[next] = 1;
 	}
@@ -1085,8 +1101,20 @@ int Sys_Poll(void)
 	struct IntuiMessage *msg;
 	if (!win) return 1;
 	while ((msg = (struct IntuiMessage *)GetMsg(win->UserPort))) {
-		if (msg->Class == IDCMP_RAWKEY && (msg->Code & 0x7f) < 0x78) {   /* 0x78+: mouse wheel and buttons, not keys */
+		/* 0x78+: mouse wheel and buttons, not keys. A held key's auto-repeat events (a
+		 * second "down" for the same key) are dropped here: the key stays down until its
+		 * key-up, so a held fire or direction can't be disturbed by them and they can't
+		 * fill the queue while the emulation is stopped. A key-up is never lost: if the
+		 * queue is full, the oldest "down" makes room for it (26 Oct 2026). */
+		if (msg->Class == IDCMP_RAWKEY && (msg->Code & 0x7f) < 0x78 && !(msg->Qualifier & IEQUALIFIER_REPEAT)) {
 			int next = (kq_tail + 1) % KQ;
+			if (next == kq_head && (msg->Code & 0x80)) {
+				int i;
+				for (i = kq_head; i != kq_tail; i = (i + 1) % KQ) if (!(keyq[i] & 0x80)) break;
+				if (i == kq_tail) i = kq_head;   /* all key-ups: the oldest goes */
+				for (; i != kq_head; i = (i + KQ - 1) % KQ) { int p = (i + KQ - 1) % KQ; keyq[i] = keyq[p]; keyqual[i] = keyqual[p]; }
+				kq_head = (kq_head + 1) % KQ;
+			}
 			if (next != kq_head) { keyq[kq_tail] = msg->Code; keyqual[kq_tail] = msg->Qualifier; kq_tail = next; }
 		}
 		ReplyMsg((struct Message *)msg);
@@ -1433,7 +1461,12 @@ void Sys_AudioPause(void)
 }
 
 unsigned long Sys_Millis(void) { return frames * 20; }
-void Sys_TimerClose(void) { timer_close(); }
+void Sys_TimerClose(void)
+{
+	timer_close();
+	/* the E-clock request Sys_Micros opened (it was never closed) */
+	if (TimerBase) { CloseDevice((struct IORequest *)&timereq); TimerBase = NULL; }
+}
 
 void Sys_Message(const char *text)
 {

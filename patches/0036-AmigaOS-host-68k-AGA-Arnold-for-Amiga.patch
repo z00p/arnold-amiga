@@ -1,7 +1,7 @@
-From fc6adc52b31e884a61ba16a08ef4962bc38ff9b4 Mon Sep 17 00:00:00 2001
+From 182b0d7158ed74f1c4455fe1ea9aebd6c6d9a740 Mon Sep 17 00:00:00 2001
 From: John Stringer <jcec_1@yahoo.co.uk>
-Date: Sat, 24 Oct 2026 13:02:25 +0100
-Subject: [PATCH 33/34] AmigaOS host (68k AGA): Arnold for Amiga
+Date: Mon, 26 Oct 2026 07:40:43 +0000
+Subject: [PATCH 36/37] AmigaOS host (68k AGA): Arnold for Amiga
 
 src/amiga: the AmigaOS 3.x host (AGA screen with chunky-to-planar and triple
 buffering, Paula sound, rawkey keyboard matrix, joystick/CD32 pads and keys as
@@ -12,17 +12,17 @@ amiga-gcc (-noixemul): see src/amiga/Makefile.
 Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
 ---
  src/amiga/Makefile       |   38 +
- src/amiga/amiga_iff.c    |  100 +++
- src/amiga/amiga_keymap.c |  238 ++++++
+ src/amiga/amiga_iff.c    |  103 +++
+ src/amiga/amiga_keymap.c |  239 ++++++
  src/amiga/amiga_logo.c   |  153 ++++
  src/amiga/amiga_logo.h   |    6 +
- src/amiga/amiga_menu.c   |  675 ++++++++++++++++
- src/amiga/amiga_sys.c    | 1572 ++++++++++++++++++++++++++++++++++++++
- src/amiga/amiga_sys.h    |  131 ++++
- src/amiga/amiga_wb.c     |  170 +++++
+ src/amiga/amiga_menu.c   |  680 ++++++++++++++++
+ src/amiga/amiga_sys.c    | 1605 ++++++++++++++++++++++++++++++++++++++
+ src/amiga/amiga_sys.h    |  132 ++++
+ src/amiga/amiga_wb.c     |  221 ++++++
  src/amiga/audio_conv.h   |   46 ++
  src/amiga/c2p_sh.h       |   48 ++
- src/amiga/host_amiga.c   | 1033 +++++++++++++++++++++++++
+ src/amiga/host_amiga.c   | 1085 ++++++++++++++++++++++++++
  src/amiga/keymaplogic.c  |  135 ++++
  src/amiga/keymaplogic.h  |   34 +
  src/amiga/keyscript.c    |  144 ++++
@@ -30,7 +30,7 @@ Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
  src/amiga/padtest.c      |  125 +++
  src/amiga/screenshot.c   |  115 +++
  src/amiga/screenshot.h   |    7 +
- 19 files changed, 4782 insertions(+)
+ 19 files changed, 4928 insertions(+)
  create mode 100644 src/amiga/Makefile
  create mode 100644 src/amiga/amiga_iff.c
  create mode 100644 src/amiga/amiga_keymap.c
@@ -97,10 +97,10 @@ index 0000000..181666e
 +.PHONY: all clean
 diff --git a/src/amiga/amiga_iff.c b/src/amiga/amiga_iff.c
 new file mode 100644
-index 0000000..934c57a
+index 0000000..224f1af
 --- /dev/null
 +++ b/src/amiga/amiga_iff.c
-@@ -0,0 +1,100 @@
+@@ -0,0 +1,103 @@
 +/* Arnold on AmigaOS: show an IFF ILBM picture (the keyboard map) in a window
 + * on the menu screen. Uncompressed or ByteRun1, up to 8 planes; the picture's
 + * CMAP is loaded into the screen's pens 0..n (the menu uses pens 0-3 too, so
@@ -135,9 +135,12 @@ index 0000000..934c57a
 +	fclose(f);
 +	if (size < 12 || memcmp(buf, "FORM", 4) || memcmp(buf + 8, "ILBM", 4)) { FreeVec(buf); return NULL; }
 +	p = buf + 12; end = buf + size; *ncol = 0;
-+	while (p + 8 <= end) {
++	while (end - p >= 8) {
 +		ULONG len = be32(p + 4); UBYTE *d = p + 8;
-+		if (!memcmp(p, "BMHD", 4)) { w = be16(d); h = be16(d + 2); depth = d[8]; comp = d[10]; }
++		/* a chunk must lie inside the file: a bad length read past the buffer, and on
++		 * a 32-bit machine one near 4 GB wrapped p round to itself (an endless loop) */
++		if (len > (ULONG)(end - d)) break;
++		if (!memcmp(p, "BMHD", 4)) { if (len < 11) break; w = be16(d); h = be16(d + 2); depth = d[8]; comp = d[10]; }
 +		else if (!memcmp(p, "CMAP", 4)) { *ncol = len / 3; if (*ncol > 256) *ncol = 256; memcpy(cmap, d, *ncol * 3); }
 +		else if (!memcmp(p, "BODY", 4) && w && h && depth <= 8) {
 +			int rowbytes = ((w + 15) / 16) * 2, y, pl;
@@ -151,7 +154,7 @@ index 0000000..934c57a
 +				else while (n < rowbytes && s < se) {
 +					signed char c = (signed char)*s++;
 +					if (c >= 0) { int k = c + 1; if (s + k > se) break; if (n + k > rowbytes) k = rowbytes - n; memcpy(row + n, s, k); s += c + 1; n += k; }
-+					else if (c != -128) { int k = 1 - c; UBYTE v = *s++; if (n + k > rowbytes) k = rowbytes - n; memset(row + n, v, k); n += k; }
++					else if (c != -128) { int k = 1 - c; UBYTE v; if (s >= se) break; v = *s++; if (n + k > rowbytes) k = rowbytes - n; memset(row + n, v, k); n += k; }
 +				}
 +			}
 +			break;
@@ -203,10 +206,10 @@ index 0000000..934c57a
 +}
 diff --git a/src/amiga/amiga_keymap.c b/src/amiga/amiga_keymap.c
 new file mode 100644
-index 0000000..58584dd
+index 0000000..4d8deae
 --- /dev/null
 +++ b/src/amiga/amiga_keymap.c
-@@ -0,0 +1,238 @@
+@@ -0,0 +1,239 @@
 +/* Arnold on AmigaOS: the key map editor (24 Oct 2026, John: "key mapping presets
 + * with a simple UI to handle key mapping for a game").
 + * A small GadTools window on the menu screen: the list of "Amiga key -> CPC key"
@@ -225,6 +228,7 @@ index 0000000..58584dd
 +#include <proto/intuition.h>
 +#include <proto/graphics.h>
 +#include <proto/gadtools.h>
++#include <clib/alib_protos.h>   /* NewList (amiga.lib) */
 +#include <stdio.h>
 +#include <string.h>
 +#include "amiga_sys.h"
@@ -618,10 +622,10 @@ index 0000000..b22b3c7
 +#endif
 diff --git a/src/amiga/amiga_menu.c b/src/amiga/amiga_menu.c
 new file mode 100644
-index 0000000..1bbb4a4
+index 0000000..e7229f6
 --- /dev/null
 +++ b/src/amiga/amiga_menu.c
-@@ -0,0 +1,675 @@
+@@ -0,0 +1,680 @@
 +/* Arnold on AmigaOS: the menu screen (GadTools), styled after the OS 3.2 prefs
 + * editors. 17 Oct 2026 (John): the settings live in pull-down menus (Options,
 + * Controls, Display) and the window keeps what changes from game to game.
@@ -669,7 +673,7 @@ index 0000000..1bbb4a4
 +       M_SOUND, M_HIRES, M_SKIP0, M_SKIP1, M_SKIP2, M_SKIP3, M_SKIP5, M_REF1, M_REF2, M_REF3, M_REF4,
 +       M_JOY0, M_JOY1, M_JOY2, M_PAD0, M_PAD1, M_SPEED50, M_SPEEDDISP,
 +       M_VIDAUTO, M_VIDPAL, M_VIDNTSC, M_TALL, M_WIDE, M_DISKWRITE, M_MODEL464, M_MODEL664, M_MODEL6128, M_MODELPLUS, M_MODELGX,
-+       M_LOADTAPE, M_REWIND, M_FASTTAPE, M_KEYEDIT, M_KEYMAPSUB, M_PRESET0 };   /* M_PRESET0 last: the presets follow it */
++       M_LOADTAPE, M_REWIND, M_FASTTAPE, M_TAPESOUND, M_KEYEDIT, M_KEYMAPSUB, M_PRESET0 };   /* M_PRESET0 last: the presets follow it */
 +#define MAXPRESETS 12   /* menu entries for KeyMap_Presets (keymaplogic.c) */
 +#define MENU_REOPEN (-2)   /* menu_pick: the video mode changed, open the screen again */
 +
@@ -740,6 +744,7 @@ index 0000000..1bbb4a4
 +	{ NM_ITEM, (STRPTR)"Hires screen", NULL, CHECKIT | MENUTOGGLE, 0, (APTR)M_HIRES },
 +	{ NM_ITEM, (STRPTR)"Write disks back", NULL, CHECKIT | MENUTOGGLE, 0, (APTR)M_DISKWRITE },
 +	{ NM_ITEM, (STRPTR)"Fast tape loading", NULL, CHECKIT | MENUTOGGLE, 0, (APTR)M_FASTTAPE },
++	{ NM_ITEM, (STRPTR)"Tape loading sound", NULL, CHECKIT | MENUTOGGLE, 0, (APTR)M_TAPESOUND },
 +	{ NM_ITEM, NM_BARLABEL, NULL, 0, 0, NULL },
 +	{ NM_ITEM, (STRPTR)"Frame skip", NULL, 0, 0, NULL },
 +	{ NM_SUB, (STRPTR)"Off", NULL, CHECKIT, X(0), (APTR)M_SKIP0 },
@@ -755,8 +760,8 @@ index 0000000..1bbb4a4
 +	{ NM_TITLE, (STRPTR)"Controls", NULL, 0, 0, NULL },
 +	{ NM_ITEM, (STRPTR)"Keyboard as joystick", NULL, 0, 0, NULL },
 +	{ NM_SUB, (STRPTR)"Off", NULL, CHECKIT, X(0), (APTR)M_JOY0 },
-+	{ NM_SUB, (STRPTR)"Cursors + Z / X", NULL, CHECKIT, X(1), (APTR)M_JOY1 },
-+	{ NM_SUB, (STRPTR)"Q A O P + Space / M", NULL, CHECKIT, X(2), (APTR)M_JOY2 },
++	{ NM_SUB, (STRPTR)"Cursors + Z fire / X fire 2", NULL, CHECKIT, X(1), (APTR)M_JOY1 },
++	{ NM_SUB, (STRPTR)"Q A O P + Space fire / M fire 2", NULL, CHECKIT, X(2), (APTR)M_JOY2 },
 +	{ NM_ITEM, (STRPTR)"Pad in port 2", NULL, 0, 0, NULL },
 +	{ NM_SUB, (STRPTR)"Normal joystick / 2-button pad", NULL, CHECKIT, X(0), (APTR)M_PAD0 },
 +	{ NM_SUB, (STRPTR)"CD32 pad", NULL, CHECKIT, X(1), (APTR)M_PAD1 },
@@ -995,6 +1000,7 @@ index 0000000..1bbb4a4
 +		if (id == M_WIDE) want = m->wide ? 1 : 0;
 +		if (id == M_DISKWRITE) want = m->diskwrite ? 1 : 0;
 +		if (id == M_FASTTAPE) want = m->fasttape ? 1 : 0;
++		if (id == M_TAPESOUND) want = m->tapesound ? 1 : 0;
 +		if (want) nmx[i].nm_Flags |= CHECKED; else nmx[i].nm_Flags &= ~CHECKED;
 +	}
 +}
@@ -1082,7 +1088,7 @@ index 0000000..1bbb4a4
 +	if (!g) { close_menu(); return 0; }
 +	if (!make_menus(m)) { close_menu(); return 0; }
 +	/* version, credit and build time (date and hh:mm) in the title bar */
-+	sprintf(wintitle, "Arnold v0.9 for Amiga - core: Kevin Thacker - built %.6s %.4s %.5s", __DATE__, __DATE__ + 7, __TIME__);
++	sprintf(wintitle, "Arnold v1.1 for Amiga - core: Kevin Thacker - built %.6s %.4s %.5s", __DATE__, __DATE__ + 7, __TIME__);
 +	mwin = OpenWindowTags(NULL, WA_CustomScreen, (ULONG)mscr, WA_Left, 0, WA_Top, mscr->BarHeight + 1,
 +		WA_Width, 640, WA_Height, wh,
 +		WA_Title, (ULONG)wintitle,
@@ -1097,7 +1103,7 @@ index 0000000..1bbb4a4
 +	GT_RefreshWindow(mwin, NULL);
 +	{
 +		char line[SYS_PATH + 32];
-+		sprintf(line, "%s  %sPrefs: %s%s", m->status[0] ? m->status : (m->can_continue ? "Paused: Help returns here, Continue resumes." : "Ready."),
++		snprintf(line, sizeof line, "%s  %sPrefs: %s%s", m->status[0] ? m->status : (m->can_continue ? "Paused: Help returns here, Continue resumes." : "Ready."),
 +			m->tapepos, m->prefs[0] ? (char *)FilePart((STRPTR)m->prefs) : "(none)", m->game_prefs ? " +game" : "");
 +		m->status[0] = 0;
 +		status(line);
@@ -1186,6 +1192,9 @@ index 0000000..1bbb4a4
 +		break;
 +	case M_FASTTAPE: m->fasttape = checked;
 +		status(checked ? "Fast tape: loading runs flat out, picture and sound paused." : "Fast tape off: tapes load at real speed.");
++		break;
++	case M_TAPESOUND: m->tapesound = checked;
++		status(checked ? "Tape sound: you hear the tape while it loads at real speed." : "Tape sound off.");
 +		break;
 +	case M_SKIP0: case M_SKIP1: case M_SKIP2: case M_SKIP3: case M_SKIP5: m->skip = skip_values[id - M_SKIP0]; break;
 +	case M_REF1: case M_REF2: case M_REF3: case M_REF4: m->refresh = id - M_REF1 + 1; break;
@@ -1299,10 +1308,10 @@ index 0000000..1bbb4a4
 +}
 diff --git a/src/amiga/amiga_sys.c b/src/amiga/amiga_sys.c
 new file mode 100644
-index 0000000..fae7dfd
+index 0000000..583bda0
 --- /dev/null
 +++ b/src/amiga/amiga_sys.c
-@@ -0,0 +1,1572 @@
+@@ -0,0 +1,1605 @@
 +/* Arnold on AmigaOS: screen, c2p, palette, keyboard and joystick.
 + * AmigaOS 3.x, AGA. Built with bebbo's m68k-amigaos-gcc, -noixemul. */
 +#include <exec/types.h>
@@ -1332,7 +1341,7 @@ index 0000000..fae7dfd
 +#include <stdarg.h>
 +
 +unsigned long __stack = 256 * 1024;   /* libnix: enlarge the stack at start */
-+static const char ver[] __attribute__((used)) = "$VER: Arnold 0.9 (21.10.2026) Amiga port, GPL-2.0";
++static const char ver[] __attribute__((used)) = "$VER: Arnold 1.1 (26.10.2026) Amiga port, GPL-2.0";
 +
 +/* ---- diagnostic log ---- */
 +static FILE *logf;
@@ -1392,6 +1401,7 @@ index 0000000..fae7dfd
 +static int safe_pend[3], disp_pend[3];
 +static struct BitMap *own_bm[3];   /* buffers 1-2: allocated by us with the screen's layout */
 +static int shown;                 /* buffer on screen (or about to be) */
++static int flipped;               /* a ChangeScreenBuffer of this screen succeeded (shown is valid) */
 +static int CW, CH;                /* chunky size */
 +static int SW, SH;                /* screen size (<= chunky) */
 +static int XOFF, YOFF;            /* centring of the screen in the chunky buffer */
@@ -1427,7 +1437,7 @@ index 0000000..fae7dfd
 +}
 +static unsigned long frames;
 +static UWORD *blankptr;
-+#define KQ 64
++#define KQ 128
 +static UWORD keyq[KQ], keyqual[KQ];
 +static int kq_head, kq_tail;
 +static int quit_requested;
@@ -1703,6 +1713,7 @@ index 0000000..fae7dfd
 +	if (m0 < SH / 4 && (r < VS_MARGIN / 2 || r > VS_MARGIN + VS_MARGIN / 2)) { Sys_Perf.vs_recentres++; return VS_MARGIN; }
 +	return r;
 +}
++#endif   /* VSHIFT; AUDIT works with every buffer kind (NO_VSHIFT / NO_SHADOW builds link again) */
 +
 +/* AUDIT (vscroll, 20 Oct 2026; reassembler N5): after each conversion the
 + * whole buffer is read back from chip RAM and compared with a plain c2p of
@@ -1755,6 +1766,7 @@ index 0000000..fae7dfd
 +	}
 +}
 +
++#ifdef VSHIFT
 +static void vs_place(int b, int r)
 +{
 +	struct BitMap *t = tall_bm[b];
@@ -1843,6 +1855,7 @@ index 0000000..fae7dfd
 +	int i, rw, rh, ntsc_max, wide_max;
 +
 +	CW = cw; CH = ch;
++	flipped = 0;
 +	c2p_init();
 +	quit_requested = 0; kq_head = kq_tail = 0;
 +	/* Standard overscan, not MAX: MAX's rectangle starts further left than a
@@ -2096,6 +2109,17 @@ index 0000000..fae7dfd
 +		while (disp_out > 0) { WaitPort(dispport); collect_disp(); }
 +	}
 +#endif
++	/* Plain buffers (NOVSHIFT, or chip RAM too short for the tall areas): sb[0] is
++	 * the screen's own bitmap. Put it back on show too. CloseScreen frees the
++	 * bitmap that is installed (intuition.doc, AllocScreenBuffer NOTES), so with
++	 * buffer 1 or 2 on show it freed that one, and an own_bm[] bitmap (where the
++	 * OS accepts them) was then freed a second time below. As the vshift path. */
++	if (!Sys_VShiftOn && flipped && shown != 0 && sb[0] && scr && ChangeScreenBuffer(scr, sb[0])) {
++		safe_out++; disp_out++;
++		while (safe_out > 0) { WaitPort(safeport); collect_safe(); }
++		while (disp_out > 0) { WaitPort(dispport); collect_disp(); }
++	}
++	flipped = 0;
 +	if (win) { ClearPointer(win); CloseWindow(win); win = NULL; }
 +	if (blankptr) { FreeVec(blankptr); blankptr = NULL; }
 +	for (i = 0; i < NBUF; i++) {
@@ -2289,6 +2313,7 @@ index 0000000..fae7dfd
 +		buf_safe[shown] = 0;
 +		buf_safe[next] = 0;
 +		shown = next;
++		flipped = 1;
 +		safe_out++; disp_out++;
 +		safe_pend[next] = disp_pend[next] = 1;
 +	}
@@ -2390,8 +2415,20 @@ index 0000000..fae7dfd
 +	struct IntuiMessage *msg;
 +	if (!win) return 1;
 +	while ((msg = (struct IntuiMessage *)GetMsg(win->UserPort))) {
-+		if (msg->Class == IDCMP_RAWKEY && (msg->Code & 0x7f) < 0x78) {   /* 0x78+: mouse wheel and buttons, not keys */
++		/* 0x78+: mouse wheel and buttons, not keys. A held key's auto-repeat events (a
++		 * second "down" for the same key) are dropped here: the key stays down until its
++		 * key-up, so a held fire or direction can't be disturbed by them and they can't
++		 * fill the queue while the emulation is stopped. A key-up is never lost: if the
++		 * queue is full, the oldest "down" makes room for it (26 Oct 2026). */
++		if (msg->Class == IDCMP_RAWKEY && (msg->Code & 0x7f) < 0x78 && !(msg->Qualifier & IEQUALIFIER_REPEAT)) {
 +			int next = (kq_tail + 1) % KQ;
++			if (next == kq_head && (msg->Code & 0x80)) {
++				int i;
++				for (i = kq_head; i != kq_tail; i = (i + 1) % KQ) if (!(keyq[i] & 0x80)) break;
++				if (i == kq_tail) i = kq_head;   /* all key-ups: the oldest goes */
++				for (; i != kq_head; i = (i + KQ - 1) % KQ) { int p = (i + KQ - 1) % KQ; keyq[i] = keyq[p]; keyqual[i] = keyqual[p]; }
++				kq_head = (kq_head + 1) % KQ;
++			}
 +			if (next != kq_head) { keyq[kq_tail] = msg->Code; keyqual[kq_tail] = msg->Qualifier; kq_tail = next; }
 +		}
 +		ReplyMsg((struct Message *)msg);
@@ -2738,7 +2775,12 @@ index 0000000..fae7dfd
 +}
 +
 +unsigned long Sys_Millis(void) { return frames * 20; }
-+void Sys_TimerClose(void) { timer_close(); }
++void Sys_TimerClose(void)
++{
++	timer_close();
++	/* the E-clock request Sys_Micros opened (it was never closed) */
++	if (TimerBase) { CloseDevice((struct IORequest *)&timereq); TimerBase = NULL; }
++}
 +
 +void Sys_Message(const char *text)
 +{
@@ -2877,10 +2919,10 @@ index 0000000..fae7dfd
 +}
 diff --git a/src/amiga/amiga_sys.h b/src/amiga/amiga_sys.h
 new file mode 100644
-index 0000000..57613b4
+index 0000000..1c4c068
 --- /dev/null
 +++ b/src/amiga/amiga_sys.h
-@@ -0,0 +1,131 @@
+@@ -0,0 +1,132 @@
 +/* Arnold on AmigaOS: the OS-facing half of the host. No Arnold headers here
 + * (cpcglob.h has its own BOOL, which clashes with exec/types.h), so
 + * host_amiga.c talks to the Amiga through this small interface only. */
@@ -2950,6 +2992,7 @@ index 0000000..57613b4
 +	int diskwrite;           /* write changed disks back to their .dsk files (22 Oct 2026) */
 +	char tape[SYS_PATH];     /* tape (.cdt) in the cassette deck (24 Oct 2026) */
 +	int fasttape;            /* Fast tape: no drawing or 50 Hz wait while the tape plays */
++	int tapesound;           /* Tape sound: the tape signal is audible at real speed (25 Oct 2026) */
 +	int tape_rewind;         /* set by the menu: rewind the tape on Continue / Reset */
 +	char tapepos[32];        /* "Tape 3/5  " for the status line (host fills it) */
 +};
@@ -2965,7 +3008,7 @@ index 0000000..57613b4
 +
 +/* Workbench start (amiga_wb.c): fills st from the icon's ToolTypes and a
 + * project icon; returns 1 when started from Workbench. */
-+struct SysStart { char prefs[SYS_PATH], media[SYS_PATH], remap[128]; int menu, hires, tall, wide, nosound, skip, refresh, joykeys, pad, speed, video, model, diskwrite, fasttape; char tape[SYS_PATH]; };   /* skip -1, refresh 0, others -1: not given */
++struct SysStart { char prefs[SYS_PATH], media[SYS_PATH], remap[128]; int menu, hires, tall, wide, nosound, skip, refresh, joykeys, pad, speed, video, model, diskwrite, fasttape, tapesound; char tape[SYS_PATH]; };   /* skip -1, refresh 0, others -1: not given */
 +int Sys_ParseModel(const char *v);   /* "464" "664" "6128" "PLUS" "GX4000" (any case) -> SYS_MODEL_*, -1 if not one */
 +int Sys_ParseVideo(const char *v);   /* "AUTO" "PAL" "NTSC" or 0-2 -> 0-2, -1 if not one */
 +int Sys_ParseSpeed(const char *v);   /* "50" or 0 -> 0, "DISPLAY" or 1 -> 1, -1 if not one */
@@ -3014,10 +3057,10 @@ index 0000000..57613b4
 +#endif
 diff --git a/src/amiga/amiga_wb.c b/src/amiga/amiga_wb.c
 new file mode 100644
-index 0000000..db49d19
+index 0000000..56c612a
 --- /dev/null
 +++ b/src/amiga/amiga_wb.c
-@@ -0,0 +1,170 @@
+@@ -0,0 +1,221 @@
 +/* Arnold on AmigaOS: Workbench start. With libnix, main() gets argc == 0 and
 + * argv == the WBStartup message. We read the PREFS ToolType from the icon we
 + * were started from (Arnold's own, or a preset project icon) and take a project icon
@@ -3072,6 +3115,8 @@ index 0000000..db49d19
 +	if (tt) st->diskwrite = atoi(tt) ? 1 : 0;   /* DISKWRITE=0|1: write changed disks back */
 +	tt = (char *)FindToolType((STRPTR *)dobj->do_ToolTypes, (STRPTR)"FASTTAPE");
 +	if (tt) st->fasttape = atoi(tt) ? 1 : 0;   /* FASTTAPE=0|1: fast tape loading (24 Oct 2026) */
++	tt = (char *)FindToolType((STRPTR *)dobj->do_ToolTypes, (STRPTR)"TAPESOUND");
++	if (tt) st->tapesound = (!*tt || atoi(tt)) ? 1 : 0;   /* TAPESOUND=0|1 (25 Oct 2026; a bare TAPESOUND means on) */
 +	tt = (char *)FindToolType((STRPTR *)dobj->do_ToolTypes, (STRPTR)"TAPE");
 +	if (tt) strncpy(st->tape, tt, SYS_PATH - 1);   /* TAPE=<file.cdt> */
 +	FreeDiskObject(dobj);
@@ -3097,13 +3142,61 @@ index 0000000..db49d19
 +	return ok;
 +}
 +
++/* N1 of the code review: on OFS/FFS of older Kickstarts a name is cut to 30
++ * characters, so <name>.tmp/.bak/.old can be one file, or the image itself.
++ * 1 if a and b both exist and are the same object. */
++int Host_SameFile(const char *a, const char *b)
++{
++	BPTR la = Lock((STRPTR)a, SHARED_LOCK), lb;
++	int same = 0;
++	if (!la) return 0;
++	lb = Lock((STRPTR)b, SHARED_LOCK);
++	if (lb) {
++		LONG r = SameLock(la, lb);
++		if (r == LOCK_SAME) same = 1;
++		else if (r == LOCK_SAME_VOLUME) {   /* a handler without SameLock support: compare the disk keys */
++			struct FileInfoBlock *fa = (struct FileInfoBlock *)AllocDosObject(DOS_FIB, NULL);
++			struct FileInfoBlock *fb = (struct FileInfoBlock *)AllocDosObject(DOS_FIB, NULL);
++			if (fa && fb && Examine(la, fa) && Examine(lb, fb) && fa->fib_DiskKey && fa->fib_DiskKey == fb->fib_DiskKey) same = 1;
++			if (fa) FreeDosObject(DOS_FIB, fa);
++			if (fb) FreeDosObject(DOS_FIB, fb);
++		}
++		UnLock(lb);
++	}
++	UnLock(la);
++	return same;
++}
++static int same_name(const char *a, const char *b)   /* AmigaDOS names: case-insensitive (ASCII) */
++{
++	for (; *a && *b; a++, b++) {
++		char x = *a, y = *b;
++		if (x >= 'A' && x <= 'Z') x += 32;
++		if (y >= 'A' && y <= 'Z') y += 32;
++		if (x != y) return 0;
++	}
++	return *a == *b;
++}
++/* 0 if the file exists but is stored under another name than asked for (cut short). */
++int Host_NameKept(const char *name)
++{
++	struct FileInfoBlock *fib;
++	BPTR l = Lock((STRPTR)name, SHARED_LOCK);
++	int ok = 1;
++	if (!l) return 1;
++	fib = (struct FileInfoBlock *)AllocDosObject(DOS_FIB, NULL);
++	if (fib && Examine(l, fib) && !same_name((const char *)fib->fib_FileName, (const char *)FilePart((STRPTR)name))) ok = 0;
++	if (fib) FreeDosObject(DOS_FIB, fib);
++	UnLock(l);
++	return ok;
++}
++
 +int Sys_WBStart(int argc, char **argv, struct SysStart *st)
 +{
 +	struct WBStartup *wbs;
 +	struct WBArg *wa;
 +	memset(st, 0, sizeof *st);
 +	st->skip = -1;
-+	st->joykeys = -1; st->pad = -1; st->speed = -1; st->video = -1; st->model = -1; st->diskwrite = -1; st->fasttape = -1;
++	st->joykeys = -1; st->pad = -1; st->speed = -1; st->video = -1; st->model = -1; st->diskwrite = -1; st->fasttape = -1; st->tapesound = -1;
 +	if (argc != 0) return 0;
 +	wbs = (struct WBStartup *)argv;
 +	if (!wbs || wbs->sm_NumArgs < 1) return 0;
@@ -3121,7 +3214,7 @@ index 0000000..db49d19
 +		memset(&pre, 0, sizeof pre);
 +		pre.skip = -1;
 +		pre.joykeys = -1; pre.pad = -1; pre.speed = -1; pre.video = -1; pre.model = -1; pre.diskwrite = -1;
-+		pre.fasttape = -1;
++		pre.fasttape = -1; pre.tapesound = -1;
 +		if (IconBase && read_tooltypes(wa[1].wa_Name, &pre) && pre.prefs[0]) {
 +			char dir[SYS_PATH];
 +			if (strchr(pre.prefs, ':') == NULL && NameFromLock(wa[1].wa_Lock, (STRPTR)dir, SYS_PATH)) {
@@ -3144,6 +3237,7 @@ index 0000000..db49d19
 +			if (pre.model >= 0) st->model = pre.model;
 +			if (pre.diskwrite >= 0) st->diskwrite = pre.diskwrite;
 +			if (pre.fasttape >= 0) st->fasttape = pre.fasttape;
++			if (pre.tapesound >= 0) st->tapesound = pre.tapesound;
 +			if (pre.tape[0]) strcpy(st->tape, pre.tape);
 +		} else if (NameFromLock(wa[1].wa_Lock, (STRPTR)st->media, SYS_PATH))
 +			AddPart((STRPTR)st->media, wa[1].wa_Name, SYS_PATH);
@@ -3296,10 +3390,10 @@ index 0000000..a598fc2
 +}
 diff --git a/src/amiga/host_amiga.c b/src/amiga/host_amiga.c
 new file mode 100644
-index 0000000..30e8a64
+index 0000000..882fa0c
 --- /dev/null
 +++ b/src/amiga/host_amiga.c
-@@ -0,0 +1,1033 @@
+@@ -0,0 +1,1085 @@
 +/* Arnold host for AmigaOS: implements src/cpc/host.h on top of amiga_sys.c.
 + * The core renders into an 8-bit chunky buffer (384 x 272, one byte per
 + * pixel, PaletteRemap indices); amiga_sys converts it to AGA bitplanes.
@@ -3337,6 +3431,7 @@ index 0000000..30e8a64
 +static struct SysMenu menu;
 +static int global_diskwrite = 1;      /* Write disks back: prefs diskwrite=, DISKWRITE=; a game's own prefs can turn it off */
 +static int global_fasttape = 1;       /* Fast tape: prefs fasttape=, FASTTAPE=; a game's own prefs can turn it off */
++static int global_tapesound;   /* Tape sound (25 Oct 2026): prefs tapesound=, TAPESOUND=; per game too */
 +/* Tapes (24 Oct 2026). The core plays a .cdt (cpc/tzxold.c) while the motor
 + * runs: port B bit 7 follows the pulses, timed by the Z80's cycles. Fast tape:
 + * while the motor runs and the tape has blocks left, frames are emulated but
@@ -3506,6 +3601,10 @@ index 0000000..30e8a64
 +{
 +	if (!display_open) {
 +		W = Width; H = Height;
++		/* a new buffer for each screen (lores/hires may differ): free the last
++		 * one, or every Help / Continue or Power ON leaked 104 KB (208 KB hires).
++		 * The core takes the pointer from Host_GetGraphicsBufferInfo each frame. */
++		if (chunky) free(chunky);
 +		chunky = malloc(W * H);
 +		if (!chunky) return FALSE;
 +		memset(chunky, 0, W * H);
@@ -3590,6 +3689,7 @@ index 0000000..30e8a64
 +void Host_UnLockAudioBuffer(void)
 +{
 +	if (tape_mute) memset(audio_tmp, 0, audio_tmp_len);   /* fast tape: silence (the queue drops what can't be played) */
++	if (menu.tapesound) TapeAudio_Mix((unsigned short *)audio_tmp, audio_tmp_len / 4);   /* tape sound: the tape level into this block (cpc/cassette.c) */
 +	Sys_AudioQueue(audio_tmp, audio_tmp_len / 4);
 +}
 +
@@ -3606,6 +3706,17 @@ index 0000000..30e8a64
 +		tape_fast_frames = 0;
 +	}
 +	tape_mute = fast;
++	{	/* tape sound: only at real speed */
++		static int ts_was;
++		static unsigned long ts_frames;
++		if (menu.tapesound != ts_was) {
++			ts_was = menu.tapesound;
++			TapeAudio_Reset();
++			Sys_Log("tape sound: %s", ts_was ? "on" : "off");
++		}
++		TapeAudio_On = menu.tapesound && audio_open && tape_in[0] && !fast;
++		if (TapeAudio_On && !(++ts_frames % 500)) Sys_Log("tape sound: %lu frames mixed, %lu level changes", ts_frames, TapeAudio_Changes);
++	}
 +	if (audio_open) CPC_UpdateAudio();
 +	if (fast) { behind_us = 0; tape_fast_frames++; return; }   /* fast tape: no 50 Hz wait */
 +	behind_us = turbo ? 0 : Sys_WaitFrame();   /* TURBO: run flat out */
@@ -3703,7 +3814,9 @@ index 0000000..30e8a64
 +	for (p = strtok(buf, ", "); p; p = strtok(NULL, ", ")) {
 +		c = strchr(p, ':'); if (!c) continue; *c++ = 0;
 +		a = amiga_key_code(p); k = KeyScript_KeyId(c);
-+		if (a < 0 || k < 0) { Sys_Log("remap: can't map '%s:%s'", p, c); continue; }
++		/* the target must be a CPC key: "A:<name>" (a script's Amiga key) would be
++		 * KS_AMIGA | rawkey, far past the CPC keyboard matrix in CPC_SetKey */
++		if (a < 0 || k < 0 || (k & KS_AMIGA)) { Sys_Log("remap: can't map '%s:%s'", p, c); continue; }
 +		remap_key[a] = k; remap_on = 1;
 +	}
 +}
@@ -3850,6 +3963,7 @@ index 0000000..30e8a64
 +		else if (!strcmp(line, "diskb")) strncpy(menu.diskb, v, SYS_PATH - 1);
 +		else if (!strcmp(line, "diskwrite")) menu.diskwrite = atoi(v) ? 1 : 0;
 +		else if (!strcmp(line, "fasttape")) menu.fasttape = atoi(v) ? 1 : 0;
++		else if (!strcmp(line, "tapesound")) menu.tapesound = atoi(v) ? 1 : 0;
 +		else if (!strcmp(line, "tape")) strncpy(menu.tape, v, SYS_PATH - 1);
 +	}
 +	fclose(f);
@@ -3867,6 +3981,7 @@ index 0000000..30e8a64
 +	fprintf(f, "tall=%d\nwide=%d\n", menu.tall, menu.wide);
 +	fprintf(f, "diskwrite=%d\n", global_diskwrite);
 +	fprintf(f, "fasttape=%d\ntape=%s\n", global_fasttape, menu.tape);
++	fprintf(f, "tapesound=%d\n", global_tapesound);
 +	if (global_remap[0]) fprintf(f, "remap=%s\n", global_remap);
 +	fclose(f);
 +}
@@ -3889,11 +4004,11 @@ index 0000000..30e8a64
 +
 +static void game_prefs_apply(void)
 +{
-+	char name[SYS_PATH + 8], line[64], *v;
++	char name[SYS_PATH + 8], line[SYS_PATH + 16], *v;   /* a remap= line can be 6 + 127 characters */
 +	FILE *f;
 +	menu.sound = global_sound; menu.hires = global_hires; menu.game_prefs = 0; menu.tall = global_tall; menu.wide = global_wide;
 +	menu.diskwrite = global_diskwrite;
-+	menu.fasttape = global_fasttape;
++	menu.fasttape = global_fasttape; menu.tapesound = global_tapesound;
 +	joykeys = global_joykeys;
 +	if (strcmp(remap_str, global_remap)) remap_parse(global_remap);
 +	game_prefs_name(name);
@@ -3910,6 +4025,7 @@ index 0000000..30e8a64
 +		else if (!strcmp(line, "remap")) remap_parse(v);
 +		else if (!strcmp(line, "diskwrite")) menu.diskwrite = atoi(v) ? 1 : 0;
 +		else if (!strcmp(line, "fasttape")) menu.fasttape = atoi(v) ? 1 : 0;
++		else if (!strcmp(line, "tapesound")) menu.tapesound = atoi(v) ? 1 : 0;
 +	}
 +	fclose(f);
 +	menu.game_prefs = 1;
@@ -3926,6 +4042,7 @@ index 0000000..30e8a64
 +	if (remap_str[0]) fprintf(f, "remap=%s\n", remap_str);
 +	if (menu.diskwrite != global_diskwrite) fprintf(f, "diskwrite=%d\n", menu.diskwrite);
 +	if (menu.fasttape != global_fasttape) fprintf(f, "fasttape=%d\n", menu.fasttape);
++	if (menu.tapesound != global_tapesound) fprintf(f, "tapesound=%d\n", menu.tapesound);
 +	fclose(f);
 +	menu.game_prefs = 1;
 +}
@@ -3938,7 +4055,7 @@ index 0000000..30e8a64
 +	menu.game_prefs = 0;
 +	menu.sound = global_sound; menu.hires = global_hires; joykeys = global_joykeys; menu.tall = global_tall; menu.wide = global_wide;
 +	menu.diskwrite = global_diskwrite;
-+	menu.fasttape = global_fasttape;
++	menu.fasttape = global_fasttape; menu.tapesound = global_tapesound;
 +	remap_parse(global_remap);
 +}
 +
@@ -4068,13 +4185,21 @@ index 0000000..30e8a64
 +{
 +	static const char *dir[] = { "cpc464", "cpc664", "cpc6128" };
 +	char n[64];
++	unsigned char *os = NULL, *basic = NULL, *dos = NULL;
 +	if (rom_model == model) return 1;
-+	rom_model = -1;
++	/* all three into new buffers first: the running machine (Continue is still
++	 * offered when this Power ON fails) reads the old ones through the core's
++	 * pointers, so they are only replaced once every file has loaded; power_on
++	 * hands the new ones to the core straight after */
 +	sprintf(n, "PROGDIR:roms/%s/os.rom", dir[model]);
-+	if (!load_rom(n, &rom_os)) return 0;
++	if (!load_rom(n, &os)) return 0;
 +	sprintf(n, "PROGDIR:roms/%s/basic.rom", dir[model]);
-+	if (!load_rom(n, &rom_basic)) return 0;
-+	if (model != SYS_MODEL_464 && !rom_dos && !load_rom("PROGDIR:roms/amsdos.rom", &rom_dos)) return 0;
++	if (!load_rom(n, &basic)) { free(os); return 0; }
++	if (model != SYS_MODEL_464 && !rom_dos && !load_rom("PROGDIR:roms/amsdos.rom", &dos)) { free(os); free(basic); return 0; }
++	if (rom_os) free(rom_os);
++	if (rom_basic) free(rom_basic);
++	rom_os = os; rom_basic = basic;
++	if (dos) rom_dos = dos;
 +	rom_model = model;
 +	Sys_Log("system ROMs: %s loaded", dir[model]);
 +	return 1;
@@ -4096,6 +4221,19 @@ index 0000000..30e8a64
 +		if (!menu.cart[0]) strcpy(menu.cart, "PROGDIR:roms/system.cpr");
 +		if (!load_media("cartridge", menu.cart, &data, &len)) return 0;
 +		Sys_Log("cartridge '%s': %lu bytes", menu.cart, len);
++		{
++			/* Cartridge_Insert ignores a file that is not a cartridge and keeps the
++			 * last one, so check it before anything changes (it would run the
++			 * previous game, or none, without a word) */
++			extern BOOL Cartridge_ValidateCartridge(const unsigned char *pData, int FileSize);
++			if (len < 12 || !Cartridge_ValidateCartridge(data, (int)len)) {
++				char msg[SYS_PATH + 40];
++				sprintf(msg, "Not a CPC+ cartridge (.cpr)\n%s", menu.cart);
++				Sys_MenuError(msg);
++				free(data);
++				return 0;
++			}
++		}
 +	} else if (!load_cpc_roms(model)) return 0;
 +	game_prefs_apply();
 +	if (plus) {
@@ -4168,6 +4306,11 @@ index 0000000..30e8a64
 +	if (menu.sound && !audio_open && Sys_AudioOpen(aud_period, AUD_SAMPLES, aud_int)) { audio_open = 1; CPC_SetAudioActive(TRUE); }
 +	if (!menu.sound && audio_open) { Sys_AudioClose(); audio_open = 0; CPC_SetAudioActive(FALSE); }
 +	CPC_ClearKeyboard();
++	/* and the joystick state with it: a joy key held when Help was pressed is
++	 * released in the menu, which kept its bit in kb_joy (the real joystick's
++	 * same direction then did nothing until that key was tapped again);
++	 * joy_prev 0: the next frame sets whatever is really held */
++	kb_joy = 0; joy_prev = 0;
 +	Sys_Log("emulation: screen open, sound %s", audio_open ? "on" : "off");
 +	return 1;
 +}
@@ -4184,7 +4327,7 @@ index 0000000..30e8a64
 +	strcpy(menu.prefs, "PROGDIR:Arnold.prefs");
 +	menu.sound = 1;
 +	menu.diskwrite = 1;
-+	menu.fasttape = 1;
++	menu.fasttape = 1; menu.tapesound = 0;
 +	menu.model = SYS_MODEL_PLUS; menu.running_model = -1;
 +	Sys_LogOpen();
 +	Sys_LogStart(argc);
@@ -4206,6 +4349,7 @@ index 0000000..30e8a64
 +		if (st.model >= 0) menu.model = st.model;
 +		if (st.diskwrite >= 0) menu.diskwrite = st.diskwrite;
 +		if (st.fasttape >= 0) menu.fasttape = st.fasttape;
++		if (st.tapesound >= 0) menu.tapesound = st.tapesound;
 +		if (st.tape[0]) strncpy(menu.tape, st.tape, SYS_PATH - 1);
 +		if (has_ext(st.media, ".cpr")) { strncpy(menu.cart, st.media, SYS_PATH - 1); media_given = 1; }
 +		else if (has_ext(st.media, ".dsk")) { strncpy(menu.diska, st.media, SYS_PATH - 1); menu.diskb[0] = 0; media_given = 1; }
@@ -4238,6 +4382,8 @@ index 0000000..30e8a64
 +			else if (!kwncmp(argv[i], "MODEL=", 6)) { int k = Sys_ParseModel(argv[i] + 6); if (k >= 0) menu.model = k; }
 +			else if (!kwncmp(argv[i], "DISKWRITE=", 10)) menu.diskwrite = atoi(argv[i] + 10) ? 1 : 0;
 +			else if (!kwncmp(argv[i], "FASTTAPE=", 9)) menu.fasttape = atoi(argv[i] + 9) ? 1 : 0;
++			else if (!kwncmp(argv[i], "TAPESOUND=", 10)) menu.tapesound = atoi(argv[i] + 10) ? 1 : 0;
++			else if (!kwcmp(argv[i], "TAPESOUND")) menu.tapesound = 1;
 +			else if (!kwncmp(argv[i], "TAPE=", 5)) { strncpy(menu.tape, argv[i] + 5, SYS_PATH - 1); media_given = 1; }
 +			else if (!kwcmp(argv[i], "BENCH")) {
 +				/* machine timings to the Shell and PROGDIR:bench.txt, then exit */
@@ -4260,8 +4406,8 @@ index 0000000..30e8a64
 +			else if (has_ext(argv[i], ".cdt")) { strncpy(menu.tape, argv[i], SYS_PATH - 1); media_given = 1; }
 +		}
 +	}
-+	Sys_Log("prefs '%s': sound %d hires %d skip %d refresh %d model %s video %s speed %s cart '%s'", menu.prefs, menu.sound, menu.hires, skip_max, refresh,
-+		Sys_ModelNames[menu.model], Sys_VideoNames[menu.video], Sys_SpeedNames[menu.speed], menu.cart);
++	Sys_Log("prefs '%s': sound %d hires %d skip %d refresh %d model %s video %s speed %s cart '%s' fasttape %d tapesound %d", menu.prefs, menu.sound, menu.hires, skip_max, refresh,
++		Sys_ModelNames[menu.model], Sys_VideoNames[menu.video], Sys_SpeedNames[menu.speed], menu.cart, menu.fasttape, menu.tapesound);
 +	Sys_VideoMode = menu.video;
 +	if (script_on) Sys_MakeDir(snapdir);
 +	if (nosound) menu.sound = 0;
@@ -4270,7 +4416,7 @@ index 0000000..30e8a64
 +	if (wide) menu.wide = 1;
 +	global_sound = menu.sound; global_hires = menu.hires; global_joykeys = joykeys;
 +	global_tall = menu.tall; global_wide = menu.wide; strcpy(global_remap, remap_str); global_diskwrite = menu.diskwrite;
-+	global_fasttape = menu.fasttape;
++	global_fasttape = menu.fasttape; global_tapesound = menu.tapesound;
 +	if (!CPCEmulation_CheckEndianness()) { Sys_MenuError("Endianness check failed"); return 10; }
 +	CPC_Initialise();
 +	/* the test-mode label's colour: an entry the core leaves alone */
@@ -4299,7 +4445,7 @@ index 0000000..30e8a64
 +			{ extern unsigned long Sys_AudioIrqs(void); Sys_Log("menu action %d (audio interrupts so far %lu)", action, Sys_AudioIrqs()); }
 +			if (action != SYS_MENU_POWER && action != SYS_MENU_RESET && action != SYS_MENU_CONTINUE) Sys_MenuClose();
 +			if (action == SYS_MENU_QUIT) break;
-+			if (!menu.game_prefs) { strcpy(global_remap, remap_str); global_sound = menu.sound; global_hires = menu.hires; global_joykeys = joykeys; global_tall = menu.tall; global_wide = menu.wide; global_diskwrite = menu.diskwrite; global_fasttape = menu.fasttape; }
++			if (!menu.game_prefs) { strcpy(global_remap, remap_str); global_sound = menu.sound; global_hires = menu.hires; global_joykeys = joykeys; global_tall = menu.tall; global_wide = menu.wide; global_diskwrite = menu.diskwrite; global_fasttape = menu.fasttape; global_tapesound = menu.tapesound; }
 +			if (action == SYS_MENU_SAVE) { int gs = menu.sound, gh = menu.hires, gt = menu.tall, gw = menu.wide; if (menu.game_prefs) { menu.sound = global_sound; menu.hires = global_hires; menu.tall = global_tall; menu.wide = global_wide; } else global_joykeys = joykeys; prefs_save(); menu.sound = gs; menu.hires = gh; menu.tall = gt; menu.wide = gw; continue; }
 +			if (action == SYS_MENU_SAVEGAME) { game_prefs_save(); continue; }
 +			if (action == SYS_MENU_FORGETGAME) { game_prefs_forget(); continue; }

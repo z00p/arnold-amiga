@@ -16,6 +16,7 @@
 #include <proto/intuition.h>
 #include <proto/graphics.h>
 #include <proto/gadtools.h>
+#include <clib/alib_protos.h>   /* NewList (amiga.lib) */
 #include <stdio.h>
 #include <string.h>
 #include "amiga_sys.h"

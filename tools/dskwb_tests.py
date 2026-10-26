@@ -206,6 +206,23 @@ def main():
     check('write-protected: not written', 'write-protected' in log and open(p, 'rb').read() == orig, [l for l in log.splitlines() if 'write-back' in l])
     check('write-protected: no .bak/.tmp', not any(os.path.exists(p + x) for x in ('.bak', '.tmp', '.old')))
 
+    # 4b. a volume that cuts names to 30 characters (N1 of the code review; DISKWB_TRUNC=30 makes the
+    #     host hooks report aliasing the way OFS/FFS does): the write is refused and no file is removed
+    os.environ['DISKWB_TRUNC'] = '30'
+    try:
+        for leaf_len in (20, 26, 27, 28, 29, 30):
+            d = fresh(G('blank_std.dsk'), D(('a' * (leaf_len - 4)) + '.dsk'))
+            orig = open(d, 'rb').read()
+            log = wb_run('trunc%d' % leaf_len, save[:3] + [(15, 'SNAP')], 16, diska=d)
+            wl = [l for l in log.splitlines() if 'write-back' in l]
+            if leaf_len <= 26:   # name + ".tmp" still fits in 30 characters
+                check('trunc volume, %d-char name: written' % leaf_len, 'written' in log and open(d, 'rb').read() != orig, wl)
+            else:
+                check('trunc volume, %d-char name: refused' % leaf_len, 'name too long' in log and open(d, 'rb').read() == orig, wl)
+                check('trunc %d: image kept, no stray files' % leaf_len, os.path.exists(d) and not any(os.path.exists(d + x) for x in ('.bak', '.tmp', '.old')))
+    finally:
+        os.environ.pop('DISKWB_TRUNC', None)
+
     # 5. nothing written when nothing changed (CAT only)
     d = fresh(G('std_data.dsk'), D('readonly_use.dsk'))
     orig = open(d, 'rb').read()

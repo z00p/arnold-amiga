@@ -33,8 +33,9 @@ file, with the original kept once as `<name>.dsk.bak` (option "Write disks back"
 `DISKWRITE=0` to turn it off).
 
 Tapes: .cdt (TZX) images load on every model (`RUN"` on a 464, `|TAPE` first on the others),
-with fast tape loading (`FASTTAPE`) that leaves the machine exactly as at real speed. Saving to
-tape is not supported. Known issues are listed in the drawer's README.txt
+with fast tape loading (`FASTTAPE`) that leaves the machine exactly as at real speed, and an
+optional tape loading sound at real speed (`TAPESOUND`, off by default). Saving to tape is not
+supported. Known issues are listed in the drawer's README.txt
 (NTSC cropping of edge-drawn games).
 
 ## What to expect

@@ -24,5 +24,10 @@ int  DskWrite_Flush(int drive, const char *name, unsigned char **pimg, unsigned 
 
 /* the host: 0 if the file or its volume is write-protected */
 int  Host_FileWritable(const char *name);
+/* 1 if both names exist and are the very same file (SameLock on the Amiga) */
+int  Host_SameFile(const char *a, const char *b);
+/* 0 if the file exists but the volume stored it under a shorter name than
+ * asked for (names cut to 30 characters); 1 if fine or if it does not exist */
+int  Host_NameKept(const char *name);
 
 #endif

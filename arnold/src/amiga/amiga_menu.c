@@ -45,7 +45,7 @@ enum { M_NONE, M_LOADCART, M_LOADA, M_LOADB, M_EJECTALL, M_KEYS, M_SHOT, M_SAVE,
        M_SOUND, M_HIRES, M_SKIP0, M_SKIP1, M_SKIP2, M_SKIP3, M_SKIP5, M_REF1, M_REF2, M_REF3, M_REF4,
        M_JOY0, M_JOY1, M_JOY2, M_PAD0, M_PAD1, M_SPEED50, M_SPEEDDISP,
        M_VIDAUTO, M_VIDPAL, M_VIDNTSC, M_TALL, M_WIDE, M_DISKWRITE, M_MODEL464, M_MODEL664, M_MODEL6128, M_MODELPLUS, M_MODELGX,
-       M_LOADTAPE, M_REWIND, M_FASTTAPE, M_KEYEDIT, M_KEYMAPSUB, M_PRESET0 };   /* M_PRESET0 last: the presets follow it */
+       M_LOADTAPE, M_REWIND, M_FASTTAPE, M_TAPESOUND, M_KEYEDIT, M_KEYMAPSUB, M_PRESET0 };   /* M_PRESET0 last: the presets follow it */
 #define MAXPRESETS 12   /* menu entries for KeyMap_Presets (keymaplogic.c) */
 #define MENU_REOPEN (-2)   /* menu_pick: the video mode changed, open the screen again */
 
@@ -116,6 +116,7 @@ static struct NewMenu nm[] = {
 	{ NM_ITEM, (STRPTR)"Hires screen", NULL, CHECKIT | MENUTOGGLE, 0, (APTR)M_HIRES },
 	{ NM_ITEM, (STRPTR)"Write disks back", NULL, CHECKIT | MENUTOGGLE, 0, (APTR)M_DISKWRITE },
 	{ NM_ITEM, (STRPTR)"Fast tape loading", NULL, CHECKIT | MENUTOGGLE, 0, (APTR)M_FASTTAPE },
+	{ NM_ITEM, (STRPTR)"Tape loading sound", NULL, CHECKIT | MENUTOGGLE, 0, (APTR)M_TAPESOUND },
 	{ NM_ITEM, NM_BARLABEL, NULL, 0, 0, NULL },
 	{ NM_ITEM, (STRPTR)"Frame skip", NULL, 0, 0, NULL },
 	{ NM_SUB, (STRPTR)"Off", NULL, CHECKIT, X(0), (APTR)M_SKIP0 },
@@ -131,8 +132,8 @@ static struct NewMenu nm[] = {
 	{ NM_TITLE, (STRPTR)"Controls", NULL, 0, 0, NULL },
 	{ NM_ITEM, (STRPTR)"Keyboard as joystick", NULL, 0, 0, NULL },
 	{ NM_SUB, (STRPTR)"Off", NULL, CHECKIT, X(0), (APTR)M_JOY0 },
-	{ NM_SUB, (STRPTR)"Cursors + Z / X", NULL, CHECKIT, X(1), (APTR)M_JOY1 },
-	{ NM_SUB, (STRPTR)"Q A O P + Space / M", NULL, CHECKIT, X(2), (APTR)M_JOY2 },
+	{ NM_SUB, (STRPTR)"Cursors + Z fire / X fire 2", NULL, CHECKIT, X(1), (APTR)M_JOY1 },
+	{ NM_SUB, (STRPTR)"Q A O P + Space fire / M fire 2", NULL, CHECKIT, X(2), (APTR)M_JOY2 },
 	{ NM_ITEM, (STRPTR)"Pad in port 2", NULL, 0, 0, NULL },
 	{ NM_SUB, (STRPTR)"Normal joystick / 2-button pad", NULL, CHECKIT, X(0), (APTR)M_PAD0 },
 	{ NM_SUB, (STRPTR)"CD32 pad", NULL, CHECKIT, X(1), (APTR)M_PAD1 },
@@ -371,6 +372,7 @@ static void set_checks(struct SysMenu *m)
 		if (id == M_WIDE) want = m->wide ? 1 : 0;
 		if (id == M_DISKWRITE) want = m->diskwrite ? 1 : 0;
 		if (id == M_FASTTAPE) want = m->fasttape ? 1 : 0;
+		if (id == M_TAPESOUND) want = m->tapesound ? 1 : 0;
 		if (want) nmx[i].nm_Flags |= CHECKED; else nmx[i].nm_Flags &= ~CHECKED;
 	}
 }
@@ -458,7 +460,7 @@ static int open_menu(struct SysMenu *m)
 	if (!g) { close_menu(); return 0; }
 	if (!make_menus(m)) { close_menu(); return 0; }
 	/* version, credit and build time (date and hh:mm) in the title bar */
-	sprintf(wintitle, "Arnold v1.0 for Amiga - core: Kevin Thacker - built %.6s %.4s %.5s", __DATE__, __DATE__ + 7, __TIME__);
+	sprintf(wintitle, "Arnold v1.1 for Amiga - core: Kevin Thacker - built %.6s %.4s %.5s", __DATE__, __DATE__ + 7, __TIME__);
 	mwin = OpenWindowTags(NULL, WA_CustomScreen, (ULONG)mscr, WA_Left, 0, WA_Top, mscr->BarHeight + 1,
 		WA_Width, 640, WA_Height, wh,
 		WA_Title, (ULONG)wintitle,
@@ -473,7 +475,7 @@ static int open_menu(struct SysMenu *m)
 	GT_RefreshWindow(mwin, NULL);
 	{
 		char line[SYS_PATH + 32];
-		sprintf(line, "%s  %sPrefs: %s%s", m->status[0] ? m->status : (m->can_continue ? "Paused: Help returns here, Continue resumes." : "Ready."),
+		snprintf(line, sizeof line, "%s  %sPrefs: %s%s", m->status[0] ? m->status : (m->can_continue ? "Paused: Help returns here, Continue resumes." : "Ready."),
 			m->tapepos, m->prefs[0] ? (char *)FilePart((STRPTR)m->prefs) : "(none)", m->game_prefs ? " +game" : "");
 		m->status[0] = 0;
 		status(line);
@@ -562,6 +564,9 @@ static int menu_pick(struct SysMenu *m, struct MenuItem *item)
 		break;
 	case M_FASTTAPE: m->fasttape = checked;
 		status(checked ? "Fast tape: loading runs flat out, picture and sound paused." : "Fast tape off: tapes load at real speed.");
+		break;
+	case M_TAPESOUND: m->tapesound = checked;
+		status(checked ? "Tape sound: you hear the tape while it loads at real speed." : "Tape sound off.");
 		break;
 	case M_SKIP0: case M_SKIP1: case M_SKIP2: case M_SKIP3: case M_SKIP5: m->skip = skip_values[id - M_SKIP0]; break;
 	case M_REF1: case M_REF2: case M_REF3: case M_REF4: m->refresh = id - M_REF1 + 1; break;

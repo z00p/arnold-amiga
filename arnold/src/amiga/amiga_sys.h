@@ -67,6 +67,7 @@ struct SysMenu {
 	int diskwrite;           /* write changed disks back to their .dsk files (22 Oct 2026) */
 	char tape[SYS_PATH];     /* tape (.cdt) in the cassette deck (24 Oct 2026) */
 	int fasttape;            /* Fast tape: no drawing or 50 Hz wait while the tape plays */
+	int tapesound;           /* Tape sound: the tape signal is audible at real speed (25 Oct 2026) */
 	int tape_rewind;         /* set by the menu: rewind the tape on Continue / Reset */
 	char tapepos[32];        /* "Tape 3/5  " for the status line (host fills it) */
 };
@@ -82,7 +83,7 @@ void Sys_ShowPicture(void *screen, const char *name);   /* amiga_iff.c: modal IF
 
 /* Workbench start (amiga_wb.c): fills st from the icon's ToolTypes and a
  * project icon; returns 1 when started from Workbench. */
-struct SysStart { char prefs[SYS_PATH], media[SYS_PATH], remap[128]; int menu, hires, tall, wide, nosound, skip, refresh, joykeys, pad, speed, video, model, diskwrite, fasttape; char tape[SYS_PATH]; };   /* skip -1, refresh 0, others -1: not given */
+struct SysStart { char prefs[SYS_PATH], media[SYS_PATH], remap[128]; int menu, hires, tall, wide, nosound, skip, refresh, joykeys, pad, speed, video, model, diskwrite, fasttape, tapesound; char tape[SYS_PATH]; };   /* skip -1, refresh 0, others -1: not given */
 int Sys_ParseModel(const char *v);   /* "464" "664" "6128" "PLUS" "GX4000" (any case) -> SYS_MODEL_*, -1 if not one */
 int Sys_ParseVideo(const char *v);   /* "AUTO" "PAL" "NTSC" or 0-2 -> 0-2, -1 if not one */
 int Sys_ParseSpeed(const char *v);   /* "50" or 0 -> 0, "DISPLAY" or 1 -> 1, -1 if not one */

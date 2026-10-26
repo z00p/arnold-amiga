@@ -52,6 +52,8 @@ static int read_tooltypes(STRPTR name, struct SysStart *st)
 	if (tt) st->diskwrite = atoi(tt) ? 1 : 0;   /* DISKWRITE=0|1: write changed disks back */
 	tt = (char *)FindToolType((STRPTR *)dobj->do_ToolTypes, (STRPTR)"FASTTAPE");
 	if (tt) st->fasttape = atoi(tt) ? 1 : 0;   /* FASTTAPE=0|1: fast tape loading (24 Oct 2026) */
+	tt = (char *)FindToolType((STRPTR *)dobj->do_ToolTypes, (STRPTR)"TAPESOUND");
+	if (tt) st->tapesound = (!*tt || atoi(tt)) ? 1 : 0;   /* TAPESOUND=0|1 (25 Oct 2026; a bare TAPESOUND means on) */
 	tt = (char *)FindToolType((STRPTR *)dobj->do_ToolTypes, (STRPTR)"TAPE");
 	if (tt) strncpy(st->tape, tt, SYS_PATH - 1);   /* TAPE=<file.cdt> */
 	FreeDiskObject(dobj);
@@ -77,13 +79,61 @@ int Host_FileWritable(const char *name)
 	return ok;
 }
 
+/* N1 of the code review: on OFS/FFS of older Kickstarts a name is cut to 30
+ * characters, so <name>.tmp/.bak/.old can be one file, or the image itself.
+ * 1 if a and b both exist and are the same object. */
+int Host_SameFile(const char *a, const char *b)
+{
+	BPTR la = Lock((STRPTR)a, SHARED_LOCK), lb;
+	int same = 0;
+	if (!la) return 0;
+	lb = Lock((STRPTR)b, SHARED_LOCK);
+	if (lb) {
+		LONG r = SameLock(la, lb);
+		if (r == LOCK_SAME) same = 1;
+		else if (r == LOCK_SAME_VOLUME) {   /* a handler without SameLock support: compare the disk keys */
+			struct FileInfoBlock *fa = (struct FileInfoBlock *)AllocDosObject(DOS_FIB, NULL);
+			struct FileInfoBlock *fb = (struct FileInfoBlock *)AllocDosObject(DOS_FIB, NULL);
+			if (fa && fb && Examine(la, fa) && Examine(lb, fb) && fa->fib_DiskKey && fa->fib_DiskKey == fb->fib_DiskKey) same = 1;
+			if (fa) FreeDosObject(DOS_FIB, fa);
+			if (fb) FreeDosObject(DOS_FIB, fb);
+		}
+		UnLock(lb);
+	}
+	UnLock(la);
+	return same;
+}
+static int same_name(const char *a, const char *b)   /* AmigaDOS names: case-insensitive (ASCII) */
+{
+	for (; *a && *b; a++, b++) {
+		char x = *a, y = *b;
+		if (x >= 'A' && x <= 'Z') x += 32;
+		if (y >= 'A' && y <= 'Z') y += 32;
+		if (x != y) return 0;
+	}
+	return *a == *b;
+}
+/* 0 if the file exists but is stored under another name than asked for (cut short). */
+int Host_NameKept(const char *name)
+{
+	struct FileInfoBlock *fib;
+	BPTR l = Lock((STRPTR)name, SHARED_LOCK);
+	int ok = 1;
+	if (!l) return 1;
+	fib = (struct FileInfoBlock *)AllocDosObject(DOS_FIB, NULL);
+	if (fib && Examine(l, fib) && !same_name((const char *)fib->fib_FileName, (const char *)FilePart((STRPTR)name))) ok = 0;
+	if (fib) FreeDosObject(DOS_FIB, fib);
+	UnLock(l);
+	return ok;
+}
+
 int Sys_WBStart(int argc, char **argv, struct SysStart *st)
 {
 	struct WBStartup *wbs;
 	struct WBArg *wa;
 	memset(st, 0, sizeof *st);
 	st->skip = -1;
-	st->joykeys = -1; st->pad = -1; st->speed = -1; st->video = -1; st->model = -1; st->diskwrite = -1; st->fasttape = -1;
+	st->joykeys = -1; st->pad = -1; st->speed = -1; st->video = -1; st->model = -1; st->diskwrite = -1; st->fasttape = -1; st->tapesound = -1;
 	if (argc != 0) return 0;
 	wbs = (struct WBStartup *)argv;
 	if (!wbs || wbs->sm_NumArgs < 1) return 0;
@@ -101,7 +151,7 @@ int Sys_WBStart(int argc, char **argv, struct SysStart *st)
 		memset(&pre, 0, sizeof pre);
 		pre.skip = -1;
 		pre.joykeys = -1; pre.pad = -1; pre.speed = -1; pre.video = -1; pre.model = -1; pre.diskwrite = -1;
-		pre.fasttape = -1;
+		pre.fasttape = -1; pre.tapesound = -1;
 		if (IconBase && read_tooltypes(wa[1].wa_Name, &pre) && pre.prefs[0]) {
 			char dir[SYS_PATH];
 			if (strchr(pre.prefs, ':') == NULL && NameFromLock(wa[1].wa_Lock, (STRPTR)dir, SYS_PATH)) {
@@ -124,6 +174,7 @@ int Sys_WBStart(int argc, char **argv, struct SysStart *st)
 			if (pre.model >= 0) st->model = pre.model;
 			if (pre.diskwrite >= 0) st->diskwrite = pre.diskwrite;
 			if (pre.fasttape >= 0) st->fasttape = pre.fasttape;
+			if (pre.tapesound >= 0) st->tapesound = pre.tapesound;
 			if (pre.tape[0]) strcpy(st->tape, pre.tape);
 		} else if (NameFromLock(wa[1].wa_Lock, (STRPTR)st->media, SYS_PATH))
 			AddPart((STRPTR)st->media, wa[1].wa_Name, SYS_PATH);

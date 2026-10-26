@@ -56,6 +56,10 @@ void Host_SetPaletteEntry(int i, unsigned char r, unsigned char g, unsigned char
  * conversion (audio_conv.h), as 8-bit stereo at the Amiga playback rate. */
 #include "../amiga/audio_conv.h"
 static FILE *wav; static unsigned long wav_bytes;
+/* TAPESOUND=1 (25 Oct 2026): mix the tape signal like the Amiga host's Tape sound option (weak: the ref core for headless_check has none) */
+extern int TapeAudio_On __attribute__((weak));
+extern void TapeAudio_Mix(unsigned short *, int) __attribute__((weak));
+static int ts_env;
 static unsigned short abuf[8192]; static unsigned long alen;
 void Host_WriteDataToSoundBuffer(unsigned char *p, unsigned long l) {}
 BOOL Host_AudioPlaybackPossible(void) { return wav != NULL; }
@@ -68,6 +72,7 @@ BOOL Host_LockAudioBuffer(unsigned char **a, unsigned long *b, unsigned char **c
 void Host_UnLockAudioBuffer(void)
 {
 	signed char l[4096], r[4096]; unsigned char out[8192]; int i, n = (int)(alen / 4);
+	if (ts_env && &TapeAudio_Mix) TapeAudio_Mix(abuf, n);
 	Audio_SplitTo8(abuf, l, r, n);
 	for (i = 0; i < n; i++) { out[2 * i] = (unsigned char)(l[i] + 128); out[2 * i + 1] = (unsigned char)(r[i] + 128); }
 	fwrite(out, 1, 2 * n, wav); wav_bytes += 2 * n;
@@ -137,6 +142,7 @@ static void tape_tick(void)
 {
 	int m;
 	tape_frame++;
+	if (ts_env && &TapeAudio_On) TapeAudio_On = tape_in;
 	if (!tape_in || !&CPC_GetTapeMotor) return;
 	m = CPC_GetTapeMotor();
 	if (m != tape_motor) {
@@ -293,6 +299,31 @@ static void writeback_disk(int drive, const char *var)
 }
 #include <unistd.h>
 int Host_FileWritable(const char *name) { return access(name, W_OK) == 0; }
+/* Names on a volume that cuts them (tools/dskwb_tests.py): DISKWB_TRUNC=30 makes
+ * the host behave like OFS/FFS of an old Kickstart: two names are one file if
+ * they agree up to 30 characters of the file part, and a longer name is "not kept". */
+#include <sys/stat.h>
+static int trunc_len(void) { const char *t = getenv("DISKWB_TRUNC"); return t ? atoi(t) : 0; }
+static int cut_eq(const char *a, const char *b, int n)
+{
+	const char *fa = strrchr(a, '/'), *fb = strrchr(b, '/');
+	size_t da = fa ? (size_t)(fa - a) : 0, db = fb ? (size_t)(fb - b) : 0;
+	fa = fa ? fa + 1 : a; fb = fb ? fb + 1 : b;
+	return da == db && !strncmp(a, b, da) && !strncmp(fa, fb, n);
+}
+int Host_SameFile(const char *a, const char *b)
+{
+	struct stat sa, sb; int n = trunc_len();
+	if (n && cut_eq(a, b, n)) return 1;   /* simulated: one stored name */
+	return stat(a, &sa) == 0 && stat(b, &sb) == 0 && sa.st_dev == sb.st_dev && sa.st_ino == sb.st_ino;
+}
+int Host_NameKept(const char *name)
+{
+	const char *f = strrchr(name, '/'); int n = trunc_len();
+	f = f ? f + 1 : name;
+	if (n && (int)strlen(f) > n) return 0;
+	return 1;
+}
 /* DISKDUMP=file: list every sector the core holds for drive A after the insert
  * (track side index C H R N ST1 ST2 FNV-1a of the 128<<N bytes the FDC gets),
  * for tools/dsk_tests.py to compare with its own reading of the image. */
@@ -372,6 +403,7 @@ int main(int argc, char **argv)
 	insert_disk(0, "DISKA");
 	insert_disk(1, "DISKB");
 	insert_tape("TAPE");
+	ts_env = getenv("TAPESOUND") && atoi(getenv("TAPESOUND"));
 	dump_disk(0, "DISKDUMP");
 	Render_SetDisplayWindowed();
 	if (argc > 7 && argv[7][0] != '-') { wav = fopen(argv[7], "wb"); if (wav) { fseek(wav, 44, SEEK_SET); CPC_SetAudioActive(TRUE); } }

@@ -33,6 +33,7 @@
 #include "diskimg.h"
 #include "iextdsk.h"
 #include "dskwrite.h"
+#define DSKWRITE_CLASH "disk name too long for this volume: changes kept in memory"
 
 extern BOOL DiskImage_GetUnitPointer(int DriveID, DISKIMAGE_UNIT **ppUnit);
 
@@ -81,6 +82,11 @@ static int parse_image(const unsigned char *d, unsigned long len, WB_IMAGE *im)
 		spt = th[0x15];
 		if (im->ext) { if (spt > 29) { if (spt > 61) spt = 61; p = off + 512; } else p = off + 256; }
 		else { if (spt > 29) spt = 29; p = off + 256; }
+		/* the ID table must lie inside this track's block (an extended track with
+		 * 30-61 IDs in a 256-byte block read up to 248 bytes past it, past the end
+		 * of the file for the last track). Such a track then differs from the
+		 * core's (same_layout) and is written from the core's copy. */
+		if (0x18 + 8L * spt > size) spt = (int)((size - 0x18) / 8);
 		t->spt = spt;
 		for (j = 0; j < spt; j++) {
 			const unsigned char *id = th + 0x18 + 8 * j;
@@ -289,6 +295,22 @@ static int file_exists(const char *n)
 	return 1;
 }
 
+/* The temp, backup and old names must not be the image, each other, or a name
+ * the volume stored cut short. A name that exists is checked now (Host_SameFile
+ * / Host_NameKept); one that does not exist yet is checked again after the temp
+ * file is created. 1 = refuse. */
+static int name_clash(const char *name, const char *tmp, const char *bak, const char *old)
+{
+	const char *x[3]; int i, j;
+	x[0] = tmp; x[1] = bak; x[2] = old;
+	for (i = 0; i < 3; i++) {
+		if (Host_SameFile(name, x[i])) return 1;
+		if (file_exists(x[i]) && !Host_NameKept(x[i])) return 1;
+		for (j = 0; j < i; j++) if (Host_SameFile(x[j], x[i])) return 1;
+	}
+	return 0;
+}
+
 int DskWrite_SaveFile(const char *name, const unsigned char *buf, unsigned long len, int *made_bak, char *why)
 {
 	char tmp[DSKWRITE_PATH + 8], bak[DSKWRITE_PATH + 8], old[DSKWRITE_PATH + 8];
@@ -301,12 +323,23 @@ int DskWrite_SaveFile(const char *name, const unsigned char *buf, unsigned long 
 	if (!Host_FileWritable(name)) { strcpy(why, "the file or disk is write-protected"); return 0; }
 	sprintf(tmp, "%s.tmp", name); sprintf(bak, "%s.bak", name); sprintf(old, "%s.old", name);
 
+	/* 0. the four names must be four different files (N1 of the code review).
+	 * A volume that cuts names to 30 characters (OFS/FFS of older Kickstarts) makes
+	 * .tmp/.bak/.old one file for a 29-character name and .tmp the image itself
+	 * for a 30-character one. Nothing is removed or renamed until this is clear. */
+	if (name_clash(name, tmp, bak, old)) { strcpy(why, DSKWRITE_CLASH); return 0; }
+
 	/* 1. the new image into <name>.tmp, checked */
 	remove(tmp);
 	f = fopen(tmp, "wb");
 	if (!f) { strcpy(why, "can't create the temp file (write-protected or name too long?)"); return 0; }
 	ok = fwrite(buf, 1, len, f) == len;
 	if (fclose(f) != 0) ok = 0;
+	/* the temp file we just made must be stored under the name we gave it (and not be the image) */
+	if (ok && (Host_SameFile(name, tmp) || !Host_NameKept(tmp))) {
+		if (!Host_SameFile(name, tmp)) remove(tmp);   /* ours (the name did not exist before) */
+		strcpy(why, DSKWRITE_CLASH); return 0;
+	}
 	if (ok) {
 		f = fopen(tmp, "rb");
 		ok = f && fseek(f, 0, SEEK_END) == 0 && ftell(f) == (long)len;

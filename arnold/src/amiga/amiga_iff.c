@@ -32,9 +32,12 @@ static struct BitMap *load_ilbm(const char *name, int *pw, int *ph, UBYTE *cmap,
 	fclose(f);
 	if (size < 12 || memcmp(buf, "FORM", 4) || memcmp(buf + 8, "ILBM", 4)) { FreeVec(buf); return NULL; }
 	p = buf + 12; end = buf + size; *ncol = 0;
-	while (p + 8 <= end) {
+	while (end - p >= 8) {
 		ULONG len = be32(p + 4); UBYTE *d = p + 8;
-		if (!memcmp(p, "BMHD", 4)) { w = be16(d); h = be16(d + 2); depth = d[8]; comp = d[10]; }
+		/* a chunk must lie inside the file: a bad length read past the buffer, and on
+		 * a 32-bit machine one near 4 GB wrapped p round to itself (an endless loop) */
+		if (len > (ULONG)(end - d)) break;
+		if (!memcmp(p, "BMHD", 4)) { if (len < 11) break; w = be16(d); h = be16(d + 2); depth = d[8]; comp = d[10]; }
 		else if (!memcmp(p, "CMAP", 4)) { *ncol = len / 3; if (*ncol > 256) *ncol = 256; memcpy(cmap, d, *ncol * 3); }
 		else if (!memcmp(p, "BODY", 4) && w && h && depth <= 8) {
 			int rowbytes = ((w + 15) / 16) * 2, y, pl;
@@ -48,7 +51,7 @@ static struct BitMap *load_ilbm(const char *name, int *pw, int *ph, UBYTE *cmap,
 				else while (n < rowbytes && s < se) {
 					signed char c = (signed char)*s++;
 					if (c >= 0) { int k = c + 1; if (s + k > se) break; if (n + k > rowbytes) k = rowbytes - n; memcpy(row + n, s, k); s += c + 1; n += k; }
-					else if (c != -128) { int k = 1 - c; UBYTE v = *s++; if (n + k > rowbytes) k = rowbytes - n; memset(row + n, v, k); n += k; }
+					else if (c != -128) { int k = 1 - c; UBYTE v; if (s >= se) break; v = *s++; if (n + k > rowbytes) k = rowbytes - n; memset(row + n, v, k); n += k; }
 				}
 			}
 			break;

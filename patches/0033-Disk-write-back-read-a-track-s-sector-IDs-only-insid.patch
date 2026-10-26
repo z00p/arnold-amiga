@@ -1,0 +1,36 @@
+From 1108ed0aa0928fd970384c3a8f75ec7dd27bcc60 Mon Sep 17 00:00:00 2001
+From: John Stringer <jcec_1@yahoo.co.uk>
+Date: Mon, 26 Oct 2026 07:40:42 +0000
+Subject: [PATCH 33/37] Disk write-back: read a track's sector IDs only inside
+ its block
+
+An extended track may claim 30-61 sectors in a 256-byte track block (the loader
+accepts it). The write-back read that many sector IDs from the track header,
+up to 248 bytes past the block, and past the end of the file for the last
+track. The ID count is now limited to what fits in the block; such a track
+then differs from the drive's copy and is written from it.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ src/cpc/diskimage/dskwrite.c | 5 +++++
+ 1 file changed, 5 insertions(+)
+
+diff --git a/src/cpc/diskimage/dskwrite.c b/src/cpc/diskimage/dskwrite.c
+index e84aa4d..95e77a9 100644
+--- a/src/cpc/diskimage/dskwrite.c
++++ b/src/cpc/diskimage/dskwrite.c
+@@ -81,6 +81,11 @@ static int parse_image(const unsigned char *d, unsigned long len, WB_IMAGE *im)
+ 		spt = th[0x15];
+ 		if (im->ext) { if (spt > 29) { if (spt > 61) spt = 61; p = off + 512; } else p = off + 256; }
+ 		else { if (spt > 29) spt = 29; p = off + 256; }
++		/* the ID table must lie inside this track's block (an extended track with
++		 * 30-61 IDs in a 256-byte block read up to 248 bytes past it, past the end
++		 * of the file for the last track). Such a track then differs from the
++		 * core's (same_layout) and is written from the core's copy. */
++		if (0x18 + 8L * spt > size) spt = (int)((size - 0x18) / 8);
+ 		t->spt = spt;
+ 		for (j = 0; j < spt; j++) {
+ 			const unsigned char *id = th + 0x18 + 8 * j;
+-- 
+2.50.0.windows.2
+

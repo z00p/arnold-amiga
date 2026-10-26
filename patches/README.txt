@@ -1,16 +1,16 @@
-Arnold for Amiga 1.0 - patch set and Amiga build
+Arnold for Amiga 1.1 - patch set and Amiga build
 =================================================
-24 October 2026.  Arnold (c) Kevin Thacker, GPL-2.0.  Amiga port by John Stringer.
+26 October 2026.  Arnold (c) Kevin Thacker, GPL-2.0.  Amiga port by John Stringer.
 
 This package holds the changes made to Arnold while porting it to 68k AmigaOS 3.x (AGA),
 as patches against the upstream source, plus a ready-to-run Amiga build.
 
-  patches/   34 patches (git format-patch) against rofl0r's GitHub mirror of Arnold,
+  patches/   37 patches (git format-patch) against rofl0r's GitHub mirror of Arnold,
              https://github.com/rofl0r/arnold, master at e5dce08
              ("fix prototype of LoadFile()", 4 Sep 2026)
   amiga/     the Amiga build: drawer Arnold with the program, icons, presets, the Plus
              system cartridge and a user README
-  source/    the complete source of this build (the upstream tree with all 34 patches
+  source/    the complete source of this build (the upstream tree with all 37 patches
              applied), for the GPL
 
 
@@ -20,8 +20,8 @@ Applying the patches
   git checkout e5dce08
   git am /path/to/patches/*.patch
 
-Each patch stands on its own and builds. Patches 1-32 touch only src/cpc (the core);
-33 adds src/amiga and 34 adds src/headless. The core changes are all marked "Amiga port"
+Each patch stands on its own and builds. Patches 1-35 touch only src/cpc (the core);
+36 adds src/amiga and 37 adds src/headless. The core changes are all marked "Amiga port"
 in comments, and every behaviour change can be switched off with a define (below).
 
 
@@ -161,11 +161,24 @@ Monitor and tape:
  0032  Tape: pause timing at 4 MHz; accessors for a host            NO_TAPE_FIX
        TZX pauses were converted at the Spectrum's 3.5 MHz, 12.5% short.
 
+1.1 (code review fixes and the tape sound):
+
+ 0033  Disk write-back: read a track's sector IDs only inside its block
+       An extended track claiming 30-61 sectors in a 256-byte block made the
+       write-back read past the block (past the file for the last track).
+ 0034  Disk write-back: refuse when the temp or backup name would clash
+       On a volume that cuts names to 30 characters, <name>.tmp/.bak/.old could
+       be one file or the image itself. New host hooks Host_SameFile and
+       Host_NameKept; the write-back is refused before anything is touched.
+ 0035  Tape: the loading sound, for a host to mix in
+       The tape level (1/8 of full scale, as CPCEC) mixed into the host's sound
+       block while a host sets TapeAudio_On; off, nothing changes.
+
 Tools:
 
  0010  Diagnostics for hardware tracing (TRACE_HW, PAL_COUNT; off by default)
- 0033  AmigaOS host: Arnold for Amiga (src/amiga, built with bebbo's amiga-gcc)
- 0034  Headless test host (src/headless: frame checksums, PPM, key scripts, WAV,
+ 0036  AmigaOS host: Arnold for Amiga (src/amiga, built with bebbo's amiga-gcc)
+ 0037  Headless test host (src/headless: frame checksums, PPM, key scripts, WAV,
        disk insert / write-back / sector dumps)
 
 

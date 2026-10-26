@@ -297,7 +297,7 @@ inserted: an image with more tracks than the drive gets an 80-track drive (up
 to 86 tracks), an image that fits keeps the drive's own count (A 43, B 80).
 NO_DSK80 restores the old behaviour."
 
-post HEAD arnold/src/cpc/diskimage/diskimg.c arnold/src/cpc/diskimage/dskwrite.c arnold/src/cpc/diskimage/dskwrite.h arnold/src/objects.mak
+post 5b15ae7 arnold/src/cpc/diskimage/diskimg.c arnold/src/cpc/diskimage/dskwrite.c arnold/src/cpc/diskimage/dskwrite.h arnold/src/objects.mak
 commit "Disk images: write changes back to the .dsk file" "dskwrite.c builds a new image for a drive from the file it was loaded from and
 the drive's changes: unchanged tracks are copied from the file byte for byte
 and only changed sectors patched in, so a standard DSK stays standard where it
@@ -318,13 +318,40 @@ A steady hsync gives exactly the old position; a mode change or a short-line
 trick locks to the new length. The renderer starts the row the given number
 of characters off its left edge. NO_HFLYWHEEL restores the old placement."
 
-post HEAD arnold/src/cpc/cassette.h arnold/src/cpc/cpc.c arnold/src/cpc/tzx.h arnold/src/cpc/tzxold.c
+post 5b15ae7 arnold/src/cpc/cassette.h arnold/src/cpc/cpc.c arnold/src/cpc/tzx.h arnold/src/cpc/tzxold.c
 commit "Tape: pause timing at 4 MHz; accessors for a host" "The TZX player scales pulse lengths to the CPC's 4 MHz, but converted pauses
 at the Spectrum's 3500 T-states a millisecond, so every pause was 12.5% short.
 Pauses are now 4000 T-states a millisecond (NO_TAPE_FIX restores the old
 figure). With it, a tape's motor time matches the file to 0.2 s. For a host:
 CPC_GetTapeMotor (the cassette motor bit), TapeImage_IsPlayable (a tape is in
 and has blocks left), and TapeImage_SetBlockByIndex declared in tzx.h."
+
+# 1.1 (26 Oct 2026): the code review's write-back fixes, then the tape sound
+post 1b4ad2c arnold/src/cpc/diskimage/dskwrite.c
+commit "Disk write-back: read a track's sector IDs only inside its block" "An extended track may claim 30-61 sectors in a 256-byte track block (the loader
+accepts it). The write-back read that many sector IDs from the track header,
+up to 248 bytes past the block, and past the end of the file for the last
+track. The ID count is now limited to what fits in the block; such a track
+then differs from the drive's copy and is written from it."
+
+post 392276c arnold/src/cpc/diskimage/dskwrite.c arnold/src/cpc/diskimage/dskwrite.h
+commit "Disk write-back: refuse when the temp or backup name would clash" "The write-back uses <name>.tmp, <name>.bak and <name>.old. A volume that cuts
+file names to 30 characters (OFS/FFS of older Kickstarts) makes these one file
+for a 29-character name, and .tmp the image itself for a 30-character one: the
+write was lost, or the disk file deleted. Two new host hooks, Host_SameFile
+(the same file, e.g. SameLock) and Host_NameKept (stored under the full name),
+let DskWrite_SaveFile refuse before anything is removed or renamed; the
+changes stay in the drive and the host is told why."
+
+post HEAD arnold/src/cpc/cassette.c arnold/src/cpc/cassette.h
+commit "Tape: the loading sound, for a host to mix in" "The tape signal as sound, as CPCEC does it. While a host sets TapeAudio_On,
+Cassette_Read notes each change of the level it hands the Z80 with its NOP
+time, and TapeAudio_Mix adds the frame's level to the host's finished 16-bit
+sample block: a step of 1/8 of the loudest mix (CPCEC's level), averaged over
+each sample and low-passed at about 5 kHz. The player only moves when the Z80
+reads the port, so a loader that stops reading is silent for that stretch.
+Off (the default), nothing is recorded or mixed and the machine runs exactly
+as before; sound never changes the emulation."
 
 post HEAD arnold/src/cpc
 commit "Core: remaining changes" "Small changes made after the fixes above."
