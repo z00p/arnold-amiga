@@ -27,7 +27,7 @@
 #include <stdarg.h>
 
 unsigned long __stack = 256 * 1024;   /* libnix: enlarge the stack at start */
-static const char ver[] __attribute__((used)) = "$VER: Arnold 1.2 (26.10.2026) Amiga port, GPL-2.0";
+static const char ver[] __attribute__((used)) = "$VER: Arnold 1.3 (27.10.2026) Amiga port, GPL-2.0";
 
 /* ---- diagnostic log ---- */
 static FILE *logf;
@@ -101,7 +101,7 @@ static ULONG pal32[1 + 256 * 3 + 1];
 static int pal_dirty, pal_dirty_all, pal_lo, pal_hi;
 /* heartbeat counters (15 Oct 2026: SKIP=0 freezes on the A1200 PiStorm) */
 static unsigned long hb_safe_waits, hb_refused, hb_reuse_waits;
-static int hb_log_waits;
+static int hb_log_waits; static void hb_log(const char *fmt, ...); static void hb_dump(void); static int line_planes4(const unsigned char *src); static void bpu_fit(int next); static void bpu_reset(void); static void bpu_audit(void);   /* agaperf (end of file): heartbeat ring; displayed planes fitted to the picture */
 int Sys_PalAll;   /* PALALL argument (15 Oct 2026: GnG colour scramble test on the A1200) */
 int Sys_AllLines, Sys_SafeFlip;   /* ALLLINES / SAFEFLIP (17 Oct 2026: torn frames on the A1200) */
 int Sys_Osd, Sys_OsdSkip;         /* OSD (18 Oct 2026): which test mode a photo or video shows */
@@ -435,7 +435,7 @@ static void audit_copper(void)
 	int n;
 	/* the display shows the last buffer passed to ChangeScreenBuffer once its
 	 * DispMessage is back, else possibly still the one before it */
-	if (frames < 3 || !v || !(c = v->LOFCprList) || !c->start) return;
+	if (frames < 3 || !v || !(c = v->LOFCprList) || !c->start) return; bpu_audit();
 	want = (ULONG)sb[shown]->sb_BitMap->Planes[0];
 	want2 = disp_pend[shown] ? (ULONG)sb[(shown + NBUF - 1) % NBUF]->sb_BitMap->Planes[0] : want;
 	for (w = c->start, n = 0; n < c->MaxCount; n++, w += 2) {
@@ -1001,7 +1001,7 @@ int Sys_OpenDisplay(int cw, int ch, int hires)
 	pal32[1 + SYS_OSD_PEN * 3] = 0xFFFFFFFF; pal32[2 + SYS_OSD_PEN * 3] = 0xDDDDDDDD; pal32[3 + SYS_OSD_PEN * 3] = 0;   /* OSD label: yellow */
 	pal_dirty = 1; pal_dirty_all = 1;   /* new screen: load every pen once */
 	measure_vblank(modeid);
-	Sys_Log("display: open");
+	bpu_reset(); Sys_Log("display: open");
 	return 1;
 }
 
@@ -1032,7 +1032,7 @@ static void collect_disp(void)
 void Sys_CloseDisplay(void)
 {
 	int i;
-	if (Sys_RtgActive) { rtg_close_display(); return; }
+	hb_dump(); bpu_reset(); if (Sys_RtgActive) { rtg_close_display(); return; }
 	while (safe_out > 0) { WaitPort(safeport); collect_safe(); }
 	while (disp_out > 0) { WaitPort(dispport); collect_disp(); }
 #ifdef VSHIFT
@@ -1150,13 +1150,13 @@ void Sys_ShowFrame(const unsigned char *chunky, int pitch)
 
 	if (Sys_RtgActive) { rtg_show(chunky, pitch); return; }
 	if (!scr) return;
-	t0 = Sys_Micros();
+	t0 = Sys_Micros(); Sys_Perf.show_vb = GfxBase->VBCounter; Sys_Perf.show_beam = ((custom.vposr & 1) << 8) | (custom.vhposr >> 8);
 	next = (shown + 1) % NBUF;
 	collect_safe();
 	if (Sys_Audit) { collect_disp(); audit_copper(); }
 	if (!buf_safe[next]) {
 		hb_safe_waits++;
-		if (hb_log_waits) Sys_Log("wait: buffer %d not safe yet (shown %d, safe_out %d, disp_out %d)", next, shown, safe_out, disp_out);
+		if (hb_log_waits) hb_log("wait: buffer %d not safe yet (shown %d, safe_out %d, disp_out %d)", next, shown, safe_out, disp_out);
 	}
 	while (!buf_safe[next]) { WaitPort(safeport); collect_safe(); }
 	t1 = Sys_Micros(); Sys_Perf.wait_us += t1 - t0; Sys_Perf.wait_safe_us += t1 - t0; t0 = t1;
@@ -1183,13 +1183,13 @@ void Sys_ShowFrame(const unsigned char *chunky, int pitch)
 			line_dirty[y + YOFF] &= ~bit;
 #ifndef NO_SHADOW
 			{
-				int np = line_planes(src), t = wr + y;
+				int np = line_planes4(src), t = wr + y;
 				c2p_line_sh(src, bm, y, np, shadow[next] + (LONG)t * (SW >> 2), line_lvl[next][t]);
 				line_lvl[next][t] = np;
 #ifdef VSHIFT
 				if (Sys_VShiftOn) row_hash[next][t] = chash[y + YOFF];
 #endif
-				if (np == 5) Sys_Perf.c2p_lines5++; else if (np == 6) Sys_Perf.c2p_lines6++;
+				if (np <= 5) Sys_Perf.c2p_lines5++; else if (np == 6) Sys_Perf.c2p_lines6++;
 			}
 #elif !defined(NO_C2P5)
 			{
@@ -1242,7 +1242,7 @@ void Sys_ShowFrame(const unsigned char *chunky, int pitch)
 		if (safe_pend[next]) { WaitPort(safeport); collect_safe(); }
 		else { WaitPort(dispport); collect_disp(); }
 	}
-	if (!ChangeScreenBuffer(scr, sb[next])) hb_refused++;
+	bpu_fit(next); Sys_Perf.flip_vb = GfxBase->VBCounter; Sys_Perf.flip_beam = ((custom.vposr & 1) << 8) | (custom.vhposr >> 8); if (!ChangeScreenBuffer(scr, sb[next])) hb_refused++;
 	else {
 		safe_for[next] = shown;          /* this change's SafeMessage frees the old one */
 		buf_safe[shown] = 0;
@@ -1329,7 +1329,7 @@ long Sys_WaitFrame(void)
 	} else {
 		was_timer = 0;
 		if (due == 0 || (long)(due - t0) > 500) {
-			WaitTOF();
+			WaitTOF(); Sys_Perf.tof_vb = GfxBase->VBCounter;
 			due = Sys_Micros() + pace_us;
 		} else {
 			behind = (long)(t0 - due);
@@ -1848,8 +1848,223 @@ out:
 
 void Sys_Heartbeat(long frame, long behind_us)
 {
-	Sys_Log("hb frame %ld late %lu skipped %lu behind_us %ld safe_waits %lu reuse_waits %lu refused %lu safe_out %d disp_out %d shown %d aud_q %d under %lu drops %lu",
+	hb_log("hb frame %ld late %lu skipped %lu behind_us %ld safe_waits %lu reuse_waits %lu refused %lu safe_out %d disp_out %d shown %d aud_q %d under %lu drops %lu",
 		frame, Sys_Perf.late_frames, Sys_Perf.skipped_frames, behind_us, hb_safe_waits, hb_reuse_waits, hb_refused,
 		safe_out, disp_out, shown, aud_count, aud_underruns, aud_drops);
 	hb_log_waits = 1;   /* from now on, log each wait too (rare) */
+}
+
+/* ---- CHIPBENCH (agaperf, 26 Oct 2026): what a chip RAM long costs, in the c2p's
+ * write order and others, with no AGA display, and with an AGA lores screen of
+ * 8, 6 and 4 planes showing (bitplane DMA); and whether the CPU waits for each
+ * write (a posted write would hide behind ALU work). PROGDIR:chipbench.txt. ---- */
+static unsigned long cb_alu(unsigned long x, int k) { while (k-- > 0) x = x * 3 + (x >> 5); return x; }
+static void cb_run(FILE *f, const char *tag, UBYTE *base, int bpr, int rs, int np, UBYTE *fast)
+{
+	int rows = 42;
+	unsigned long t, i, n = (unsigned long)rs * rows / 4, x = 1, us;
+	int r, g, p, k, rep;
+	char name[64];
+	ULONG *lc = (ULONG *)base;
+	t = Sys_Micros();
+	for (rep = 0; rep < 4; rep++) for (i = 0; i < n; i++) lc[i] = i;
+	us = Sys_Micros() - t; sprintf(name, "%s seq long", tag); bench_line(f, name, us, 4 * n, "long");
+	t = Sys_Micros();
+	for (rep = 0; rep < 4; rep++) { UWORD *wc = (UWORD *)base; for (i = 0; i < 2 * n; i++) wc[i] = (UWORD)i; }
+	us = Sys_Micros() - t; sprintf(name, "%s seq word", tag); bench_line(f, name, us, 8 * n, "word");
+	t = Sys_Micros();
+	for (rep = 0; rep < 4; rep++) for (i = 0; i < n; i++) x += lc[i];
+	us = Sys_Micros() - t; sprintf(name, "%s seq read", tag); bench_line(f, name, us, 4 * n, "long");
+	for (k = 5; k <= np; k += np - 5 > 0 ? np - 5 : 1) {   /* the c2p's order: per row, per 32-pixel group, plane after plane */
+		unsigned long cnt = 0;
+		t = Sys_Micros();
+		for (rep = 0; rep < 4; rep++)
+			for (r = 0; r < rows; r++) for (g = 0; g < bpr / 4; g++) for (p = 0; p < k; p++) { *(ULONG *)(base + (LONG)r * rs + p * bpr + g * 4) = r + g; cnt++; }
+		us = Sys_Micros() - t; sprintf(name, "%s c2p order %dpl", tag, k); bench_line(f, name, us, cnt, "long");
+	}
+	{   /* plane-major order: one plane's whole row, then the next plane */
+		unsigned long cnt = 0;
+		t = Sys_Micros();
+		for (rep = 0; rep < 4; rep++)
+			for (r = 0; r < rows; r++) for (p = 0; p < 5; p++) for (g = 0; g < bpr / 4; g++) { *(ULONG *)(base + (LONG)r * rs + p * bpr + g * 4) = r + g; cnt++; }
+		us = Sys_Micros() - t; sprintf(name, "%s plane order 5pl", tag); bench_line(f, name, us, cnt, "long");
+	}
+	for (k = 0; k <= 48; k += 16) {   /* posted? a long write, then k dependent ALU steps; the same into fast RAM */
+		ULONG *lf = (ULONG *)fast;
+		t = Sys_Micros();
+		for (i = 0; i < n; i++) { lc[i] = x; x = cb_alu(x, k); }
+		us = Sys_Micros() - t; sprintf(name, "%s write+alu%d chip", tag, k); bench_line(f, name, us, n, "iter");
+		t = Sys_Micros();
+		for (i = 0; i < n; i++) { lf[i] = x; x = cb_alu(x, k); }
+		us = Sys_Micros() - t; sprintf(name, "%s write+alu%d fast", tag, k); bench_line(f, name, us, n, "iter");
+	}
+	bench_sink = x;
+}
+void Sys_ChipBench(void)
+{
+	FILE *f = fopen("PROGDIR:chipbench.txt", "w");
+	UBYTE *c = AllocMem(65536 + 8 * 48 * 16, MEMF_CHIP | MEMF_CLEAR), *fast = AllocMem(65536, MEMF_ANY);
+	int d;
+	if (!f) f = stdout;
+	if (!c || !fast) { fprintf(f, "chipbench: out of memory\n"); goto out; }
+	cb_run(f, "nodisp", c, 48, 384, 8, fast);
+	for (d = 8; d >= 4; d -= 2) {
+		struct Screen *s = OpenScreenTags(NULL, SA_Width, 384, SA_Height, 256, SA_Depth, d, SA_DisplayID, Sys_ModeID(LORES_KEY),
+			SA_Quiet, TRUE, SA_ShowTitle, FALSE, SA_Interleaved, TRUE, TAG_DONE);
+		char tag[16];
+		if (!s) { fprintf(f, "chipbench: no %d-plane screen\n", d); continue; }
+		ScreenToFront(s); WaitTOF(); WaitTOF();
+		fprintf(f, "screen %d planes bpr %d planes %08lx %08lx flags %08lx\n", d, (int)s->RastPort.BitMap->BytesPerRow,
+			(unsigned long)s->RastPort.BitMap->Planes[0], (unsigned long)s->RastPort.BitMap->Planes[1], (unsigned long)GetBitMapAttr(s->RastPort.BitMap, BMA_FLAGS));
+		sprintf(tag, "scr%d", d);
+		/* into the screen's own (shown) bitmap: plane stride Planes[1]-Planes[0], row stride BytesPerRow */
+		cb_run(f, tag, s->RastPort.BitMap->Planes[0], (int)(s->RastPort.BitMap->Planes[1] - s->RastPort.BitMap->Planes[0]), (int)s->RastPort.BitMap->BytesPerRow, d, fast);
+		CloseScreen(s);
+	}
+out:
+	if (c) FreeMem(c, 65536 + 8 * 48 * 16);
+	if (fast) FreeMem(fast, 65536);
+	if (f != stdout) fclose(f);
+}
+
+/* ---- quiet heartbeat (agaperf, 26 Oct 2026) ----
+ * The heartbeat line (once a second, Sys_Heartbeat) and the buffer-wait lines
+ * went straight to Arnold.log with an fflush; with the drawer on the NAS (SMB)
+ * that took 2.3 ms out of every 50th frame (1.2, Sonic GX SKIP=0: 8 of the
+ * run's 19 frames over 20 ms). They are now kept in a ring of the last HB_RING
+ * lines and written to the log when the display closes (Help, Exit).
+ * HEARTBEAT (argument) or NO_HBQUIET (define): straight to the log, as 1.2. */
+int Sys_HbLog;
+#define HB_RING 32
+static char hb_ring[HB_RING][256];
+static unsigned hb_rn;
+static void hb_log(const char *fmt, ...)
+{
+	va_list ap;
+	va_start(ap, fmt);
+#ifndef NO_HBQUIET
+	if (!Sys_HbLog) { vsprintf(hb_ring[hb_rn++ % HB_RING], fmt, ap); va_end(ap); return; }
+#endif
+	if (logf) { vfprintf(logf, fmt, ap); fputc('\n', logf); fflush(logf); }
+	va_end(ap);
+}
+static void hb_dump(void)
+{
+	unsigned i, n = hb_rn < HB_RING ? hb_rn : HB_RING;
+	if (!n) return;
+	Sys_Log("heartbeat: the last %u of %u lines", n, hb_rn);
+	for (i = hb_rn - n; i != hb_rn; i++) Sys_Log("%s", hb_ring[i % HB_RING]);
+	hb_rn = 0;
+}
+
+/* ---- displayed planes fitted to the picture (agaperf, 26 Oct 2026) ----
+ * The screen has 8 planes, and the display fetches all 8 every line even when
+ * the picture only uses palette entries below 64 (render5.c keeps Sonic's
+ * below 64) and planes 6-7 are all zero. That bitplane DMA slows every CPU
+ * chip write: on the A1200 PiStorm a long costs 0.68 us with 8 planes shown,
+ * 0.61 us with 6 and 0.57 us with 4 (CHIPBENCH; 0.58 with no display), and
+ * the c2p's time is nearly all chip writes. So the plane count the copper
+ * loads into BPLCON0 (BPU bits) is set at each flip to the planes the
+ * pictures that may be on show need: the buffer flipped to and the one or two
+ * before it (the flip shows at the next VBlank), each from line_lvl over its
+ * window rows (planes 0..n-1 may be non-zero; 0 = row not known: 8). Planes
+ * above that are zero in those buffers, so the picture is the same pixel for
+ * pixel. The BPLCON0 move is found once in the hardware copper list
+ * (GfxBase->ActiView->LOFCprList; the list is in chip RAM, so it is not
+ * scanned every frame) and checked before each write, under Forbid, and found
+ * again if graphics rebuilt the list; if it can't be found, 8 planes as before.
+ * NO_BPUFIT (define) or NOBPU (argument): always 8 planes, as 1.2. */
+int Sys_NoBpu;
+static UWORD *bpu_word;             /* the BPLCON0 move's data word in the copper list, NULL = not found */
+static struct cprlist *bpu_list;     /* the list it was found in */
+static UWORD *bpu_start;
+static UWORD bpu_orig, bpu_cur;
+static int bpu_need[NBUF], bpu_tries;
+static int line_planes4(const unsigned char *src)
+{
+#ifndef NO_BPUFIT
+	const ULONG *l = (const ULONG *)src;
+	ULONG o = 0;
+	int n;
+	for (n = SW >> 2; n > 0; n -= 4, l += 4) o |= l[0] | l[1] | l[2] | l[3];
+	if (!(o & 0xF0F0F0F0UL)) return 4;
+	if (!(o & 0xE0E0E0E0UL)) return 5;
+	if (!(o & 0xC0C0C0C0UL)) return 6;
+	return 8;
+#else
+	return line_planes(src);
+#endif
+}
+static void bpu_reset(void)
+{
+	int i;
+	bpu_word = NULL; bpu_list = NULL; bpu_start = NULL; bpu_cur = bpu_orig = 0; bpu_tries = 0;
+	for (i = 0; i < NBUF; i++) bpu_need[i] = 8;
+}
+#ifndef NO_BPUFIT
+static int bpu_planes(UWORD v) { return ((v >> 12) & 7) | ((v & 0x10) ? 8 : 0); }
+/* the one BPLCON0 move with 8 planes in the active view's copper list */
+static void bpu_find(void)
+{
+	struct View *v = GfxBase->ActiView;
+	struct cprlist *c;
+	UWORD *w, *hit = NULL;
+	int n, hits = 0;
+	bpu_word = NULL;
+	if (bpu_tries > 20 || !v || !(c = v->LOFCprList) || !c->start || v->SHFCprList) return;   /* interlaced: two lists, leave it */
+	bpu_tries++;
+	for (w = c->start, n = 0; n < c->MaxCount; n++, w += 2) {
+		if (w[0] == 0xffff && w[1] == 0xfffe) break;          /* end of the list */
+		if (w[0] == 0x0100 && bpu_planes(w[1]) == 8) { hit = w + 1; hits++; }
+	}
+	if (hits != 1) { Sys_Log("display: plane fit off: %d BPLCON0 moves with 8 planes in the copper list", hits); bpu_tries = 99; return; }
+	bpu_list = c; bpu_start = c->start; bpu_word = hit; bpu_orig = bpu_cur = *hit;
+	Sys_Log("display: plane fit on (BPLCON0 %04lx at copper word %ld)", (unsigned long)bpu_orig, (long)(hit - c->start));
+}
+#endif
+static void bpu_fit(int next)
+{
+#ifndef NO_BPUFIT
+	struct View *v = GfxBase->ActiView;
+	int y, need = 0, n, prev = (shown + NBUF - 1) % NBUF;
+	const unsigned char *lv;
+	UWORD val;
+	if (Sys_NoBpu || !line_lvl[next]) return;
+	lv = line_lvl[next] + win_row[next];
+	for (y = 0; y < SH; y++) { int k = lv[y] ? lv[y] : 8; if (k > need) need = k; }
+	bpu_need[next] = need;
+	/* on show until the flip lands: the buffer shown now, and the one before if its DispMessage is still out */
+	n = need;
+	if (flipped) {
+		if (bpu_need[shown] > n) n = bpu_need[shown];
+		if (disp_pend[shown] && bpu_need[prev] > n) n = bpu_need[prev];
+	} else n = 8;
+	Forbid();
+	if (!bpu_word || !v || v->LOFCprList != bpu_list || bpu_list->start != bpu_start || bpu_word[-1] != 0x0100) bpu_find();
+	if (bpu_word) {
+		val = (bpu_orig & ~0x7010) | ((n & 7) << 12) | ((n & 8) ? 0x10 : 0);
+		if (*(volatile UWORD *)bpu_word != val) *(volatile UWORD *)bpu_word = val;   /* (graphics may have put its own value back) */
+		bpu_cur = val;
+	}
+	Permit();
+	Sys_Perf.bpu_sum += bpu_word ? bpu_planes(bpu_cur) : 8;
+#else
+	(void)next;
+#endif
+}
+
+/* AUDIT: the planes the copper shows cover the buffer on show (and the one before while its flip is out) */
+static void bpu_audit(void)
+{
+#ifndef NO_BPUFIT
+	int n, need = bpu_need[shown], prev = (shown + NBUF - 1) % NBUF;
+	if (!bpu_word) return;
+	if (disp_pend[shown] && bpu_need[prev] > need) need = bpu_need[prev];
+	n = bpu_planes(*bpu_word);
+	Sys_Perf.audit_cop_checks++;
+	if (n < need) {
+		if (Sys_Perf.audit_cop_bad < 20) Sys_Log("audit: copper BPLCON0 shows %d planes, buffer %d needs %d", n, shown, need);
+		Sys_Perf.audit_cop_bad++;
+	}
+#endif
 }

@@ -1,4 +1,4 @@
-Arnold for Amiga 1.2 - patch set and Amiga build
+Arnold for Amiga 1.3 - patch set and Amiga build
 =================================================
 26 October 2026.  Arnold (c) Kevin Thacker, GPL-2.0.  Amiga port by John Stringer.
 
@@ -222,8 +222,10 @@ Amiga build
 See amiga/Arnold/README.txt. In short: CPC 6128 Plus / GX4000 cartridges (.cpr), disks
 (.dsk, with the system cartridge's BASIC and AMSDOS) and snapshots (.sna). It needs an
 AGA Amiga with a 68040 or better (PiStorm/Emu68, 68060, BigMig), with sound through Paula.
-Help opens the menu. New in 1.2: an optional RTG screen (experimental, with scanlines and
-the Arnold RTG preset) and Games.db, settings for known games by image CRC-32.
+Help opens the menu. New in 1.3: a smoother AGA display (only the bitplanes in use are shown,
+and the log is no longer written to disk every second). 1.2 added an optional RTG screen
+(experimental, with scanlines and the Arnold RTG preset) and Games.db, settings for known
+games by image CRC-32.
 
 Builds: Arnold (68040, -O2), Arnold-040-Max (-O3), Arnold-060 and Arnold-060-Max
 (68060), Arnold-030 (68030; runs, but too slow for games). All are soft-float, with

@@ -1,6 +1,6 @@
-From 9ff31b8e6f0cb20214bac3d2441326fbbdafff6e Mon Sep 17 00:00:00 2001
+From 220733119001163294d0e19654a2f98b0d3c363c Mon Sep 17 00:00:00 2001
 From: John Stringer <jcec_1@yahoo.co.uk>
-Date: Mon, 26 Oct 2026 13:40:01 +0000
+Date: Tue, 27 Oct 2026 07:56:57 +0000
 Subject: [PATCH 32/39] Tape: pause timing at 4 MHz; accessors for a host
 
 The TZX player scales pulse lengths to the CPC's 4 MHz, but converted pauses

@@ -1,6 +1,6 @@
-From 6328d5f93a7a8c8dd83ae249a4c6d28537a33ca9 Mon Sep 17 00:00:00 2001
+From d9b03027b7e64bed5a0d9b86864fc7636567f1ec Mon Sep 17 00:00:00 2001
 From: John Stringer <jcec_1@yahoo.co.uk>
-Date: Mon, 26 Oct 2026 13:39:54 +0000
+Date: Tue, 27 Oct 2026 07:56:50 +0000
 Subject: [PATCH 15/39] CPC_PowerCycleMemory: what a power cycle clears and a
  reset does not
 

@@ -1,6 +1,6 @@
-From 2617c86f8360a10b6a4ede491be25070d85b9490 Mon Sep 17 00:00:00 2001
+From 748ac9bd65370aef447f6418aa31e02c34237b6a Mon Sep 17 00:00:00 2001
 From: John Stringer <jcec_1@yahoo.co.uk>
-Date: Mon, 26 Oct 2026 13:40:04 +0000
+Date: Tue, 27 Oct 2026 07:56:59 +0000
 Subject: [PATCH 37/39] RTG display framework (rtgfw) for the AmigaOS host, MIT
  licence
 

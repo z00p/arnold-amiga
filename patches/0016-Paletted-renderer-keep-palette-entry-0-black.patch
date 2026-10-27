@@ -1,6 +1,6 @@
-From acd99f90b8e4c3c610dd3f2db5d0b28da29ec04b Mon Sep 17 00:00:00 2001
+From 6ed31ea98c2f24b137c1ce9455a07984c5023e1b Mon Sep 17 00:00:00 2001
 From: John Stringer <jcec_1@yahoo.co.uk>
-Date: Mon, 26 Oct 2026 13:39:55 +0000
+Date: Tue, 27 Oct 2026 07:56:51 +0000
 Subject: [PATCH 16/39] Paletted renderer: keep palette entry 0 black
 
 The paletted renderer draws blanking with entry 0 (Render_PaletteIndexBlack)

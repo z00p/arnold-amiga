@@ -126,7 +126,8 @@ typedef struct { unsigned long c2p_us, wait_us, c2p_lines, c2p_frames, line_byte
                  aud_underruns, aud_drops,
                  c2p_lines5, c2p_lines6, c2p_clear_planes, c2p_chip_longs,
                  vs_shifts, vs_recentres, vs_searches, vs_us,
-                 audit_frames, audit_bad_frames, audit_bad_groups, audit_cop_checks, audit_cop_bad; } SysPerf;
+                 audit_frames, audit_bad_frames, audit_bad_groups, audit_cop_checks, audit_cop_bad,
+                 flip_vb, flip_beam, show_vb, show_beam, tof_vb, bpu_sum; } SysPerf;   /* agaperf: VBCounter and beam line at ChangeScreenBuffer / Sys_ShowFrame entry / WaitTOF return */
 extern int Sys_Audit;      /* AUDIT argument: read every converted buffer back from chip RAM and check it, and the copper's plane pointer */
 extern int Sys_VShiftOn;   /* 1 when the display opened with the vertical-shift windows (NO_VSHIFT / NOVSHIFT: 0) */
 extern int Sys_WideScreen;   /* the next Sys_OpenDisplay takes the full width (menu.wide) */
@@ -136,7 +137,7 @@ extern int Sys_VShiftOn_Last;   /* as Sys_VShiftOn for the last display opened (
 extern SysPerf Sys_Perf;
 unsigned long Sys_Micros(void);
 #include <stdio.h>
-void Sys_Bench(FILE *f);   /* BENCH argument: CPU, memory and chip RAM timings */
+void Sys_Bench(FILE *f);   /* BENCH argument: CPU, memory and chip RAM timings */ void Sys_ChipBench(void);   /* CHIPBENCH (agaperf): chip write costs with/without an AGA screen */
 void Sys_Message(const char *text);  /* requester */
 /* Diagnostic log, PROGDIR:Arnold.log (T: if that fails): one line per stage of
  * the start-up and every error, flushed at once, so a failure on real

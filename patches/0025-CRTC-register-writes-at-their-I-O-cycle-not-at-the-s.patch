@@ -1,6 +1,6 @@
-From f883cf071dc56668c81bda7a3dc821bc55a4f6f3 Mon Sep 17 00:00:00 2001
+From 4da7a00d8e80f8b5a57decf13190ff3503d221af Mon Sep 17 00:00:00 2001
 From: John Stringer <jcec_1@yahoo.co.uk>
-Date: Mon, 26 Oct 2026 13:39:59 +0000
+Date: Tue, 27 Oct 2026 07:56:54 +0000
 Subject: [PATCH 25/39] CRTC: register writes at their I/O cycle, not at the
  start of the OUT
 

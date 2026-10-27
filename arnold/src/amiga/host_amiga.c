@@ -94,10 +94,10 @@ static unsigned long perf_t0, perf_t1, perf_snap_us;
  * number. Written to <snapdir>/frames.txt at the script's QUIT; the done file
  * gets the maximum and a histogram. */
 #define FL_MAX 4000
-static unsigned short fl_work[FL_MAX], fl_c2p[FL_MAX], fl_longs[FL_MAX];
+static unsigned short fl_work[FL_MAX], fl_c2p[FL_MAX], fl_longs[FL_MAX]; static unsigned long fl_lines[FL_MAX], fl_vbf[FL_MAX], fl_beam[FL_MAX], fl_wsafe[FL_MAX], fl_ev[FL_MAX], fl_vb0[FL_MAX];   /* agaperf: lines, VBCounter at the flip, beam at show/flip, safe-buffer wait, events (1 vshift, 2 palette), VBCounter at Sys_ShowFrame */
 static unsigned char fl_shown[FL_MAX];
 static long fl_n;
-static unsigned long fl_t, fl_wait, fl_c2pus, fl_lng, fl_snap, fl_frames;
+static unsigned long fl_t, fl_wait, fl_c2pus, fl_lng, fl_snap, fl_frames; static unsigned long fl_lines0, fl_wsafe0, fl_vs0, fl_pal0;
 static void framelog_tick(void)
 {
 	unsigned long t = Sys_Micros(), w, c, l;
@@ -107,14 +107,14 @@ static void framelog_tick(void)
 		c = Sys_Perf.c2p_us - fl_c2pus; l = Sys_Perf.c2p_chip_longs - fl_lng;
 		fl_work[i] = w > 65535 ? 65535 : w; fl_c2p[i] = c > 65535 ? 65535 : c; fl_longs[i] = l > 65535 ? 65535 : l;
 		fl_shown[i] = Sys_Perf.c2p_frames != fl_frames;
-		fl_n = i + 1;
+		fl_n = i + 1; fl_lines[i] = Sys_Perf.c2p_lines - fl_lines0; fl_vbf[i] = Sys_Perf.flip_vb; fl_vb0[i] = Sys_Perf.show_vb; fl_beam[i] = (Sys_Perf.show_beam << 16) | Sys_Perf.flip_beam; fl_wsafe[i] = Sys_Perf.wait_safe_us - fl_wsafe0; fl_ev[i] = (Sys_Perf.vs_shifts + Sys_Perf.vs_recentres != fl_vs0) | ((Sys_Perf.palette_loads != fl_pal0) << 1);
 	}
-	fl_t = t; fl_wait = Sys_Perf.wait_us; fl_c2pus = Sys_Perf.c2p_us; fl_lng = Sys_Perf.c2p_chip_longs; fl_snap = perf_snap_us; fl_frames = Sys_Perf.c2p_frames;
+	fl_t = t; fl_wait = Sys_Perf.wait_us; fl_c2pus = Sys_Perf.c2p_us; fl_lng = Sys_Perf.c2p_chip_longs; fl_snap = perf_snap_us; fl_frames = Sys_Perf.c2p_frames; fl_lines0 = Sys_Perf.c2p_lines; fl_wsafe0 = Sys_Perf.wait_safe_us; fl_vs0 = Sys_Perf.vs_shifts + Sys_Perf.vs_recentres; fl_pal0 = Sys_Perf.palette_loads;
 }
 static void framelog_report(FILE *f)
 {
 	static const unsigned long edge[] = {16000, 18000, 20000, 22000, 25000, 30000, 40000};
-	unsigned long h[8] = {0,0,0,0,0,0,0,0}, mw = 0, mc = 0, ml = 0, mwf = 0;
+	unsigned long h[8] = {0,0,0,0,0,0,0,0}, mw = 0, mc = 0, ml = 0, mwf = 0, rep = 0, repn = 0;
 	long i; int k;
 	char name[SYS_PATH + 16]; FILE *o;
 	for (i = 0; i < fl_n; i++) {
@@ -122,15 +122,15 @@ static void framelog_report(FILE *f)
 		h[k]++;
 		if (fl_work[i] > mw) { mw = fl_work[i]; mwf = i; }
 		if (fl_c2p[i] > mc) mc = fl_c2p[i];
-		if (fl_longs[i] > ml) ml = fl_longs[i];
+		if (fl_longs[i] > ml) ml = fl_longs[i]; if (i && fl_shown[i] && fl_vbf[i] - fl_vbf[i - 1] > 1 && fl_vbf[i] - fl_vbf[i - 1] < 100) { rep += fl_vbf[i] - fl_vbf[i - 1] - 1; repn++; }
 	}
-	fprintf(f, "perf work_max_us=%lu at_frame=%ld c2p_max_us=%lu chip_bytes_max=%lu\n", mw, (long)mwf + PERF_SKIP + 1, mc, ml * 4);
+	fprintf(f, "perf work_max_us=%lu at_frame=%ld c2p_max_us=%lu chip_bytes_max=%lu\n", mw, (long)mwf + PERF_SKIP + 1, mc, ml * 4); fprintf(f, "perf repeated_vblanks=%lu flips_after_a_gap=%lu\n", rep, repn);
 	fprintf(f, "perf work_hist_ms <16:%lu 16-18:%lu 18-20:%lu 20-22:%lu 22-25:%lu 25-30:%lu 30-40:%lu >=40:%lu\n", h[0], h[1], h[2], h[3], h[4], h[5], h[6], h[7]);
 	if (f == stdout) return;
 	sprintf(name, "%s/frames.txt", snapdir);
 	if (!(o = fopen(name, "w"))) return;
-	fprintf(o, "frame work_us c2p_us chip_longs shown\n");
-	for (i = 0; i < fl_n; i++) fprintf(o, "%ld %u %u %u %u\n", i + PERF_SKIP + 1, fl_work[i], fl_c2p[i], fl_longs[i], fl_shown[i]);
+	fprintf(o, "frame work_us c2p_us chip_longs shown lines vb_flip vb_show beam_show beam_flip wait_safe_us ev\n");
+	for (i = 0; i < fl_n; i++) fprintf(o, "%ld %u %u %u %u %lu %lu %lu %lu %lu %lu %lu\n", i + PERF_SKIP + 1, fl_work[i], fl_c2p[i], fl_longs[i], fl_shown[i], fl_lines[i], fl_vbf[i], fl_vb0[i], fl_beam[i] >> 16, fl_beam[i] & 0xffff, fl_wsafe[i], fl_ev[i]);
 	fclose(o);
 }
 
@@ -157,7 +157,7 @@ static void perf_report(FILE *f)
 	fprintf(f, "perf sound=%d audio_underruns=%lu audio_drops=%lu\n", audio_open, Sys_Perf.aud_underruns, Sys_Perf.aud_drops);
 	fprintf(f, "perf c2p_lines5=%lu c2p_lines6=%lu c2p_clear_planes=%lu chip_bytes_per_shown_frame_est=%lu\n", Sys_Perf.c2p_lines5, Sys_Perf.c2p_lines6, Sys_Perf.c2p_clear_planes,
 		((Sys_Perf.c2p_lines - Sys_Perf.c2p_lines5 - Sys_Perf.c2p_lines6) * 8 + Sys_Perf.c2p_lines5 * 5 + Sys_Perf.c2p_lines6 * 6 + Sys_Perf.c2p_clear_planes) * (Sys_Perf.line_bytes / 8) / cf);
-	if (Sys_Perf.c2p_chip_longs) fprintf(f, "perf chip_bytes_written_per_shown_frame=%lu\n", Sys_Perf.c2p_chip_longs * 4 / cf);
+	if (Sys_Perf.bpu_sum) fprintf(f, "perf planes_shown_x10=%lu\n", Sys_Perf.bpu_sum * 10 / cf); if (Sys_Perf.c2p_chip_longs) fprintf(f, "perf chip_bytes_written_per_shown_frame=%lu\n", Sys_Perf.c2p_chip_longs * 4 / cf);
 	fprintf(f, "perf vshift=%d vs_searches=%lu vs_shifts=%lu vs_recentres=%lu vs_us_per_shown_frame=%lu\n", Sys_VShiftOn_Last, Sys_Perf.vs_searches, Sys_Perf.vs_shifts, Sys_Perf.vs_recentres, Sys_Perf.vs_us / cf);
 	if (Sys_Audit) fprintf(f, "perf audit_frames=%lu audit_bad_frames=%lu audit_bad_groups=%lu audit_copper_checks=%lu audit_copper_bad=%lu\n",
 		Sys_Perf.audit_frames, Sys_Perf.audit_bad_frames, Sys_Perf.audit_bad_groups, Sys_Perf.audit_cop_checks, Sys_Perf.audit_cop_bad);
@@ -1034,7 +1034,7 @@ int main(int argc, char **argv)
 			else if (!kwncmp(argv[i], "RTGDEPTH=", 9)) Sys_RtgDepth = atoi(argv[i] + 9);   /* tests: 8, 16 or 32 */
 			else if (!kwncmp(argv[i], "SCANMODE=", 9)) { char *x = strchr(argv[i] + 9, 'x'); if (!x) x = strchr(argv[i] + 9, 'X'); Sys_RtgScanW = atoi(argv[i] + 9); Sys_RtgScanH = x ? atoi(x + 1) : 0; }   /* tests: the scanline mode size */
 			else if (!kwncmp(argv[i], "TAPE=", 5)) { strncpy(menu.tape, argv[i] + 5, SYS_PATH - 1); media_given = 1; }
-			else if (!kwcmp(argv[i], "BENCH")) {
+			else if (!kwcmp(argv[i], "CHIPBENCH")) { Sys_ChipBench(); return 0; } else if (!kwcmp(argv[i], "HEARTBEAT")) { extern int Sys_HbLog; Sys_HbLog = 1; } else if (!kwcmp(argv[i], "NOBPU")) { extern int Sys_NoBpu; Sys_NoBpu = 1; } else if (!kwcmp(argv[i], "BENCH")) {
 				/* machine timings to the Shell and PROGDIR:bench.txt, then exit */
 				FILE *bf = fopen("PROGDIR:bench.txt", "w");
 				Sys_Bench(stdout);

@@ -1,6 +1,6 @@
-From b447ca62ab92cf1e12970f00d4df2ced848c0499 Mon Sep 17 00:00:00 2001
+From 920820432d6ddba55a271c59b41099c1357cd6e3 Mon Sep 17 00:00:00 2001
 From: John Stringer <jcec_1@yahoo.co.uk>
-Date: Mon, 26 Oct 2026 13:39:57 +0000
+Date: Tue, 27 Oct 2026 07:56:52 +0000
 Subject: [PATCH 20/39] Paletted renderer: keep the palette below 64 entries
 
 The paletted renderer freed its palette only at 224 entries, so a Plus game's

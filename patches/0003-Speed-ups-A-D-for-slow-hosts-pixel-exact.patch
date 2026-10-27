@@ -1,6 +1,6 @@
-From f3d4c5dffa48cafc77f3ec13a0f83fbb13a61be9 Mon Sep 17 00:00:00 2001
+From 102b61e232b8686c6ba54ea72c6f8bf72f92cd39 Mon Sep 17 00:00:00 2001
 From: John Stringer <jcec_1@yahoo.co.uk>
-Date: Mon, 26 Oct 2026 13:39:49 +0000
+Date: Tue, 27 Oct 2026 07:56:45 +0000
 Subject: [PATCH 03/39] Speed-ups A-D for slow hosts (pixel-exact)
 
 A: skip cells outside the visible area.  B: cache the pixel longs a cell

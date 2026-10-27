@@ -1,6 +1,6 @@
-From 3e715b3b01858bb356ae041d1d1fb672c9f80fa0 Mon Sep 17 00:00:00 2001
+From 222870498a4bb9b326e592b69a056ebaf07059c4 Mon Sep 17 00:00:00 2001
 From: John Stringer <jcec_1@yahoo.co.uk>
-Date: Mon, 26 Oct 2026 13:39:48 +0000
+Date: Tue, 27 Oct 2026 07:56:45 +0000
 Subject: [PATCH 02/39] render: optional hook telling the host which lines
  changed
 

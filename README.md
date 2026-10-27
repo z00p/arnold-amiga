@@ -47,6 +47,11 @@ optional tape loading sound at real speed (`TAPESOUND`, off by default). Saving 
 supported. Known issues are listed in the drawer's README.txt
 (NTSC cropping of edge-drawn games).
 
+AGA display (1.3): only the bitplanes the picture uses are shown (chip RAM writes are faster, `NOBPU`
+turns it off), and the once-a-second log lines are kept in memory and written when the display
+closes (`HEARTBEAT` writes them at once). On a PiStorm, Sonic GX frames over 20 ms dropped from
+15-19 to about 2 per run. `CHIPBENCH` times chip RAM writes (writes `chipbench.txt`).
+
 ## What to expect
 
 Arnold for Amiga targets PiStorm/Emu68-class machines.

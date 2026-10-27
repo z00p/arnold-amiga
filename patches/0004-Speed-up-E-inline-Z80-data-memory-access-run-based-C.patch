@@ -1,6 +1,6 @@
-From e79a7736968dfdf9dbdfdb6fd25dd2520c7b6ce0 Mon Sep 17 00:00:00 2001
+From a07a0736f15e8c05e298ca1e1e8a3545863bb2f5 Mon Sep 17 00:00:00 2001
 From: John Stringer <jcec_1@yahoo.co.uk>
-Date: Mon, 26 Oct 2026 13:39:49 +0000
+Date: Tue, 27 Oct 2026 07:56:46 +0000
 Subject: [PATCH 04/39] Speed-up E: inline Z80 data memory access, run-based
  CRTC stepping
 

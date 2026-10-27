@@ -1,6 +1,6 @@
-From e3711322e077003754d0e71f71c29906dbe9e438 Mon Sep 17 00:00:00 2001
+From c772cca39851fdc22ff2f19cf9eb7f886992f195 Mon Sep 17 00:00:00 2001
 From: John Stringer <jcec_1@yahoo.co.uk>
-Date: Mon, 26 Oct 2026 13:39:53 +0000
+Date: Tue, 27 Oct 2026 07:56:49 +0000
 Subject: [PATCH 12/39] Paletted renderer: draw the border in the border pen's
  colour
 
