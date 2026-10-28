@@ -3229,3 +3229,64 @@ void	CPC_UpdateColours(void)
 /* Amiga port (tape, 24 Oct 2026): the cassette motor bit as last written.
    At the end of the file so the PGO profile still matches every other function. */
 int	CPC_GetTapeMotor(void) { return (PPI_CurrentPortC & 0x010)!=0; }
+
+#ifndef NO_SAVESTATE
+/* Amiga port (save states, 28 Oct 2026): RAM, PPI, keyboard, ROM selection and
+ * the machine description for cpc/savestate.c. The ROM pointers are stored as
+ * what they point at (the lower ROM as a cartridge page, -1 = the OS ROM); the
+ * upper ROM follows from RomSelection, the paging from GateArray_RethinkMemory. */
+#include "savestate.h"
+void SS_GetMachine(SS_MACHINE *m)
+{
+	memset(m, 0, sizeof *m);
+	m->hardware = CPC_Hardware;
+	m->disc = Amstrad_DiscInterface_Enabled != 0;
+	m->ramexp = Amstrad_RamExpansion_Enabled != 0;
+	m->ramconfig = (long)CPC_CurrentRamConfig;
+	m->crtc = CurrentCRTCType;
+	m->extraram = (long)Amstrad_ExtraRamSize;
+	if (CPC_Hardware == CPC_HW_CPCPLUS)
+		m->cart_crc = ASIC_CartCrc();
+	else {
+		if (pOS) m->rom_crc[0] = SaveState_Crc32(0, pOS, 16384);
+		if (pBasic) m->rom_crc[1] = SaveState_Crc32(0, pBasic, 16384);
+		if (pDOS) m->rom_crc[2] = SaveState_Crc32(0, pDOS, 16384);
+	}
+}
+
+void SS_Cpc(SS_IO *io)
+{
+	long lower = -2, wr = 0;
+	int i;
+	if (!io->load) {
+		const unsigned char *base = pLowerRom + ((LowerRomIndex >> 1) << 14);
+		if (base == pOS) lower = -1;
+		else if (CPC_Hardware == CPC_HW_CPCPLUS)
+			for (i = 0; i < 32; i++) if (ASIC_GetCartPage(i) == base) { lower = i; break; }
+		if (lower == -2) SS_Fail(io, "Save state: the lower ROM is not one the state can name");
+		if (pUpperRom != ExpansionROMTable[RomSelection & 0x0ff]) SS_Fail(io, "Save state: the upper ROM is not the selected one");
+		wr = pWriteMemory == CPCPlus_WriteMemoryWithASICRamEnabled;
+	}
+	lower = SS_Long(io, lower);
+	wr = SS_Long(io, wr);
+	SS_V(io, CPC_NopCount); SS_V(io, RomSelection); SS_V(io, LowerRomIndex);
+	SS_V(io, SelectedKeyboardLine); SS_V(io, KeyboardScanned); SS_A(io, KeyboardData);
+	SS_A(io, ppi8255.latched_outputs); SS_A(io, ppi8255.final_outputs); SS_A(io, ppi8255.inputs);
+	SS_A(io, ppi8255.io_mask); SS_V(io, ppi8255.control);
+	SS_V(io, PortBRead_PreviousNopCount); SS_V(io, PortCWrite_PreviousNopCount);
+	SS_V(io, PPI_PreviousPortC); SS_V(io, PPI_CurrentPortC); SS_V(io, PPI_PortBInputData);
+	SS_V(io, ComputerNameIndex); SS_V(io, kcc_int_ff); SS_V(io, previous_counter_outputs);
+	SS_Pack(io, Z80MemoryBase, 64 * 1024);
+	if ((long)SS_Long(io, (long)Amstrad_ExtraRamSize) != (long)Amstrad_ExtraRamSize) SS_Fail(io, "The state's expansion RAM is another size");
+	else if (Amstrad_ExtraRamSize) SS_Pack(io, Amstrad_ExtraRam, Amstrad_ExtraRamSize);
+	if (io->load && !io->err) {
+		const unsigned char *base;
+		if (lower == -1) base = pOS;
+		else if (lower >= 0 && lower < 32 && CPC_Hardware == CPC_HW_CPCPLUS) base = ASIC_GetCartPage((int)lower);
+		else { SS_Fail(io, "The state is damaged (lower ROM)"); return; }
+		pLowerRom = base - ((LowerRomIndex >> 1) << 14);
+		pUpperRom = ExpansionROMTable[RomSelection & 0x0ff];
+		CPC_EnableASICRamWrites(wr != 0);
+	}
+}
+#endif

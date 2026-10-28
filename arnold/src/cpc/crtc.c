@@ -89,6 +89,7 @@ static void     CRTC_SetRenderingFunction(void);
 static int CRTC_PalettedFast = 0;
 extern unsigned long ASIC_ColMask[2];
 extern int ASIC_ColMaskValid;
+extern int ASIC_SpriteMaskStale;
 void ASIC_BuildColMask(void);
 extern unsigned ConvertedColourTable[32];
 extern int Render_PaletteIndexBlack, Render_PaletteIndexBorder, PIXEL_STEP, ModeHorizontalPixelScroll;
@@ -3896,6 +3897,12 @@ static __inline__ void CRTC_DoOneCycle(void)
 					CRTC_InternalState.CRTC_FlagsAtLastHtot = CRTC_InternalState.CRTC_Flags;
 
                     /* must be called each line to turn on the correct sprites! */
+#ifndef NO_SKIPSPR
+                    /* speed14: only drawing reads the line's sprite set, so an undrawn
+                     * line leaves it stale; CRTC_SetRenderState rebuilds it when drawing
+                     * comes back on (mid-line, in the lead-in lines a drawn frame redraws) */
+                    if (CRTC_InternalState.DontRender) ASIC_SpriteMaskStale = 1; else
+#endif
                     ASIC_GenerateSpriteActiveMaskForLine(ASICCRTC_Line);
 
 			 }
@@ -4860,6 +4867,13 @@ void	CRTC_SetRenderState(BOOL State)
 {
 	CRTC_InvalidateRun();   /* Amiga port */
 	CRTC_InternalState.DontRender = State;
+#ifndef NO_SKIPSPR
+	if (!State && ASIC_SpriteMaskStale)
+	{
+		ASIC_SpriteMaskStale = 0;
+		ASIC_GenerateSpriteActiveMaskForLine(ASICCRTC_Line);
+	}
+#endif
 }
 
 static unsigned long ClocksToLightPenTrigger;
@@ -4967,6 +4981,54 @@ void	CRTC_LightPen_Update(unsigned long NopsPassed)
 
 		ClocksToLightPenTrigger -= NopsPassed;
 
+	}
+}
+#endif
+
+#ifndef NO_SAVESTATE
+/* Amiga port (save states, 28 Oct 2026): the CRTC, monitor and Plus CRTC state for
+ * cpc/savestate.c. Cells still deferred (CRTC_Pending) are drawn first: what they
+ * draw cannot change any more. The render functions and the run context are set
+ * up again on load (the run is worked out afresh before the next cycles). */
+#include "savestate.h"
+void SS_Crtc(SS_IO *io)
+{
+	CRTC_INTERNAL_STATE *s = &CRTC_InternalState;
+	MONITOR_INTERNAL_STATE *m = &s->Monitor_State;
+	GA_INTERNAL_STATE *g = &s->GA_State;
+	int fp = 64 * 16, fu = 0, fc = 0;
+#ifndef NO_HFLYWHEEL
+	fp = HFlyP; fu = HFlyU; fc = HFlyCells;
+#endif
+	if (!io->load) CRTC_Flush();
+	SS_V(io, s->CRTC_Flags); SS_V(io, s->CRTC_HalfHtotFlags); SS_V(io, s->CRTC_FlagsAtLastHsync); SS_V(io, s->CRTC_FlagsAtLastHtot);
+	SS_V(io, s->HCount); SS_V(io, s->HStart); SS_V(io, s->HEnd); SS_V(io, s->HorizontalSyncWidth); SS_V(io, s->HorizontalSyncCount);
+	SS_V(io, s->RasterCounter); SS_V(io, s->LineCounter); SS_V(io, s->VerticalSyncWidth); SS_V(io, s->VerticalSyncCount);
+	SS_A(io, s->CRTC_HSyncTable); SS_A(io, s->GA_HsyncTable); SS_A(io, s->CRTC_WriteMaskTable); SS_A(io, s->CRTC_ReadMaskTable);
+	SS_V(io, s->InterlaceAndVideoMode); SS_V(io, s->Frame); SS_V(io, s->VertAdjustCount); SS_V(io, s->HDelayReg8);
+	SS_V(io, s->CRTC_RenderType); SS_V(io, s->CRTC_Type); SS_V(io, s->CRTC_Reg); SS_V(io, s->HDispAdd);
+	SS_V(io, s->Reg9Mask); SS_V(io, s->RasterMA); SS_V(io, s->MA); SS_V(io, s->MALine); SS_V(io, s->MAStore);
+	SS_V(io, m->LinesAfterVsync); SS_V(io, m->CharsAfterHsync); SS_V(io, m->MonitorScanLineCount);
+	SS_V(io, m->VSyncRetraceCount); SS_V(io, m->HSyncRetraceCount); SS_V(io, m->MonitorVsyncCount);
+	SS_V(io, m->MonitorFlags); SS_V(io, m->pad); SS_V(io, m->MonitorHorizontalCount);
+	SS_V(io, g->GA_Flags); SS_V(io, g->GA_HSyncWidth); SS_V(io, g->GA_HSyncCount); SS_V(io, g->GA_VSyncWidth);
+	SS_V(io, g->GA_VSyncCounter); SS_V(io, g->CRTC_PreviousVsyncState);
+	SS_V(io, s->DontRender); SS_V(io, s->GraphicsLong); SS_A(io, s->Pixels);
+	SS_A(io, CRTCRegisters); SS_A(io, CRTCRegistersBackup);
+	SS_V(io, UM6845R_StatusRegister); SS_V(io, CRTC_LightPenMA); SS_V(io, ASIC_RasterMA);
+	SS_V(io, ASICCRTC_SoftScroll); SS_V(io, ASICCRTC_VerticalSoftScroll); SS_V(io, ASICCRTC_Line);
+	SS_V(io, ASICCRTC_RasterLine); SS_V(io, ASICCRTC_MALine); SS_V(io, ASIC_RasterLineMatch);
+	SS_V(io, ASICCRTC_BlackDisplay); SS_V(io, ASIC_DoScreenSplit); SS_V(io, ASIC_DoScreenSplitDelayed);
+	SS_V(io, PreviousHsyncFlags); SS_V(io, fp); SS_V(io, fu); SS_V(io, fc);
+	SS_V(io, CRTC_RenderMode); SS_V(io, CPCHardware);
+	if (io->load && !io->err) {
+#ifndef NO_HFLYWHEEL
+		HFlyP = fp; HFlyU = fu; HFlyCells = fc;
+#endif
+		CRTC_SetRenderFunction(CRTC_RenderMode);
+		CRTC_Run.valid = 0;
+		CRTC_RunLeft = 0;
+		CRTC_Pending = 0;
 	}
 }
 #endif

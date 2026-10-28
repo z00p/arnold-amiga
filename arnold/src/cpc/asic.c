@@ -94,6 +94,7 @@ static void ASIC_DMA_RunChannels(int Mask, int Base)
  * 16-sprite loop for the columns no sprite touches. */
 unsigned long ASIC_ColMask[2];
 int ASIC_ColMaskValid = 0;
+int ASIC_SpriteMaskStale = 0;   /* speed14 (crtc.c): the line sprite set was not rebuilt while not drawing; NO_SKIPSPR: always rebuilt */
 
 #if defined(NO_C) && !defined(NO_SPRCOL)
 #define NO_SPRCOL	/* needs ASIC_BuildColMask */
@@ -2612,3 +2613,83 @@ void	ASIC_UpdateColours(void)
     }
 }
 
+
+#ifdef NO_DMA_STAGGER
+int ASIC_DMA_IntPending;   /* always 0: arnold.c's deferral reads it (NO_DMA_STAGGER did not link before; here at the end so no line above moves: PGO) */
+#endif
+
+#ifndef NO_SAVESTATE
+/* Amiga port (save states, 28 Oct 2026): the ASIC for cpc/savestate.c. The RAM
+ * paging mask is stored as on/off (it is a pointer mask); the sprite column and
+ * line caches are rebuilt on first use after a load. The cartridge itself is not
+ * stored: ASIC_CartCrc identifies it (its blocks and how the 32 pages use them). */
+#include "savestate.h"
+unsigned long ASIC_CartCrc(void)
+{
+	unsigned long crc = 0;
+	unsigned char map[32];
+	int i, j;
+	if (NumCartridgeBlocks == 0) return 0;
+	for (i = 0; i < (int)NumCartridgeBlocks && i < 32; i++)
+		if (CartridgeBlocks[i]) crc = SaveState_Crc32(crc, CartridgeBlocks[i], 16384);
+	for (i = 0; i < 32; i++) {
+		map[i] = 0x0ff;
+		for (j = 0; j < (int)NumCartridgeBlocks && j < 32; j++)
+			if (CartridgePages[i] == CartridgeBlocks[j]) { map[i] = (unsigned char)j; break; }
+	}
+	crc = SaveState_Crc32(crc, map, 32);
+	return crc ? crc : 1;
+}
+
+void SS_Asic(SS_IO *io)
+{
+	ASIC_DATA *a = &ASIC_Data;
+	long rammask = a->ASIC_RamMask != 0;
+	int i, done = 0, d0 = 0, d1 = 0, d2 = 0, pend = 0, base = 0;
+	int stale = ASIC_SpriteMaskStale;   /* speed14: a state saved after an undrawn line keeps the rebuild due (crtc.c) */
+#ifndef NO_DMA_STAGGER
+	done = ASIC_DMA_Stagger.Done; d0 = ASIC_DMA_Stagger.Delay[0]; d1 = ASIC_DMA_Stagger.Delay[1]; d2 = ASIC_DMA_Stagger.Delay[2];
+	pend = ASIC_DMA_IntPending;
+#endif
+#ifndef NO_DMAPHASE
+	base = ASIC_DMA_PhaseBase;
+#endif
+	SS_V(io, a->Flags); rammask = SS_Long(io, rammask);
+	SS_V(io, a->SpriteEnableMask); SS_V(io, a->SpriteEnableMaskOnLine);
+	for (i = 0; i < 16; i++) {
+		SS_V(io, a->Sprites[i].SpriteX.SpriteX_W); SS_V(io, a->Sprites[i].SpriteY.SpriteY_W); SS_V(io, a->Sprites[i].SpriteMag);
+		SS_V(io, a->SpriteInfo[i].WidthInColumns); SS_V(io, a->SpriteInfo[i].MinColumn); SS_V(io, a->SpriteInfo[i].HeightInLines);
+		SS_V(io, a->SpriteInfo[i].XMagShift); SS_V(io, a->SpriteInfo[i].YMagShift);
+		SS_V(io, a->SpriteInfo[i].x); SS_V(io, a->SpriteInfo[i].y);
+	}
+	SS_V(io, a->DMAPauseActive);
+	for (i = 0; i < 3; i++) {
+		SS_V(io, a->DMA[i].Addr.Addr_W); SS_V(io, a->DMA[i].Prescale);
+		SS_V(io, a->DMAChannel[i].PauseActive); SS_V(io, a->DMAChannel[i].PauseCount);
+		SS_V(io, a->DMAChannel[i].PrescaleCount); SS_V(io, a->DMAChannel[i].LoopStart);
+		SS_V(io, a->DMAChannel[i].RepeatCount);
+	}
+	SS_V(io, a->ASIC_InterruptVector); SS_V(io, a->ASIC_RasterInterruptLine); SS_V(io, a->ASIC_SoftScroll);
+	SS_V(io, a->ASIC_RasterSplitLine); SS_V(io, a->ASIC_SecondaryScreenAddress.Addr_W); SS_V(io, a->InternalDCSR);
+	SS_V(io, a->ASIC_DCSR2); SS_V(io, a->SecondaryRomMapping); SS_A(io, a->AnalogueInputs);
+	SS_Pack(io, a->ASIC_Ram, 16384);
+	SS_V(io, RecogniseSequenceState); SS_V(io, CurrentSequencePos); SS_V(io, CurrentLine);
+	SS_V(io, done); SS_V(io, d0); SS_V(io, d1); SS_V(io, d2); SS_V(io, pend); SS_V(io, base);
+	SS_V(io, stale);
+	if (io->load && !io->err) {
+		a->ASIC_RamMask = rammask ? (unsigned long)~0UL : 0;
+#ifndef NO_DMA_STAGGER
+		ASIC_DMA_Stagger.Done = done; ASIC_DMA_Stagger.Delay[0] = d0; ASIC_DMA_Stagger.Delay[1] = d1; ASIC_DMA_Stagger.Delay[2] = d2;
+		ASIC_DMA_IntPending = pend;
+#endif
+#ifndef NO_DMAPHASE
+		ASIC_DMA_PhaseBase = base;
+#endif
+		ASIC_SpriteMaskStale = stale;
+		ASIC_ColMaskValid = 0;
+#ifndef NO_SPRLINE
+		ASIC_LineBufOK = 0;
+#endif
+	}
+}
+#endif

@@ -2563,3 +2563,46 @@ static int	FDC_GetSectorSize(int N)
 }
 
 
+
+#ifndef NO_SAVESTATE
+/* Amiga port (save states, 28 Oct 2026): the uPD765 for cpc/savestate.c. The command
+ * handler is stored as its index in FDC_CommandTable, the execution buffer as an
+ * offset into FDC_DataBuffer (-1: none). */
+#include "savestate.h"
+void SS_Fdc(SS_IO *io)
+{
+	long h = -1, b = -1;
+	int i;
+	if (!io->load) {
+		if (fdc.CommandHandler) {
+			for (i = 0; i < (int)(sizeof FDC_CommandTable / sizeof FDC_CommandTable[0]); i++)
+				if (FDC_CommandTable[i].CommandHandler == fdc.CommandHandler) { h = i; break; }
+			if (h < 0) SS_Fail(io, "Save state: unknown disk controller command");
+		}
+		if (fdc.ExecutionBuffer) {
+			if (fdc.ExecutionBuffer >= FDC_DataBuffer && fdc.ExecutionBuffer < FDC_DataBuffer + sizeof FDC_DataBuffer)
+				b = (long)(fdc.ExecutionBuffer - FDC_DataBuffer);
+			else SS_Fail(io, "Save state: unknown disk controller buffer");
+		}
+	}
+	h = SS_Long(io, h); b = SS_Long(io, b);
+	SS_V(io, fdc.Flags); SS_V(io, fdc.ST0); SS_V(io, fdc.ST1); SS_V(io, fdc.ST2); SS_V(io, fdc.ST3);
+	SS_V(io, fdc.chrn.C); SS_V(io, fdc.chrn.H); SS_V(io, fdc.chrn.R); SS_V(io, fdc.chrn.N); SS_V(io, fdc.chrn.ST1); SS_V(io, fdc.chrn.ST2);
+	SS_V(io, fdc.CurrentDrive); SS_V(io, fdc.CurrentSide); SS_V(io, fdc.StepDirection); SS_A(io, fdc.StepCount);
+	SS_V(io, fdc.StepTime); SS_A(io, fdc.StepTimeForDrive); SS_V(io, fdc.NCN); SS_A(io, fdc.PCN);
+	SS_V(io, fdc.LowLevelState); SS_V(io, fdc.HighLevelState); SS_V(io, fdc.PushedHighLevelState);
+	SS_V(io, fdc.CommandState); SS_V(io, fdc.NextCommandState); SS_V(io, fdc.CyclesToDataRequest);
+	SS_V(io, fdc.NopCountOfDataRequestStart); SS_V(io, fdc.ExecutionBufferByteIndex); SS_V(io, fdc.ExecutionNoOfBytes);
+	SS_V(io, fdc.CommandByteIndex); SS_V(io, fdc.CommandBytesRemaining); SS_V(io, fdc.StoredDelay); SS_V(io, fdc.CRC);
+	SS_V(io, fdc.MainStatusRegister); SS_V(io, fdc.DataRegister); SS_V(io, fdc.SectorCounter); SS_A(io, fdc.CommandBytes);
+	SS_Pack(io, FDC_DataBuffer, sizeof FDC_DataBuffer);
+	if (io->load && !io->err) {
+		if (h >= (long)(sizeof FDC_CommandTable / sizeof FDC_CommandTable[0]) || b >= (long)sizeof FDC_DataBuffer)
+			SS_Fail(io, "The state is damaged (disk controller)");
+		else {
+			fdc.CommandHandler = h < 0 ? NULL : FDC_CommandTable[h].CommandHandler;
+			fdc.ExecutionBuffer = b < 0 ? NULL : FDC_DataBuffer + b;
+		}
+	}
+}
+#endif

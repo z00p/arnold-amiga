@@ -1,0 +1,25 @@
+# Save states (28 Oct 2026): CPC 6128 Plus (system cartridge), f1 BASIC, then
+# SAVE"A", SAVE"B" and CAT on the disk in drive A (a blank one), so states are
+# taken while the disk controller writes and with unsaved disk changes.
+200 F1 5
+350 S 3
+356 A 3
+362 V 3
+368 E 3
+374 SHIFT+2 3
+380 A 3
+386 SHIFT+2 3
+392 RETURN 3
+700 S 3
+706 A 3
+712 V 3
+718 E 3
+724 SHIFT+2 3
+730 B 3
+736 SHIFT+2 3
+742 RETURN 3
+1000 C 3
+1006 A 3
+1012 T 3
+1018 RETURN 3
+1300 QUIT

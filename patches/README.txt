@@ -1,16 +1,16 @@
-Arnold for Amiga 1.3 - patch set and Amiga build
+Arnold for Amiga 1.4 - patch set and Amiga build
 =================================================
-26 October 2026.  Arnold (c) Kevin Thacker, GPL-2.0.  Amiga port by John Stringer.
+28 October 2026.  Arnold (c) Kevin Thacker, GPL-2.0.  Amiga port by John Stringer.
 
 This package holds the changes made to Arnold while porting it to 68k AmigaOS 3.x (AGA),
 as patches against the upstream source, plus a ready-to-run Amiga build.
 
-  patches/   39 patches (git format-patch) against rofl0r's GitHub mirror of Arnold,
+  patches/   41 patches (git format-patch) against rofl0r's GitHub mirror of Arnold,
              https://github.com/rofl0r/arnold, master at e5dce08
              ("fix prototype of LoadFile()", 4 Sep 2026)
   amiga/     the Amiga build: drawer Arnold with the program, icons, presets, the Plus
              system cartridge and a user README
-  source/    the complete source of this build (the upstream tree with all 39 patches
+  source/    the complete source of this build (the upstream tree with all 41 patches
              applied), for the GPL
 
 
@@ -20,9 +20,9 @@ Applying the patches
   git checkout e5dce08
   git am /path/to/patches/*.patch
 
-Each patch stands on its own and builds. Patches 1-36 touch only src/cpc (the core);
-37 adds the RTG display framework (src/amiga/rtgfw, MIT licence), 38 adds src/amiga
-and 39 adds src/headless. The core changes are all marked "Amiga port"
+Each patch stands on its own and builds. Patches 1-38 touch only the core (src/cpc;
+38 also adds savestate.o to src/objects.mak); 39 adds the RTG display framework
+(src/amiga/rtgfw, MIT licence), 40 adds src/amiga and 41 adds src/headless. The core changes are all marked "Amiga port"
 in comments, and every behaviour change can be switched off with a define (below).
 
 
@@ -182,14 +182,28 @@ Monitor and tape:
        2i, but the hook named row i, so a host converting only changed rows kept
        stale lines on screen. Normal (lores) output is unchanged.
 
+1.4 (speed-ups and save states):
+
+ 0037  Speed-ups: no sprite line mask on undrawn lines; I/O lead tested first
+       While a frame is not drawn (frame skip) the Plus sprites active on a
+       line are worked out only when drawing comes back on.              NO_SKIPSPR
+       The I/O lead is tested before it is taken.                    NO_IOTAKE_TEST
+       Pixel-exact.
+ 0038  Save states: save and load the whole machine exactly            NO_SAVESTATE
+       SNA v3 (RAM and registers for other emulators) plus a versioned,
+       CRC-checked block with every core file's state and the inserted disks;
+       big-endian and fixed width, so states move between PC and Amiga. A load
+       is checked first and applied whole, or the running machine is put back.
+       A resumed run gives the same frames and sound as an uninterrupted one.
+
 Tools:
 
  0010  Diagnostics for hardware tracing (TRACE_HW, PAL_COUNT; off by default)
- 0037  RTG display framework for the AmigaOS host (src/amiga/rtgfw): rtgfw,
+ 0039  RTG display framework for the AmigaOS host (src/amiga/rtgfw): rtgfw,
        Copyright (c) 2026 Zoopster, under the MIT licence (its LICENSE file), not
        the GPL; a separate work vendored unchanged. Only the Amiga host uses it.
- 0038  AmigaOS host: Arnold for Amiga (src/amiga, built with bebbo's amiga-gcc)
- 0039  Headless test host (src/headless: frame checksums, PPM, key scripts, WAV,
+ 0040  AmigaOS host: Arnold for Amiga (src/amiga, built with bebbo's amiga-gcc)
+ 0041  Headless test host (src/headless: frame checksums, PPM, key scripts, WAV,
        disk insert / write-back / sector dumps)
 
 
@@ -222,8 +236,10 @@ Amiga build
 See amiga/Arnold/README.txt. In short: CPC 6128 Plus / GX4000 cartridges (.cpr), disks
 (.dsk, with the system cartridge's BASIC and AMSDOS) and snapshots (.sna). It needs an
 AGA Amiga with a 68040 or better (PiStorm/Emu68, 68060, BigMig), with sound through Paula.
-Help opens the menu. New in 1.3: a smoother AGA display (only the bitplanes in use are shown,
-and the log is no longer written to disk every second). 1.2 added an optional RTG screen
+Help opens the menu. New in 1.4: exact save states (four slots per game, Left/Right Amiga +
+F1-F4), tear-free RTG writes timed to the vertical blank, the BigMig preset on the RTG screen
+and a small speed gain. 1.3 brought a smoother AGA display (only the bitplanes in use are
+shown, and the log is no longer written to disk every second). 1.2 added an optional RTG screen
 (experimental, with scanlines and the Arnold RTG preset) and Games.db, settings for known
 games by image CRC-32.
 

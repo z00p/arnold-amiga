@@ -197,3 +197,22 @@ void	FDI_SetDensity(int State)
 		fdi.Density = 0;
 	}
 }
+
+#ifndef NO_SAVESTATE
+/* Amiga port (save states, 28 Oct 2026): the disc interface for cpc/savestate.c (the
+ * drive pointer as the drive number, -1: none) */
+#include "savestate.h"
+void SS_Fdi(SS_IO *io)
+{
+	long d = -1;
+	if (!io->load && fdi.drive) d = fdi.drive == FDD_GetDrive(0) ? 0 : fdi.drive == FDD_GetDrive(1) ? 1 : -2;
+	if (d == -2) SS_Fail(io, "Save state: unknown drive selected");
+	d = SS_Long(io, d);
+	SS_V(io, fdi.PhysicalDrive); SS_V(io, fdi.PhysicalSide); SS_V(io, fdi.Density);
+	SS_V(io, FDI_DriveSwitch); SS_V(io, FDI_SideSwitch); SS_V(io, FDI_MotorState);
+	if (io->load && !io->err) {
+		if (d < -1 || d > 1) SS_Fail(io, "The state is damaged (disc interface)");
+		else fdi.drive = d < 0 ? NULL : FDD_GetDrive((int)d);
+	}
+}
+#endif

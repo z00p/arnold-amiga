@@ -1,0 +1,94 @@
+From 5521ad2fe90cd452c9805821c38556519f0ac7a1 Mon Sep 17 00:00:00 2001
+From: John Stringer <jcec_1@yahoo.co.uk>
+Date: Wed, 28 Oct 2026 15:20:01 +0000
+Subject: [PATCH 37/41] Speed-ups: no sprite line mask on undrawn lines; I/O
+ lead tested first
+
+Two exact speed-ups. (1) Only drawing reads the Plus sprites active on a line,
+so while a frame is not drawn (frame skip) the mask is no longer worked out at
+each line's end; it is marked stale and CRTC_SetRenderState works it out when
+drawing comes back on (mid-line, in the lead-in lines a drawn frame redraws).
+NO_SKIPSPR restores the per-line rebuild. (2) The I/O lead carried between
+instructions (CPC_IOAhead) is rarely there, so it is tested before it is taken
+instead of stored after every instruction. NO_IOTAKE_TEST. Pixel-exact
+(headless checksums, frame skip on and off, whole-run frame checksums).
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ src/cpc/arnold.c |  6 ++++++
+ src/cpc/asic.c   |  1 +
+ src/cpc/crtc.c   | 14 ++++++++++++++
+ 3 files changed, 21 insertions(+)
+
+diff --git a/src/cpc/arnold.c b/src/cpc/arnold.c
+index fa243e1..af15078 100644
+--- a/src/cpc/arnold.c
++++ b/src/cpc/arnold.c
+@@ -90,7 +90,13 @@ void CPC_IOCatchUp(void)
+  * the CRTC may already be past the end of the instruction. Carry that lead into
+  * the next instruction instead of a negative count (which drew nothing but moved
+  * the monitor counters back while HCount stayed ahead). NO_IOAHEAD_DEBT: as before. */
++#ifndef NO_IOTAKE_TEST
++/* speed14: the lead is rarely there (only after I/O or a late write), so test it
++ * first instead of storing 0 after every instruction. NO_IOTAKE_TEST: as before. */
++#define IO_AHEAD_TAKE(n) do { if (__builtin_expect(CPC_IOAhead != 0, 0)) { (n) -= CPC_IOAhead; CPC_IOAhead = 0; if (__builtin_expect((n) < 0, 0)) { CPC_IOAhead = -(n); (n) = 0; } } } while (0)
++#else
+ #define IO_AHEAD_TAKE(n) do { (n) -= CPC_IOAhead; CPC_IOAhead = 0; if (__builtin_expect((n) < 0, 0)) { CPC_IOAhead = -(n); (n) = 0; } } while (0)
++#endif
+ #else
+ #define IO_AHEAD_TAKE(n) do { (n) -= CPC_IOAhead; CPC_IOAhead = 0; } while (0)
+ #endif
+diff --git a/src/cpc/asic.c b/src/cpc/asic.c
+index 848f94c..fa8455b 100644
+--- a/src/cpc/asic.c
++++ b/src/cpc/asic.c
+@@ -94,6 +94,7 @@ static void ASIC_DMA_RunChannels(int Mask, int Base)
+  * 16-sprite loop for the columns no sprite touches. */
+ unsigned long ASIC_ColMask[2];
+ int ASIC_ColMaskValid = 0;
++int ASIC_SpriteMaskStale = 0;   /* speed14 (crtc.c): the line sprite set was not rebuilt while not drawing; NO_SKIPSPR: always rebuilt */
+ 
+ #if defined(NO_C) && !defined(NO_SPRCOL)
+ #define NO_SPRCOL	/* needs ASIC_BuildColMask */
+diff --git a/src/cpc/crtc.c b/src/cpc/crtc.c
+index 24978c8..21b0306 100644
+--- a/src/cpc/crtc.c
++++ b/src/cpc/crtc.c
+@@ -89,6 +89,7 @@ static void     CRTC_SetRenderingFunction(void);
+ static int CRTC_PalettedFast = 0;
+ extern unsigned long ASIC_ColMask[2];
+ extern int ASIC_ColMaskValid;
++extern int ASIC_SpriteMaskStale;
+ void ASIC_BuildColMask(void);
+ extern unsigned ConvertedColourTable[32];
+ extern int Render_PaletteIndexBlack, Render_PaletteIndexBorder, PIXEL_STEP, ModeHorizontalPixelScroll;
+@@ -3896,6 +3897,12 @@ static __inline__ void CRTC_DoOneCycle(void)
+ 					CRTC_InternalState.CRTC_FlagsAtLastHtot = CRTC_InternalState.CRTC_Flags;
+ 
+                     /* must be called each line to turn on the correct sprites! */
++#ifndef NO_SKIPSPR
++                    /* speed14: only drawing reads the line's sprite set, so an undrawn
++                     * line leaves it stale; CRTC_SetRenderState rebuilds it when drawing
++                     * comes back on (mid-line, in the lead-in lines a drawn frame redraws) */
++                    if (CRTC_InternalState.DontRender) ASIC_SpriteMaskStale = 1; else
++#endif
+                     ASIC_GenerateSpriteActiveMaskForLine(ASICCRTC_Line);
+ 
+ 			 }
+@@ -4860,6 +4867,13 @@ void	CRTC_SetRenderState(BOOL State)
+ {
+ 	CRTC_InvalidateRun();   /* Amiga port */
+ 	CRTC_InternalState.DontRender = State;
++#ifndef NO_SKIPSPR
++	if (!State && ASIC_SpriteMaskStale)
++	{
++		ASIC_SpriteMaskStale = 0;
++		ASIC_GenerateSpriteActiveMaskForLine(ASICCRTC_Line);
++	}
++#endif
+ }
+ 
+ static unsigned long ClocksToLightPenTrigger;
+-- 
+2.50.0.windows.2
+

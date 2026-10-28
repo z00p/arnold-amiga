@@ -134,6 +134,13 @@ int KeyScript_Frame(long frame, void (*setkey)(int key, int down))
 }
 
 int KeyScript_Active(void) { return nev > 0 && next < nev; }
+/* save states (28 Oct 2026): carry on from this frame (a state was loaded); the
+ * events before it are passed over, not applied */
+void KeyScript_Seek(long frame)
+{
+	next = 0;
+	while (next < nev && ev[next].frame < frame) next++;
+}
 
 int KeyScript_SnapAt(long frame)
 {

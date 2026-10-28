@@ -11,7 +11,8 @@ CPC_O=	cpc/arnold.o cpc/asic.o cpc/audioevent.o cpc/bmp.o cpc/cpc.o \
 	cpc/diskimage/iextdsk.o cpc/diskimage/dskwrite.o \
 	cpc/z80/z80.o cpc/debugger/memdump.o \
 	cpc/riff.o cpc/snapv3.o \
-	cpc/messages.o
+	cpc/messages.o \
+	cpc/savestate.o
 
 UNIX_O= unix/main.o unix/host.o unix/global.o unix/display.o \
 	unix/display_sdl.o unix/gtkui.o unix/sdlsound.o unix/configfile.o \

@@ -27,7 +27,7 @@
 #include <stdarg.h>
 
 unsigned long __stack = 256 * 1024;   /* libnix: enlarge the stack at start */
-static const char ver[] __attribute__((used)) = "$VER: Arnold 1.3 (27.10.2026) Amiga port, GPL-2.0";
+static const char ver[] __attribute__((used)) = "$VER: Arnold 1.4 (28.10.2026) Amiga port, GPL-2.0";
 
 /* ---- diagnostic log ---- */
 static FILE *logf;
@@ -548,6 +548,14 @@ unsigned long Sys_ChipClock(void)
 #include "rtgfw/src/rtgfw.h"
 #include "screenshot.h"
 int Sys_RtgWanted, Sys_RtgActive, Sys_RtgBlit, Sys_RtgBuffers = 1, Sys_RtgGrabOn;
+/* RTGVBL (27 Oct 2026): rtgfw's RTG_F_VBLANK. The VideoCore driver busy-waits for its 60 Hz flip
+ * in ChangeScreenBuffer and in panning (8-9 ms of CPU a frame, rtgbench FLIP), so true double
+ * buffering costs a third of the frame. Instead a small rtgfw task writes the changed lines just
+ * after the display's vertical blank (found by panning a two-page screen), and the copy (well
+ * under 1 ms) stays ahead of the scan: no tearing, and rtg_present only copies the changed lines
+ * into a staging frame. Falls back to plain direct writes if the board gives no steady blank.
+ * On by default from 1.4 (John's A1200 tear test, 27 Oct: the clean one); RTGVBL=0 for plain writes. */
+int Sys_RtgVblank = 1;
 /* Scanlines on the RTG screen (1.2, 26 Oct 2026; rtgfw RtgOpen.scan): SYS_SCAN_* = the Scanlines
  * setting. Off is the 1x picture as before. The others draw the picture at 2x (each CPC pixel
  * 2x2) into a bigger RTG mode, the lower row of each pair being the scanline: hard = the line
@@ -654,6 +662,7 @@ static int rtg_open_display(int cw, int ch, int hires)
 	rtg_o.buffers = Sys_RtgBlit ? 1 : (Sys_RtgBuffers >= 1 && Sys_RtgBuffers <= 3 ? Sys_RtgBuffers : 1);
 	rtg_o.border_pen = 0;
 	rtg_o.flags = RTG_F_LOG | (Sys_RtgBlit ? RTG_F_BLIT : 0);
+	if (Sys_RtgVblank && !Sys_RtgBlit && rtg_o.buffers <= 1) rtg_o.flags |= RTG_F_VBLANK;
 	rtg_o.content_hz100 = 5000;
 	rtg_o.log = rtg_log;
 	if (!Sys_RtgAvailable()) e = RTG_E_NOMODE;
@@ -733,6 +742,7 @@ int Sys_RtgGrab(const char *name, const unsigned char *chunky, int pitch)
 	int i, e, w, h;
 	if (!Sys_RtgActive) return 0;
 	rtg_show(chunky, pitch);              /* TURBO shows every 25th frame only: make sure this one is on the screen */
+	rtg_x_vbl_sync(100000);               /* RTGVBL: the frame is written at the next blank */
 	w = rtg_o.out_w; h = rtg_o.out_h;
 	if (rtg_o.out_fmt != RTG_FMT_CLUT8) {
 		/* 16/32-bit screen (blended scanlines): the screen as RGB, saved as a PPM beside the name */
@@ -1029,9 +1039,80 @@ static void collect_disp(void)
 	}
 }
 
+/* Save state hotkeys (1.4, 28 Oct 2026): a short message ("Saved 1") over the top
+ * left of the picture for about 2 s, on AGA and RTG. It goes into a copy of the
+ * frame handed to the display code, never into the host's chunky buffer, so the
+ * emulation, screenshots, SNAP dumps and states don't see it; drawn in the
+ * host-reserved pen SYS_OSD_PEN (yellow) on pen 0. Its rows are marked changed
+ * while it shows and once more when it ends, so they come back from the clean
+ * frame on every buffer. */
+#define OSD_W 320
+#define OSD_H 16
+static char osd_text[40];
+static unsigned long osd_start;
+static int osd_w, osd_h;
+static unsigned char osd_mask[OSD_H][OSD_W];
+static unsigned char *osd_copy;
+static long osd_copy_len;
+void Sys_OsdMessage(const char *text)
+{
+	struct BitMap *bm;
+	struct RastPort rp;
+	int x, y, n = strlen(text);
+	if (n > (int)sizeof osd_text - 1) n = sizeof osd_text - 1;
+	memcpy(osd_text, text, n); osd_text[n] = 0;
+	memset(osd_mask, 0, sizeof osd_mask);
+	osd_w = osd_h = 0;
+	bm = AllocBitMap(OSD_W, OSD_H, 1, BMF_CLEAR, NULL);
+	if (!bm) { osd_text[0] = 0; return; }
+	InitRastPort(&rp);
+	rp.BitMap = bm;
+	SetFont(&rp, GfxBase->DefaultFont);
+	SetAPen(&rp, 1); SetDrMd(&rp, JAM1);
+	osd_w = TextLength(&rp, (STRPTR)osd_text, n); if (osd_w > OSD_W) osd_w = OSD_W;
+	osd_h = rp.TxHeight; if (osd_h > OSD_H) osd_h = OSD_H;
+	Move(&rp, 0, rp.TxBaseline);
+	Text(&rp, (STRPTR)osd_text, n);
+	WaitBlit();
+	for (y = 0; y < osd_h; y++)
+		for (x = 0; x < osd_w; x++)
+			osd_mask[y][x] = (((UBYTE *)bm->Planes[0])[y * bm->BytesPerRow + (x >> 3)] >> (7 - (x & 7))) & 1;
+	FreeBitMap(bm);
+	osd_start = Sys_Micros();
+	Sys_Log("osd: %s", osd_text);
+}
+static const unsigned char *osd_compose(const unsigned char *chunky, int pitch)
+{
+	int x0, y0, x, y;
+	long need = (long)pitch * CH;
+	if (!osd_text[0]) return chunky;
+	x0 = (Sys_RtgActive ? (int)rtg_o.vis_x : XOFF) + 8;
+	y0 = (Sys_RtgActive ? (int)rtg_o.vis_y : YOFF) + 6;
+	for (y = y0 - 2; y < y0 + osd_h + 2; y++) Sys_MarkLineDirty(y);
+	if (Sys_Micros() - osd_start >= 2000000UL) { osd_text[0] = 0; return chunky; }   /* ended: the rows from the clean frame */
+	if (osd_copy_len < need) {
+		if (osd_copy) FreeVec(osd_copy);
+		osd_copy = AllocVec(need, MEMF_ANY);
+		osd_copy_len = osd_copy ? need : 0;
+		if (!osd_copy) { osd_text[0] = 0; return chunky; }
+	}
+	CopyMem((APTR)chunky, osd_copy, need);
+	for (y = -2; y < osd_h + 2; y++) {
+		unsigned char *r;
+		if (y0 + y < 0 || y0 + y >= CH) continue;
+		r = osd_copy + (long)(y0 + y) * pitch;
+		for (x = -4; x < osd_w + 4; x++)
+			if (x0 + x >= 0 && x0 + x < pitch)
+				r[x0 + x] = (y >= 0 && y < osd_h && x >= 0 && x < osd_w && osd_mask[y][x]) ? SYS_OSD_PEN : 0;
+	}
+	return osd_copy;
+}
+
 void Sys_CloseDisplay(void)
 {
 	int i;
+	osd_text[0] = 0;   /* a save state message ends with the display */
+	if (osd_copy) { FreeVec(osd_copy); osd_copy = NULL; osd_copy_len = 0; }
 	hb_dump(); bpu_reset(); if (Sys_RtgActive) { rtg_close_display(); return; }
 	while (safe_out > 0) { WaitPort(safeport); collect_safe(); }
 	while (disp_out > 0) { WaitPort(dispport); collect_disp(); }
@@ -1148,6 +1229,7 @@ void Sys_ShowFrame(const unsigned char *chunky, int pitch)
 	struct BitMap *bm;
 	int y, next, bit, wr, moved;
 
+	chunky = osd_compose(chunky, pitch);
 	if (Sys_RtgActive) { rtg_show(chunky, pitch); return; }
 	if (!scr) return;
 	t0 = Sys_Micros(); Sys_Perf.show_vb = GfxBase->VBCounter; Sys_Perf.show_beam = ((custom.vposr & 1) << 8) | (custom.vhposr >> 8);
@@ -2066,5 +2148,18 @@ static void bpu_audit(void)
 		if (Sys_Perf.audit_cop_bad < 20) Sys_Log("audit: copper BPLCON0 shows %d planes, buffer %d needs %d", n, shown, need);
 		Sys_Perf.audit_cop_bad++;
 	}
+#endif
+}
+
+/* Save states (1.4, 28 Oct 2026; host_amiga.c): the DC filter of the sound
+ * (audio_conv.h, above) is part of a state so the sound after a load is the same
+ * to the sample. */
+void Sys_AudioDcState(long *v, int set)
+{
+#if !defined(NO_SNDLUT_FIX) && !defined(NO_SNDUNIPOLAR)
+	if (set) { Audio_DcX[0] = v[0]; Audio_DcX[1] = v[1]; Audio_DcY[0] = v[2]; Audio_DcY[1] = v[3]; Audio_DcOn = (int)v[4]; }
+	else { v[0] = Audio_DcX[0]; v[1] = Audio_DcX[1]; v[2] = Audio_DcY[0]; v[3] = Audio_DcY[1]; v[4] = Audio_DcOn; }
+#else
+	if (!set) v[0] = v[1] = v[2] = v[3] = v[4] = 0;
 #endif
 }

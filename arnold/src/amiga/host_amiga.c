@@ -18,6 +18,7 @@
 #include "keyscript.h"
 #include "keymaplogic.h"
 #include "gamedb.h"
+#include "../cpc/savestate.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -436,11 +437,25 @@ static void remap_parse(const char *str)
 	}
 }
 
+/* Save state hotkeys (1.4, 28 Oct 2026): Left Amiga + F1-F4 saves the state to slot
+ * 1-4, Right Amiga + F1-F4 loads it. The emulation stops at the end of the frame
+ * (Host_ProcessSystemEvents returns), main() saves or loads and runs on without
+ * the menu. The Amiga keys are followed by their own key events too, so a key
+ * script (A:LAMIGA, A:F1) can use them. */
+#define QUAL_LCOMMAND 0x0040   /* IEQUALIFIER_LCOMMAND (devices/inputevent.h) */
+#define QUAL_RCOMMAND 0x0080
+static int hk_request;         /* 1-4: save to that slot, 0x100 + 1-4: load it */
+static int amiga_held[2];      /* Left, Right Amiga down (from their key events) */
 static void host_key(int code, int down, int qual)
 {
 	if (keylog) { fprintf(keylog, "%02x %s q=%04x\n", code, down ? "down" : "up", qual); fflush(keylog); }
 	if (code == RAW_HELP) { if (down) Sys_RequestQuit(); return; }
 	if (code >= 128) return;
+	if (code == 0x66 || code == 0x67) amiga_held[code - 0x66] = down;
+	if (code >= 0x50 && code <= 0x53) {
+		int l = (qual & QUAL_LCOMMAND) || amiga_held[0], r = (qual & QUAL_RCOMMAND) || amiga_held[1];
+		if (l || r) { if (down) hk_request = (code - 0x50 + 1) | (l ? 0 : 0x100); return; }   /* not for the CPC */
+	}
 	if (remap_on && remap_key[code] >= 0) { if (down) CPC_SetKey(remap_key[code]); else CPC_ClearKey(remap_key[code]); return; }
 	if (joykey(code, down)) return;
 	if (menu.running_model == SYS_MODEL_GX4000) return;   /* the console has no keyboard */
@@ -494,7 +509,7 @@ BOOL Host_ProcessSystemEvents(void)
 	for (i = 0; i < 6; i++)
 		if (diff & jk[i].bit) { if (joy & jk[i].bit) CPC_SetKey(jk[i].key); else CPC_ClearKey(jk[i].key); }
 	joy_prev = joy;
-	return Sys_Poll();
+	return Sys_Poll() || hk_request;
 }
 
 /* ---- files ---- */
@@ -610,15 +625,21 @@ static void prefs_save(void)
  * prefs come back otherwise. A disk game (the Plus with the system cartridge,
  * or a plain CPC, with a disk in drive A) uses <disk A>.prefs (20 Oct 2026). */
 static int global_sound, global_hires, global_tall, global_wide, global_rtg;   /* menu.game_prefs: 0 none, 1 <game>.prefs, 2 Games.db */
-static void game_prefs_name(char *out)
+/* the file a game is known by: its cartridge, or for a disk game (the Plus with the
+ * system cartridge, or a plain CPC) disk A, or for a tape game the tape */
+static const char *game_media(void)
 {
 	const char *c = menu.cart, *e = c + strlen(c);
 	int plus = menu.model == SYS_MODEL_PLUS || menu.model == SYS_MODEL_GX4000;
 	int system = e - c >= 10 && !kwcmp(e - 10, "SYSTEM.CPR");
 	/* a tape game (24 Oct 2026): <tape>.prefs when there is a tape and no disk
 	 * in drive A (or a 464, which has no drive) */
-	if (menu.tape[0] && (!plus || system) && (!menu.diska[0] || menu.model == SYS_MODEL_464)) { sprintf(out, "%s.prefs", menu.tape); return; }
-	sprintf(out, "%s.prefs", menu.diska[0] && (!plus || system) ? menu.diska : menu.cart);
+	if (menu.tape[0] && (!plus || system) && (!menu.diska[0] || menu.model == SYS_MODEL_464)) return menu.tape;
+	return menu.diska[0] && (!plus || system) ? menu.diska : menu.cart;
+}
+static void game_prefs_name(char *out)
+{
+	sprintf(out, "%s.prefs", game_media());
 }
 
 /* one settings line of a game's .prefs or of its Games.db block */
@@ -711,6 +732,7 @@ static char disk_in[2][SYS_PATH];
 static unsigned char *disk_img[2];
 static unsigned long disk_len[2];
 static int disk_wbfail[2];
+static int disk_written[2];           /* save states: written back since it went in (a state then carries it) */
 static void flush_disk(int drive, const char *when)
 {
 	char msg[DSKWRITE_MSG];
@@ -719,6 +741,7 @@ static void flush_disk(int drive, const char *when)
 	if (!DiskImage_IsImageDirty(drive)) return;
 	r = DskWrite_Flush(drive, disk_in[drive], &disk_img[drive], &disk_len[drive], msg);
 	if (r == 0) return;
+	if (r > 0) disk_written[drive] = 1;   /* save states: the file is no longer what the game started with */
 	Sys_Log("drive %c (%s): '%s' %s", 'A' + drive, when, disk_in[drive], msg);
 	if (r < 0) {
 		disk_wbfail[drive] = 1;
@@ -754,6 +777,7 @@ static void apply_disk(int drive, const char *name)
 		strncpy(disk_in[drive], name, SYS_PATH - 1);
 		drop_image(drive);
 		disk_img[drive] = data; disk_len[drive] = len;   /* kept: the write-back template */
+		disk_written[drive] = 0;
 		Sys_Log("drive %c: '%s', %lu bytes", 'A' + drive, name, len);
 	}
 }
@@ -832,6 +856,159 @@ static int load_cpc_roms(int model)
 	return 1;
 }
 
+/* ---- Save states (1.4, 28 Oct 2026; cpc/savestate.c) ----------------------
+ * PROGDIR:States/<game>.<slot>.sna (the drawer is made when missing), <game> the
+ * file part, without its extension, of the cartridge (or disk A / tape for a
+ * disk or tape game, as game settings use) the machine was powered on with.
+ * Saved from the menu (Project > Save state) or with Left Amiga + F1-F4 while
+ * playing; loaded with Project > Load state (straight back into the game) or
+ * Right Amiga + F1-F4. A state is for the same machine model and cartridge;
+ * disks and tapes it needs are named in the refusal. Disks with changes not
+ * written back, or written back since they went in, are kept in the state. */
+static const char *file_part(const char *p) { const char *f = p, *q; for (q = p; *q; q++) if (*q == '/' || *q == ':' || *q == '\\') f = q + 1; return f; }
+static char state_game[SYS_PATH], state_cart[SYS_PATH];
+static char state_note[320];          /* the last state action, for the menu's status line (or a requester) */
+static unsigned char *state_buf;      /* the file a menu load has checked */
+static unsigned long state_len;
+static void state_poweron(void)
+{
+	const char *m = game_media(), *f = m, *p;
+	char *dot;
+	for (p = m; *p; p++) if (*p == '/' || *p == ':') f = p + 1;
+	strncpy(state_game, f, SYS_PATH - 1); state_game[SYS_PATH - 1] = 0;
+	dot = strrchr(state_game, '.');
+	if (dot && dot != state_game) *dot = 0;
+	if (!state_game[0]) strcpy(state_game, "Arnold");
+	strncpy(state_cart, menu.cart, SYS_PATH - 1);
+	disk_written[0] = disk_written[1] = 0;
+}
+static void state_path(int slot, char *out) { sprintf(out, "PROGDIR:States/%.200s.%d.sna", state_game, slot); }
+/* the slot labels for the Project menu: whether each one holds a state of this game */
+static void state_labels(void)
+{
+	int i;
+	for (i = 0; i < SYS_STATE_SLOTS; i++) {
+		char p[SYS_PATH + 32]; FILE *f;
+		state_path(i + 1, p);
+		f = menu.can_continue ? fopen(p, "rb") : NULL;
+		if (f) { long n; fseek(f, 0, SEEK_END); n = ftell(f); fclose(f); sprintf(menu.state_label[i], "Slot %d (%ld KB)", i + 1, (n + 1023) / 1024); }
+		else sprintf(menu.state_label[i], "Slot %d%s", i + 1, menu.can_continue ? " (empty)" : "");
+	}
+}
+/* host data in a state, as the headless host writes it too (8-byte big-endian values):
+ * "ARNH", the key script's frame, the sound's DC filter (x l/r, y l/r, on), the host
+ * (1 headless, 2 Amiga), then here the GX4000 auto-start count */
+#define STATE_HOSTN 9
+#define STATE_HOSTMAGIC 0x41524E48L
+static void state_put8(unsigned char *p, long v) { int i; unsigned long u = (unsigned long)v; for (i = 7; i >= 4; i--) { p[i] = (unsigned char)u; u >>= 8; } for (i = 3; i >= 0; i--) p[i] = v < 0 ? 0xff : 0; }
+static long state_get8(const unsigned char *p) { return (long)(((unsigned long)p[4] << 24) | ((unsigned long)p[5] << 16) | ((unsigned long)p[6] << 8) | p[7]); }
+static int save_state(int slot)
+{
+	char path[SYS_PATH + 32], tmp[SYS_PATH + 40], msg[300];
+	unsigned char blob[8 * STATE_HOSTN], *d; unsigned long l;
+	long v[STATE_HOSTN];
+	SAVESTATE_INFO info;
+	FILE *f; int ok, i;
+	memset(&info, 0, sizeof info);
+	info.cart_name = state_cart; info.disk_name[0] = disk_in[0]; info.disk_name[1] = disk_in[1]; info.tape_name = tape_in;
+	info.embed_disk[0] = disk_written[0]; info.embed_disk[1] = disk_written[1];
+	v[0] = STATE_HOSTMAGIC; v[1] = script_frame;
+	Sys_AudioDcState(v + 2, 0);
+	v[7] = 2; v[8] = gx_autostart;
+	for (i = 0; i < STATE_HOSTN; i++) state_put8(blob + 8 * i, v[i]);
+	info.host = blob; info.hostlen = sizeof blob;
+	if (!SaveState_Save(&d, &l, &info, msg, sizeof msg)) {
+		snprintf(state_note, sizeof state_note, "State %d not saved: %s", slot, msg);
+		Sys_Log("state: %s", state_note);
+		return 0;
+	}
+	Sys_MakeDir("PROGDIR:States");
+	state_path(slot, path);
+	sprintf(tmp, "%s.tmp", path);
+	f = fopen(tmp, "wb");
+	ok = f && fwrite(d, 1, l, f) == l;
+	if (f && fclose(f)) ok = 0;
+	free(d);
+	if (ok) { remove(path); ok = rename(tmp, path) == 0; }
+	else remove(tmp);
+	if (ok) snprintf(state_note, sizeof state_note, "Saved state %d (%lu KB): %.40s", slot, (l + 1023) / 1024, file_part(path));
+	else snprintf(state_note, sizeof state_note, "State %d not saved: can't write %.50s", slot, path);
+	Sys_Log("state: %s (%s)", state_note, path);
+	return ok;
+}
+/* the reason in state_note in a few words, for the hotkeys' on-screen message */
+static const char *state_why(void)
+{
+	static const struct { const char *in, *out; } w[] = {
+		{ "another cartridge", "other cart" }, { "set up differently", "other setup" }, { "This state is for a", "other model" },
+		{ "system ROMs", "other ROMs" }, { "needs tape", "needs tape" }, { "needs disk", "needs disk" },
+		{ "another version", "other version" }, { "damaged", "damaged" }, { "Not a CPC snapshot", "not a state" },
+		{ "memory", "no memory" }, { "can't write", "can't write" }, { "KC Compact", "KC Compact" }, { "sampled", "WAV tape" } };
+	int i;
+	for (i = 0; i < (int)(sizeof w / sizeof w[0]); i++) if (strstr(state_note, w[i].in)) return w[i].out;
+	return "error";
+}
+/* read a slot's file into state_buf: 1 = there */
+static int state_read(int slot)
+{
+	char path[SYS_PATH + 32];
+	free(state_buf); state_buf = NULL; state_len = 0;
+	state_path(slot, path);
+	if (Host_LoadFile(path, &state_buf, &state_len)) return 1;
+	snprintf(state_note, sizeof state_note, "Slot %d has no state of %.50s", slot, state_game);
+	return 0;
+}
+/* the menu's Load state: the file must be one this machine can take (nothing changes yet) */
+static int state_check(int slot)
+{
+	char msg[300];
+	if (!state_read(slot)) return 0;
+	if (SaveState_Check(state_buf, state_len, msg, sizeof msg) == 1) return 1;
+	snprintf(state_note, sizeof state_note, "State %d: %s", slot, msg[0] ? msg : "not an Arnold save state");
+	return 0;
+}
+/* load state_buf (read by state_read / state_check) */
+static int load_state(int slot)
+{
+	char msg[300];
+	SAVESTATE_LOADED ld;
+	int r, d;
+	r = SaveState_Load(state_buf, state_len, msg, sizeof msg, &ld);
+	if (r != SAVESTATE_EXACT) {
+		if (r == SAVESTATE_PLAIN) snprintf(state_note, sizeof state_note, "Slot %d: a plain snapshot, loaded the lossy way", slot);
+		else snprintf(state_note, sizeof state_note, "State %d not loaded: %s", slot, msg);
+		Sys_Log("state: %s", state_note);
+		return r == SAVESTATE_PLAIN;
+	}
+	if (ld.hostlen >= 8 * 8 && state_get8(ld.host) == STATE_HOSTMAGIC) {
+		long v[STATE_HOSTN]; int i, n = (int)(ld.hostlen / 8);
+		for (i = 0; i < STATE_HOSTN && i < n; i++) v[i] = state_get8(ld.host + 8 * i);
+		script_frame = v[1];
+		Sys_AudioDcState(v + 2, 1);
+		gx_autostart = (v[7] == 2 && n >= STATE_HOSTN) ? (int)v[8] : 0;
+		if (script_on) KeyScript_Seek(script_frame);
+	}
+	/* the drives and the deck as the state has them */
+	for (d = 0; d < 2; d++) {
+		char *menu_disk = d ? menu.diskb : menu.diska;
+		if (ld.disk[d] == 1) { disk_in[d][0] = 0; menu_disk[0] = 0; drop_image(d); }
+		else if (ld.disk[d] == 2) {
+			/* the state's own copy of its disk: written back to the file it came from
+			 * if that is the disk in the drive now, else kept in memory only */
+			if (strcmp(file_part(disk_in[d]), ld.disk_name[d])) { disk_in[d][0] = 0; menu_disk[0] = 0; drop_image(d); }
+			else disk_written[d] = 1;
+		}
+	}
+	if (ld.tape) { tape_in[0] = 0; menu.tape[0] = 0; }
+	/* the keyboard and joystick as they are now, not as they were when saved (a key
+	 * script is the input of a test run: its keys stay as the state has them) */
+	if (!script_on) CPC_ClearKeyboard();
+	kb_joy = 0; joy_prev = 0;
+	snprintf(state_note, sizeof state_note, "Loaded state %d of %.50s", slot, state_game);
+	Sys_Log("state: %s", state_note);
+	return 1;
+}
+
 /* Power ON: the chosen model's hardware, its ROMs or the cartridge, reset,
  * disks in. Models (19 Oct 2026): 464 (64K, tape only: no disc interface),
  * 664 (64K, disc), 6128 (128K, disc), 6128 Plus (cartridge, 128K, disc) and
@@ -886,6 +1063,7 @@ static int power_on(void)
 	menu.running_model = model;
 	gx_autostart = (model == SYS_MODEL_GX4000 && strstr(menu.cart, "system.cpr")) ? 150 : 0;   /* about 3 s, see Host_ProcessSystemEvents */
 	Sys_Log("power on: %s, reset done", Sys_ModelNames[model]);
+	state_poweron();   /* the game the states are named after */
 	/* power cycle: both drives reloaded from their files */
 	DiskImage_RemoveDisk(0); DiskImage_RemoveDisk(1);
 	disk_in[0][0] = disk_in[1][0] = 0;
@@ -950,6 +1128,9 @@ static int open_emulation(void)
 	 * same direction then did nothing until that key was tapped again);
 	 * joy_prev 0: the next frame sets whatever is really held */
 	kb_joy = 0; joy_prev = 0;
+	/* an Amiga key let go in the menu never reached host_key: not held any more (else F1
+	 * would be taken as a save state hotkey) */
+	amiga_held[0] = amiga_held[1] = 0; hk_request = 0;
 	Sys_Log("emulation: screen open%s, sound %s", Sys_RtgActive ? " (RTG)" : "", audio_open ? "on" : "off");
 	return 1;
 }
@@ -959,6 +1140,7 @@ int main(int argc, char **argv)
 	unsigned char *data; unsigned long len;
 	const char *sna = NULL;
 	int i, want_menu = 0, ndisk = 0, action, nosound = 0, hires = 0, tall = 0, wide = 0, media_given = 0, rtg = -1, scan = -1;
+	int load_slot = 0, pending_load = 0;
 	struct SysStart st;
 
 	KeyScript_AmigaKey = amiga_key_code;   /* before KEYS= loads a script */
@@ -1028,12 +1210,15 @@ int main(int argc, char **argv)
 			else if (!kwcmp(argv[i], "RTG")) rtg = 1;                       /* RTG screen (pilot, 26 Oct 2026) */
 			else if (!kwncmp(argv[i], "RTG=", 4)) rtg = atoi(argv[i] + 4) ? 1 : 0;
 			else if (!kwcmp(argv[i], "RTGBLIT")) Sys_RtgBlit = 1;           /* diagnostic: off-screen bitmap + blit */
+			else if (!kwcmp(argv[i], "RTGVBL")) Sys_RtgVblank = 1;          /* RTG: write at the display's vertical blank (27 Oct 2026) */
+			else if (!kwncmp(argv[i], "RTGVBL=", 7)) Sys_RtgVblank = atoi(argv[i] + 7) ? 1 : 0;
 			else if (!kwncmp(argv[i], "RTGBUF=", 7)) Sys_RtgBuffers = atoi(argv[i] + 7);   /* diagnostic: 3 = screen buffers */
 			else if (!kwcmp(argv[i], "RTGGRAB")) Sys_RtgGrabOn = 1;         /* tests: SNAP also saves the RTG screen */
 			else if (!kwncmp(argv[i], "SCANLINES=", 10)) { int k = Sys_ParseScan(argv[i] + 10); if (k >= 0) scan = k; }   /* RTG scanlines (1.2) */
 			else if (!kwncmp(argv[i], "RTGDEPTH=", 9)) Sys_RtgDepth = atoi(argv[i] + 9);   /* tests: 8, 16 or 32 */
 			else if (!kwncmp(argv[i], "SCANMODE=", 9)) { char *x = strchr(argv[i] + 9, 'x'); if (!x) x = strchr(argv[i] + 9, 'X'); Sys_RtgScanW = atoi(argv[i] + 9); Sys_RtgScanH = x ? atoi(x + 1) : 0; }   /* tests: the scanline mode size */
 			else if (!kwncmp(argv[i], "TAPE=", 5)) { strncpy(menu.tape, argv[i] + 5, SYS_PATH - 1); media_given = 1; }
+			else if (!kwncmp(argv[i], "LOADSTATE=", 10)) load_slot = atoi(argv[i] + 10);   /* tests: load the game's state n after Power ON */
 			else if (!kwcmp(argv[i], "CHIPBENCH")) { Sys_ChipBench(); return 0; } else if (!kwcmp(argv[i], "HEARTBEAT")) { extern int Sys_HbLog; Sys_HbLog = 1; } else if (!kwcmp(argv[i], "NOBPU")) { extern int Sys_NoBpu; Sys_NoBpu = 1; } else if (!kwcmp(argv[i], "BENCH")) {
 				/* machine timings to the Shell and PROGDIR:bench.txt, then exit */
 				FILE *bf = fopen("PROGDIR:bench.txt", "w");
@@ -1081,7 +1266,20 @@ int main(int argc, char **argv)
 
 	action = want_menu ? SYS_MENU_QUIT : SYS_MENU_POWER;
 	if (!want_menu && !power_on()) want_menu = 1;
-	if (!want_menu && sna && load_media("snapshot", sna, &data, &len)) Snapshot_Insert(data, len);
+	if (!want_menu && sna && load_media("snapshot", sna, &data, &len)) {
+		/* an Arnold save state resumes exactly; any other .sna loads as before (upstream, lossy) */
+		char msg[300];
+		int r;
+		if (state_buf) free(state_buf);
+		state_buf = data; state_len = len;
+		r = SaveState_Load(state_buf, state_len, msg, sizeof msg, NULL);
+		Sys_Log("snapshot '%s': %s", sna, r == SAVESTATE_EXACT ? "Arnold save state, exact" : r == SAVESTATE_PLAIN ? "plain, loaded the upstream way" : msg);
+		if (r == SAVESTATE_REFUSED) { char e[360]; sprintf(e, "Snapshot not loaded:\n%.300s", msg); Sys_MenuError(e); }
+	}
+	if (!want_menu && load_slot > 0) {   /* LOADSTATE=n: the game's state n, straight away (tests) */
+		if (state_read(load_slot) && load_state(load_slot)) ;
+		else Sys_Log("state: LOADSTATE=%d: %s", load_slot, state_note);
+	}
 
 	for (;;) {
 		if (want_menu) {
@@ -1090,6 +1288,9 @@ int main(int argc, char **argv)
 			menu.skip = skip_max; menu.refresh = refresh; menu.joykeys = joykeys; menu.pad = Sys_PadType;
 			strcpy(menu.remap, remap_str);
 			tape_pos();
+			state_labels();
+			if (state_note[0] && !menu.status[0]) { strncpy(menu.status, state_note, sizeof menu.status - 1); menu.status[sizeof menu.status - 1] = 0; }
+			state_note[0] = 0;
 			if (Sys_RtgStatus[0]) { if (!menu.status[0]) strncpy(menu.status, Sys_RtgStatus, sizeof menu.status - 1); Sys_RtgStatus[0] = 0; }   /* RTG fell back to AGA */
 			action = Sys_Menu(&menu);
 			if (strcmp(menu.remap, remap_str)) remap_parse(menu.remap);   /* key map editor / preset */
@@ -1097,22 +1298,65 @@ int main(int argc, char **argv)
 			Sys_VideoMode = menu.video;
 			{ extern unsigned long Sys_AudioIrqs(void); Sys_Log("menu action %d (audio interrupts so far %lu)", action, Sys_AudioIrqs()); }
 			/* on an RTG menu, Save Prefs / Save for game / Forget / Screenshot keep its screen up (the next menu opens in front of it) */
-			if (action != SYS_MENU_POWER && action != SYS_MENU_RESET && action != SYS_MENU_CONTINUE
-			 && !(Sys_MenuOnRtg() && (action == SYS_MENU_SAVE || action == SYS_MENU_SAVEGAME || action == SYS_MENU_FORGETGAME || action == SYS_MENU_SHOT))) Sys_MenuClose();
+			if (action != SYS_MENU_POWER && action != SYS_MENU_RESET && action != SYS_MENU_CONTINUE && action != SYS_MENU_LOADSTATE
+			 && !(Sys_MenuOnRtg() && (action == SYS_MENU_SAVE || action == SYS_MENU_SAVEGAME || action == SYS_MENU_FORGETGAME || action == SYS_MENU_SHOT || action == SYS_MENU_SAVESTATE))) Sys_MenuClose();
 			if (action == SYS_MENU_QUIT) break;
 			if (!menu.game_prefs) { strcpy(global_remap, remap_str); global_sound = menu.sound; global_hires = menu.hires; global_joykeys = joykeys; global_tall = menu.tall; global_wide = menu.wide; global_rtg = menu.rtg; global_diskwrite = menu.diskwrite; global_fasttape = menu.fasttape; global_tapesound = menu.tapesound; global_scan = menu.scan; }
 			if (action == SYS_MENU_SAVE) { int gs = menu.sound, gh = menu.hires, gt = menu.tall, gw = menu.wide, gr = menu.rtg; if (menu.game_prefs) { menu.sound = global_sound; menu.hires = global_hires; menu.tall = global_tall; menu.wide = global_wide; menu.rtg = global_rtg; } else global_joykeys = joykeys; prefs_save(); menu.sound = gs; menu.hires = gh; menu.tall = gt; menu.wide = gw; menu.rtg = gr; continue; }
 			if (action == SYS_MENU_SAVEGAME) { game_prefs_save(); continue; }
 			if (action == SYS_MENU_FORGETGAME) { game_prefs_forget(); continue; }
 			if (action == SYS_MENU_SHOT) { screenshot(); continue; }
+			if (action == SYS_MENU_SAVESTATE) { save_state(menu.state_slot); continue; }
+			if (action == SYS_MENU_LOADSTATE) {
+				/* checked first (nothing changes), loaded once the emulation screen is up:
+				 * opening it resets the renderer, which the state then sets as it was */
+				if (!menu.can_continue) { strcpy(state_note, "Load state: Power ON the game first."); continue; }
+				if (!state_check(menu.state_slot)) {
+					/* the reason can be long (which disk, which cartridge): a requester */
+					Sys_MenuError(state_note);
+					state_note[0] = 0;
+					continue;
+				}
+				pending_load = menu.state_slot;
+			}
 			if (action == SYS_MENU_POWER && !power_on()) continue;
 			if (action == SYS_MENU_RESET) { if (!menu.can_continue && !power_on()) continue; CPC_Reset(); }
 			if (action == SYS_MENU_CONTINUE || action == SYS_MENU_RESET) { apply_disks(); apply_tape(0); }   /* disk swap, tape change or rewind */
 		}
-		{ int ok = open_emulation(); Sys_MenuClose(); if (!ok) { want_menu = 1; continue; } }
+		{ int ok = open_emulation(); Sys_MenuClose(); if (!ok) { want_menu = 1; pending_load = 0; continue; } }
+		if (pending_load) {
+			int slot = pending_load;
+			pending_load = 0;
+			if (!load_state(slot)) {   /* checked, so this is rare: the machine is as it was */
+				Sys_CloseDisplay(); display_open = 0; want_menu = 1; continue;
+			}
+		}
 		menu.can_continue = 1;
 		Sys_Log("running");
 		CPCEmulation_Run();                 /* returns when Help is pressed (or a script QUIT) */
+		/* save state hotkeys: done here, between two frames, and the game goes on */
+		while (hk_request && !script_quit) {
+			int r = hk_request;
+			hk_request = 0;
+			if (Sys_Poll()) break;          /* Help as well: the menu */
+			Sys_AudioPause();
+			{
+				/* a short message over the picture for about 2 s (amiga_sys.c) */
+				int s = r & 0xff;
+				char t[40];
+				if (r & 0x100) {
+					flush_disks("load state");
+					if (!state_read(s)) sprintf(t, "No state %d", s);
+					else if (!load_state(s)) sprintf(t, "Refused: %s", state_why());
+					else sprintf(t, "Loaded %d", s);
+				}
+				else if (save_state(s)) sprintf(t, "Saved %d", s);
+				else sprintf(t, "Not saved: %s", state_why());
+				Sys_OsdMessage(t);
+			}
+			CPCEmulation_Run();
+		}
+		hk_request = 0;
 		Sys_Log("stopped after %lu frames", Sys_Millis() / 20);
 		Sys_AudioPause();
 		if (Sys_RtgActive && !script_quit) Sys_MenuOpenedHook = release_emulation_display;   /* RTG: closed once the menu is up */

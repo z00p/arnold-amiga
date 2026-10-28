@@ -834,3 +834,43 @@ void PSGPlay_Write(int Register, int Data)
 #endif
 	AudioEvent_AddEventToBuffer(AUDIO_EVENT_PSG, Register, Data);
 }
+
+#ifndef NO_SAVESTATE
+/* Amiga port (save states, 28 Oct 2026): the sound generator for cpc/savestate.c.
+ * Update (the step for the host's sample rate) stays the host's; the envelope
+ * pattern pointer is stored as an offset (-1: the start-up Attack table). */
+#include "savestate.h"
+void SS_PsgPlay(SS_IO *io)
+{
+	long env = -2;
+	int i, rep = 0;
+#ifndef NO_SNDENV_FIX
+	rep = EnvelopeRepeats;
+#endif
+	if (!io->load) {
+		if (pEnvelope == (char *)Attack) env = -1;
+		else if ((unsigned char *)pEnvelope >= EnvelopePatterns && (unsigned char *)pEnvelope < EnvelopePatterns + 1024)   /* NO_SNDENV_FIX: up to 15 x 48 */
+			env = (long)((unsigned char *)pEnvelope - EnvelopePatterns);
+		else SS_Fail(io, "Save state: unknown sound envelope");
+	}
+	env = SS_Long(io, env);
+	for (i = 0; i < 3; i++) {
+		SS_V(io, ChannelPeriods[i].Period); SS_V(io, ChannelPeriods[i].PeriodPosition.FixedPoint.L);
+		SS_V(io, ChannelPeriods[i].WaveFormState); SS_V(io, ChannelPeriods[i].ToneUpdate.FixedPoint.L);
+	}
+	SS_V(io, NoisePeriod.FixedPoint.L); SS_V(io, NoisePeriodPosition.FixedPoint.L); SS_V(io, RNG);
+	SS_V(io, NoiseOutput); SS_V(io, NewNoisePeriod); SS_V(io, NewNoiseUpdate.FixedPoint.L);
+	SS_V(io, NoiseUpdate.FixedPoint.L); SS_V(io, EnvelopePeriod);
+	SS_A(io, PSGPlay_Registers); SS_A(io, PSGPlay_ChannelOutputVolumes);
+	SS_V(io, EnvelopePhase); SS_V(io, EnvelopePeriodPosition.FixedPoint.L); SS_V(io, PositionInEnvelope);
+	SS_V(io, EnvelopeVolume); SS_V(io, CurrentEnvelope); SS_V(io, EnvelopeUpdate.FixedPoint.L); SS_V(io, rep);
+	if (io->load && !io->err) {
+		if (env == -1) pEnvelope = (char *)Attack;
+		else if (env >= 0 && env < 1024) pEnvelope = (char *)&EnvelopePatterns[env];
+		else SS_Fail(io, "The state is damaged (sound envelope)");
+#ifndef NO_SNDENV_FIX
+		EnvelopeRepeats = rep;
+#endif
+	}
+}
+#endif

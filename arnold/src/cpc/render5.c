@@ -2243,3 +2243,97 @@ BOOL	Render_IsRendererActive(void)
 
 
         
+
+#ifndef NO_SAVESTATE
+/* Amiga port (save states, 28 Oct 2026): the renderer for cpc/savestate.c: the
+ * draw position, mode and scroll, the pens' colours, the paletted renderer's
+ * palette (so even the index numbers come back) and the part of the render
+ * buffer Render_DumpScreen4 shows: the frame end is not the CPC's vertical
+ * sync, so the buffer holds the top of the next picture. If the display was set
+ * up differently (hires/lores, depth) when loading, the buffer and draw position
+ * can't be used as they are: the window is cleared and the position scaled,
+ * and only the next picture is complete. Host-reserved palette entries
+ * (PALETTE_ENTRY_DO_NOT_MATCH) stay as the host has them. */
+#include "savestate.h"
+void SS_Render(SS_IO *io)
+{
+	int geo_mm = 0, geo_ms = 0, geo_ts = 0;
+	long geo[7], cur[7], line = (long)(pScreenLine - pScreenBase), same;
+	int i;
+	cur[0] = BytesPerPixel; cur[1] = PIXEL_STEP; cur[2] = (long)ScreenPitch; cur[3] = Render_CPCXOffset;
+	cur[4] = Render_CPCYOffset; cur[5] = Render_CPCRenderWidth; cur[6] = Render_CPCRenderHeight;
+	if (!pScreenBase) { cur[5] = cur[6] = 0; line = 0; }
+	for (i = 0; i < 7; i++) geo[i] = SS_Long(io, cur[i]);
+	same = !memcmp(geo, cur, sizeof geo) && pScreenBase;
+	line = SS_Long(io, line);
+	SS_V(io, RenderLine); SS_V(io, CurrentMode); SS_V(io, HorizontalPixelScroll); SS_V(io, ModeHorizontalPixelScroll);
+	{ int mm = CurrentModeMask, ms = CurrentModeShift, ts = CurrentTopShift;   /* as set (mode 3 leaves them) */
+	  SS_V(io, mm); SS_V(io, ms); SS_V(io, ts);
+	  if (io->load) { geo_mm = mm; geo_ms = ms; geo_ts = ts; } }
+	for (i = 0; i < 32; i++) {
+		SS_V(io, UnConvertedColourTable[i].RGB.SeperateElements.u.element.Red);
+		SS_V(io, UnConvertedColourTable[i].RGB.SeperateElements.u.element.Green);
+		SS_V(io, UnConvertedColourTable[i].RGB.SeperateElements.u.element.Blue);
+	}
+	{
+		unsigned conv[32];
+		signed int remap[32];
+		PALETTE_ENTRY pal[256];
+		int border = Render_PaletteIndexBorder;
+		memcpy(conv, ConvertedColourTable, sizeof conv); memcpy(remap, PaletteRemap, sizeof remap); memcpy(pal, CPCPalette, sizeof pal);
+		SS_A(io, conv); SS_A(io, remap); SS_V(io, border);
+		for (i = 0; i < 256; i++) { SS_V(io, pal[i].Red); SS_V(io, pal[i].Green); SS_V(io, pal[i].Blue); SS_V(io, pal[i].Flags); }
+		if (io->load && !io->err) {
+			int ok = 1;
+			if (geo[0] == cur[0]) memcpy(ConvertedColourTable, conv, sizeof conv);
+			else for (i = 0; i < 32; i++) pRender_SetColour(&UnConvertedColourTable[i].RGB.SeperateElements, i);
+			for (i = 0; i < 256; i++) {
+				if (CPCPalette[i].Flags & PALETTE_ENTRY_DO_NOT_MATCH) continue;   /* the host's */
+				CPCPalette[i] = pal[i];
+				if (pal[i].Flags & PALETTE_ENTRY_DO_NOT_MATCH) CPCPalette[i].Flags = 0;   /* the saving host's */
+			}
+			for (i = 0; i < 32; i++) {
+				PaletteRemap[i] = remap[i];
+				if (remap[i] >= 256 || (remap[i] >= 0 && (CPCPalette[remap[i]].Flags & (PALETTE_ENTRY_USED | PALETTE_ENTRY_DO_NOT_MATCH)) != PALETTE_ENTRY_USED)) ok = 0;
+			}
+			Render_PaletteIndexBorder = border;
+			if (!ok) {
+				/* another host's reserved entries were in use: pens get entries again */
+				for (i = 0; i < 256; i++) if (!(CPCPalette[i].Flags & PALETTE_ENTRY_DO_NOT_REMOVE)) CPCPalette[i].Flags = 0;
+				Render_ReserveBlack();
+				for (i = 0; i < 32; i++) PaletteRemap[i] = -1;
+				for (i = 0; i < 32; i++) if (BytesPerPixel == 1) Render_Paletted_SetColour(&UnConvertedColourTable[i].RGB.SeperateElements, i);
+			}
+		}
+	}
+	/* the visible part of the render buffer */
+	{
+		long rows = geo[6], bytes = geo[5] * geo[0], y;
+		unsigned char *row = NULL;
+		if (rows < 0 || rows > 1024 || bytes < 0 || bytes > 8192) { SS_Fail(io, "The state is damaged (render window)"); return; }
+		if (!same) row = (unsigned char *)malloc(bytes ? bytes : 1);
+		for (y = 0; y < rows && !io->err; y++) {
+			unsigned char *p = same ? pScreenBase + (geo[4] + y) * ScreenPitch + geo[3] * geo[0] : row;
+			if (!p) { SS_Fail(io, "Not enough memory for the state"); break; }
+			SS_Pack(io, p, bytes);
+		}
+		free(row);
+	}
+	if (io->load && !io->err) {
+		if (!same && pScreenBase) {
+			/* another display set-up: an empty window, the position on the same row and cell */
+			long cellold = (16 >> (geo[1] == 1 ? 0 : 1)) * geo[0], col = geo[2] > 0 ? line % geo[2] : 0;
+			memset(pScreenBase, 0, ScreenPitch * ScreenHeight);
+			line = (long)RenderLine * (long)ScreenPitch + (cellold > 0 ? col / cellold : 0) * Render_CellBytes;
+		}
+		if (RenderLine < 0 || (unsigned)RenderLine >= ScreenHeight || line < 0 || (unsigned long)line >= (unsigned long)ScreenPitch * ScreenHeight)
+			{ SS_Fail(io, "The state is damaged (render position)"); return; }
+		pScreenLine = pScreenBase + line;
+		pRowStart = pScreenBase + RenderLine * ScreenPitch;
+		RenderRowVisible = (unsigned)(RenderLine - Render_VisTop) < (unsigned)Render_VisLines;
+		{ int sc = ModeHorizontalPixelScroll; Render_SetPixelTranslation(CurrentMode); ModeHorizontalPixelScroll = sc;
+		  CurrentModeMask = geo_mm; CurrentModeShift = geo_ms; CurrentTopShift = geo_ts; }
+		Render_RemapStamp++;   /* cached screen bytes are stale */
+	}
+}
+#endif

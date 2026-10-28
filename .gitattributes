@@ -6,3 +6,4 @@ run/Keys/* text eol=lf
 Makefile text eol=lf
 *.mak text eol=lf
 *.cpr binary
+tools/package/preset/* -text

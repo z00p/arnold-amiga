@@ -124,6 +124,7 @@ static int test_skip_hook(void)
 {
 	/* decides frame emu_frames + 1 (0-based); emu_frames frames have ended */
 	if (emu_frames + 1 >= maxframes - 1) return 0;
+	if (hook_mode == 2) return 1;           /* argv[6] = -2: skip every frame but the last (skipped-frame cost) */
 	lcg = lcg * 1103515245UL + 12345UL;
 	return ((lcg >> 16) & 3) != 0;          /* skip 3 in 4 on average */
 }
@@ -170,8 +171,106 @@ static void insert_tape(const char *var)
 #ifdef TRACE_HW
 extern int Trace_On;
 #endif
+/* Save states (28 Oct 2026, cpc/savestate.c). Environment:
+ *   SS_SAVE=n1,n2,...  SS_FILE=<prefix>: after frame n (counted frame ends), the
+ *       state goes to <prefix>.<n>.sna (the run stops at that frame end and goes on)
+ *   SS_LOAD=<file>: load it before the emulation starts (exit 2 if refused)
+ *   SS_ROUNDTRIP=<file>: right after SS_LOAD, save again to <file> (then exit)
+ * The host's own counters, the key script position and the sound DC filter
+ * travel in the state's host data, so a loaded run goes on as the saving one did.
+ * Weak: headless_check builds this host against older cores too. */
+#if defined(__has_include)
+#if __has_include("../cpc/savestate.h")
+#include "../cpc/savestate.h"
+#define SS_HAVE_HEADER
+#endif
+#endif
+#ifndef SS_HAVE_HEADER   /* a core from before save states (headless_check's REF build) */
+typedef struct { const char *cart_name, *disk_name[2], *tape_name; const unsigned char *host; unsigned long hostlen; int embed_disk[2]; } SAVESTATE_INFO;
+typedef struct { const unsigned char *host; unsigned long hostlen; int disk[2], tape; char cart_name[64], disk_name[2][64], tape_name[64]; } SAVESTATE_LOADED;
+#define SAVESTATE_REFUSED 0
+#define SAVESTATE_PLAIN 2
+#endif
+extern int SaveState_Save(unsigned char **, unsigned long *, const SAVESTATE_INFO *, char *, int) __attribute__((weak));
+extern int SaveState_Load(const unsigned char *, unsigned long, char *, int, SAVESTATE_LOADED *) __attribute__((weak));
+static long ss_fe;                 /* frame ends so far */
+static int ss_due, ss_done;
+static long ss_points[64]; static int ss_npoints;
+static void ss_put8(unsigned char *p, long v) { int i; unsigned long long u = (unsigned long long)(long long)v; for (i = 7; i >= 0; i--) { p[i] = (unsigned char)u; u >>= 8; } }
+static long ss_get8(const unsigned char *p) { int i; unsigned long long u = 0; for (i = 0; i < 8; i++) u = (u << 8) | p[i]; return (long)(long long)u; }
+/* The host data both hosts write (8-byte big-endian values), so a state from the
+ * Amiga goes on here and one from here goes on on the Amiga: "ARNH", the key
+ * script's frame, the sound DC filter (x l/r, y l/r, on), the host (1 headless,
+ * 2 Amiga), then that host's own: here the frame counters and the tape's. */
+#define SS_HOSTN 15
+#define SS_HOSTMAGIC 0x41524E48L
+static void ss_hostblob(unsigned char *b, unsigned long len, int get)
+{
+	long v[SS_HOSTN];
+	int i, n = get ? (int)(len / 8) : SS_HOSTN;
+	if (!get) {
+		v[0] = SS_HOSTMAGIC; v[1] = script_frame;
+#if !defined(NO_SNDLUT_FIX) && !defined(NO_SNDUNIPOLAR)
+		v[2] = Audio_DcX[0]; v[3] = Audio_DcX[1]; v[4] = Audio_DcY[0]; v[5] = Audio_DcY[1]; v[6] = Audio_DcOn;
+#else
+		v[2] = v[3] = v[4] = v[5] = v[6] = 0;
+#endif
+		v[7] = 1;
+		v[8] = frames; v[9] = emu_frames; v[10] = (long)lcg; v[11] = tape_frame; v[12] = tape_motor; v[13] = tape_fast_count; v[14] = ss_fe;
+		for (i = 0; i < SS_HOSTN; i++) ss_put8(b + 8 * i, v[i]);
+		return;
+	}
+	if (n < 8 || ss_get8(b) != SS_HOSTMAGIC) return;
+	for (i = 0; i < n && i < SS_HOSTN; i++) v[i] = ss_get8(b + 8 * i);
+	script_frame = v[1];
+#if !defined(NO_SNDLUT_FIX) && !defined(NO_SNDUNIPOLAR)
+	Audio_DcX[0] = v[2]; Audio_DcX[1] = v[3]; Audio_DcY[0] = v[4]; Audio_DcY[1] = v[5]; Audio_DcOn = (int)v[6];
+#endif
+	if (v[7] == 1 && n >= SS_HOSTN) {
+		frames = (int)v[8]; emu_frames = v[9]; lcg = (unsigned long)v[10]; tape_frame = v[11];
+		tape_motor = (int)v[12]; tape_fast_count = (int)v[13]; ss_fe = v[14];
+	} else {
+		/* another host's state: its frame ends are the script's frames */
+		frames = (int)v[1]; emu_frames = ss_fe = tape_frame = v[1];
+	}
+	if (script_on) KeyScript_Seek(script_frame);
+}
+static int ss_save_to(const char *name)
+{
+	unsigned char blob[8 * SS_HOSTN], *d; unsigned long l;
+	char msg[300];
+	SAVESTATE_INFO info;
+	FILE *f;
+	memset(&info, 0, sizeof info);
+	info.cart_name = getenv("SS_CARTNAME"); info.disk_name[0] = getenv("DISKA"); info.disk_name[1] = getenv("DISKB"); info.tape_name = getenv("TAPE");
+	ss_hostblob(blob, sizeof blob, 0);
+	info.host = blob; info.hostlen = sizeof blob;
+	if (!&SaveState_Save || !SaveState_Save(&d, &l, &info, msg, sizeof msg)) { printf("state: save at frame %ld FAILED: %s\n", ss_fe, &SaveState_Save ? msg : "no save states in this core"); return 0; }
+	f = fopen(name, "wb");
+	if (!f || fwrite(d, 1, l, f) != l) { printf("state: can't write %s\n", name); if (f) fclose(f); free(d); return 0; }
+	fclose(f); free(d);
+	printf("state: saved frame %ld to %s (%lu bytes)\n", ss_fe, name, l);
+	return 1;
+}
+static void ss_setup(void)
+{
+	const char *p = getenv("SS_SAVE");
+	while (p && *p && ss_npoints < 64) {
+		ss_points[ss_npoints++] = atol(p);
+		p = strchr(p, ',');
+		if (p) p++;
+	}
+}
+static int ss_due_at(long fe)
+{
+	int i;
+	for (i = 0; i < ss_npoints; i++) if (ss_points[i] == fe) return 1;
+	return 0;
+}
 BOOL Host_ProcessSystemEvents(void)
 {
+	int ss_quit = 0;
+	ss_fe++;
 	tape_tick();
 #ifdef TRACE_HW
 	{ static int fr; const char *a = getenv("TRACE_AT"); int at = a ? atoi(a) : -1; fr++;
@@ -189,10 +288,11 @@ BOOL Host_ProcessSystemEvents(void)
 		int ks = KeyScript_Frame(script_frame, script_setkey);
 		if (ks & KS_SNAP) snap(script_frame);   /* SNAP: dump the last drawn frame as <out>.<frame>.ppm */
 		script_frame++;
-		if (ks & KS_QUIT) return TRUE;
+		if (ks & KS_QUIT) ss_quit = 1;
 	}
-	if (hook_mode) return ++emu_frames >= maxframes;
-	return frames >= maxframes;
+	if (!ss_quit) ss_quit = hook_mode ? ++emu_frames >= maxframes : frames >= maxframes;
+	if (ss_due_at(ss_fe)) { ss_due = 1; ss_done = ss_quit; return TRUE; }   /* save states: stop here, save, go on */
+	return ss_quit;
 }
 
 HOST_FILE_HANDLE Host_OpenFile(const char *n, int Access) { return (HOST_FILE_HANDLE)fopen(n, Access == HOST_FILE_ACCESS_READ ? "rb" : "wb"); }
@@ -372,12 +472,12 @@ int main(int argc, char **argv)
 	if (argc > 3) cartname = argv[3];
 	if (argc > 4) depth = atoi(argv[4]);
 	if (argc > 5 && KeyScript_Load(argv[5]) >= 0) script_on = 1;
-	if (argc > 6 && atoi(argv[6]) < 0 && &CPC_SkipNextFrameHook) { hook_mode = 1; CPC_SkipNextFrameHook = test_skip_hook; }
+	if (argc > 6 && atoi(argv[6]) < 0 && &CPC_SkipNextFrameHook) { hook_mode = atoi(argv[6]) == -2 ? 2 : 1; CPC_SkipNextFrameHook = test_skip_hook; }
 	else if (argc > 6) CPC_SetFrameSkip(atoi(argv[6]));   /* render 1 frame in N+1 (cost of skipped frames) */
 	if (!CPCEmulation_CheckEndianness()) { printf("ENDIANNESS CHECK FAILED\n"); return 1; }
 	CPC_Initialise();
 	CPCEmulation_InitialiseDefaultSetup();
-	if (getenv("HW") && strcmp(getenv("HW"), "PLUS")) {
+	if (getenv("HW") && strcmp(getenv("HW"), "PLUS") && strcmp(getenv("HW"), "GX4000")) {
 		/* HW=464|664|6128: a plain CPC with the system ROMs from ROMDIR (default
 		 * ../roms), as the Amiga host's Model setting does it (19 Oct 2026); the
 		 * cartridge argument is ignored */
@@ -398,6 +498,9 @@ int main(int argc, char **argv)
 	Cartridge_Insert(cart, cartlen);
 	Amstrad_DiscInterface_Install();
 	Amstrad_RamExpansion_Install();
+	/* HW=GX4000 (save state tests, 28 Oct 2026): the console, as the Amiga host's model
+	 * (no disc interface, 64 KB) */
+	if (getenv("HW") && !strcmp(getenv("HW"), "GX4000")) { Amstrad_DiscInterface_DeInstall(); Amstrad_RamExpansion_DeInstall(); }
 	CPC_Reset();
 	}
 	insert_disk(0, "DISKA");
@@ -407,7 +510,30 @@ int main(int argc, char **argv)
 	dump_disk(0, "DISKDUMP");
 	Render_SetDisplayWindowed();
 	if (argc > 7 && argv[7][0] != '-') { wav = fopen(argv[7], "wb"); if (wav) { fseek(wav, 44, SEEK_SET); CPC_SetAudioActive(TRUE); } }
-	CPCEmulation_Run();
+	ss_setup();
+	if (getenv("SS_LOAD")) {
+		unsigned char *d; unsigned long l;
+		SAVESTATE_LOADED ld;
+		char msg[300]; int r;
+		if (!Host_LoadFile(getenv("SS_LOAD"), &d, &l)) { d = NULL; l = 0; }   /* a missing file: refused like any other */
+		r = &SaveState_Load ? SaveState_Load(d, l, msg, sizeof msg, &ld) : 0;
+		if (r == SAVESTATE_REFUSED) { printf("state: REFUSED: %s\n", &SaveState_Load ? msg : "no save states in this core"); free(d); if (!getenv("SS_GOON")) return 2; }
+		else if (r == SAVESTATE_PLAIN) printf("state: plain snapshot loaded: %s\n", msg);
+		else {
+			ss_hostblob((unsigned char *)ld.host, ld.hostlen, 1);
+			printf("state: loaded %s at frame %ld (exact)%s%s%s\n", getenv("SS_LOAD"), ss_fe, ld.disk[0] == 2 ? ", drive A: the state's disk" : ld.disk[0] == 1 ? ", drive A emptied" : "",
+				ld.disk[1] == 2 ? ", drive B: the state's disk" : ld.disk[1] == 1 ? ", drive B emptied" : "", ld.tape ? ", tape taken out" : "");
+		}
+		if (r != SAVESTATE_REFUSED) free(d);
+		if (getenv("SS_ROUNDTRIP")) return ss_save_to(getenv("SS_ROUNDTRIP")) ? 0 : 3;
+	}
+	for (;;) {
+		CPCEmulation_Run();
+		if (!ss_due) break;
+		ss_due = 0;
+		{ char n[1024]; snprintf(n, sizeof n, "%s.%ld.sna", getenv("SS_FILE") ? getenv("SS_FILE") : "state", ss_fe); ss_save_to(n); }
+		if (ss_done) break;
+	}
 	/* POWERON=n:cart.cpr: after n frames, a second Power ON with another cartridge, as
 	 * the Amiga host does it from the menu (emulation stopped, cart in, Plus hardware,
 	 * reset), then maxframes more frames. To compare a game started after another one

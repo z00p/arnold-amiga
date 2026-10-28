@@ -3,4 +3,4 @@ Vendored copy for Arnold for Amiga's RTG screen. Canonical source: the rtg-frame
 repository (a separate project). Files are byte-identical copies of its src/ and include/.
 Fix bugs there first, then copy them here again.
 
-Source commit: 60d7bf0 2026-10-26 Scanlines: CLUT8 hard in two sequential long-store passes; 16/32-bit back to row-by-row (interleaved rows were slower on the VideoCore: blend 1.11 vs 0.81 ms)
+Source commit: b25c230 2026-10-27 VideoCore flips busy-wait: RTG_F_FLIPTASK (no gain there) and RTG_F_VBLANK (writes at the predicted blank)

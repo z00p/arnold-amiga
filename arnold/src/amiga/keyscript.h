@@ -9,4 +9,5 @@ int KeyScript_Load(const char *name);                        /* events loaded, -
 int KeyScript_Frame(long frame, void (*setkey)(int key, int down));
 int KeyScript_Active(void);
 int KeyScript_SnapAt(long frame);                            /* a SNAP is due at this frame */
+void KeyScript_Seek(long frame);                             /* go on from this frame (save states) */
 #endif

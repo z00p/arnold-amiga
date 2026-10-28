@@ -32,7 +32,9 @@ and asked for it to keep the Arnold name.
   WinUAE's uaegfx) the emulation and the menu show on an RTG screen instead of AGA, with optional
   scanlines (`SCANLINES=`: Hard 25/50/75%, Blended light/normal/strong; on a PiStorm at 960x540,
   exactly half of its 1080p output). The "Arnold RTG" preset starts there with Hard 50%; N in the
-  menu cycles the scanline options. Off by default: the AGA screen is unchanged.
+  menu cycles the scanline options. Frames are written just after the display's vertical blank, so
+  there is no tearing (`RTGVBL=0` for the old immediate writes). Off by default: the AGA screen is
+  unchanged.
 - Game settings database (`Games.db` in the drawer): settings for known games (wide, full height,
   key remap, joy keys), found by the CRC-32 of the cartridge, disk or tape; a game's own
   Save for game settings always win.
@@ -41,11 +43,23 @@ Disks: changes a program makes (SAVE, high scores, FORMAT) are written back to t
 file, with the original kept once as `<name>.dsk.bak` (option "Write disks back",
 `DISKWRITE=0` to turn it off).
 
+Save states (1.4): four slots per game (Project menu, or Left Amiga + F1-F4 to save and Right
+Amiga + F1-F4 to load while playing), in `PROGDIR:States/<game>.<slot>.sna`. A state holds the
+whole machine, and the game goes on exactly where it was, to the frame and to the sample (proved
+by an automated test that compares every frame and the sound of a resumed run with an
+uninterrupted one). The files are standard .sna v3 snapshots with an extra Arnold block (other
+emulators can read the RAM and registers). Every inserted disk is kept in the state, so a state
+never needs a disk; a state for another cartridge or model is refused with a message and nothing
+changes. The hotkeys show a short message ("Saved 1", "Loaded 1" or why not) for about 2 s.
+
 Tapes: .cdt (TZX) images load on every model (`RUN"` on a 464, `|TAPE` first on the others),
 with fast tape loading (`FASTTAPE`) that leaves the machine exactly as at real speed, and an
 optional tape loading sound at real speed (`TAPESOUND`, off by default). Saving to tape is not
 supported. Known issues are listed in the drawer's README.txt
 (NTSC cropping of edge-drawn games).
+
+Speed (1.4): lines that are not drawn (frame skip) no longer work out their Plus sprites, and the
+I/O timing lead is tested before it is taken; both exact (every frame unchanged).
 
 AGA display (1.3): only the bitplanes the picture uses are shown (chip RAM writes are faster, `NOBPU`
 turns it off), and the once-a-second log lines are kept in memory and written when the display
@@ -59,7 +73,8 @@ Arnold for Amiga targets PiStorm/Emu68-class machines.
 - **A1200 with a PiStorm32 CM4:** the games tested run at full speed (Sonic GX at 50 fps without
   frame skip, measured, springs included). On a real A1200 Sonic GX uses about 60% of the frame
   time. Use `Arnold` or the PiStorm preset.
-- **BigMig (MiSTer):** games currently run below full speed; use `Arnold-060` with frame skip.
+- **BigMig (MiSTer):** games currently run below full speed; use `Arnold-060` with frame skip (the BigMig
+  preset, which uses BigMig's RTG screen: faster than AGA there).
 - **Real 68060 accelerator cards** have not been tested; expect games below full speed.
 - **68030 machines** are too slow for games (`Arnold-030` is for trying BASIC).
 

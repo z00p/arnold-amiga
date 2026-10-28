@@ -46,7 +46,9 @@ enum { M_NONE, M_LOADCART, M_LOADA, M_LOADB, M_EJECTALL, M_KEYS, M_SHOT, M_SAVE,
        M_JOY0, M_JOY1, M_JOY2, M_JOY3, M_PAD0, M_PAD1, M_SPEED50, M_SPEEDDISP,
        M_VIDAUTO, M_VIDPAL, M_VIDNTSC, M_TALL, M_WIDE, M_DISKWRITE, M_MODEL464, M_MODEL664, M_MODEL6128, M_MODELPLUS, M_MODELGX,
        M_LOADTAPE, M_REWIND, M_FASTTAPE, M_TAPESOUND, M_KEYEDIT, M_KEYMAPSUB, M_RTG,
-       M_SCAN0, M_SCAN1, M_SCAN2, M_SCAN3, M_SCAN4, M_SCAN5, M_SCAN6, M_PRESET0 };   /* M_PRESET0 last: the presets follow it */
+       M_SCAN0, M_SCAN1, M_SCAN2, M_SCAN3, M_SCAN4, M_SCAN5, M_SCAN6,
+       M_SSAVE1, M_SSAVE2, M_SSAVE3, M_SSAVE4, M_SLOAD1, M_SLOAD2, M_SLOAD3, M_SLOAD4,   /* save states (1.4) */
+       M_PRESET0 };   /* M_PRESET0 last: the presets follow it */
 #define MAXPRESETS 12   /* menu entries for KeyMap_Presets (keymaplogic.c) */
 #define MENU_REOPEN (-2)   /* menu_pick: the video mode changed, open the screen again */
 
@@ -99,6 +101,18 @@ static struct NewMenu nm[] = {
 	{ NM_ITEM, NM_BARLABEL, NULL, 0, 0, NULL },
 	{ NM_ITEM, (STRPTR)"Keyboard map...", (STRPTR)"K", 0, 0, (APTR)M_KEYS },
 	{ NM_ITEM, (STRPTR)"Screenshot", (STRPTR)"X", 0, 0, (APTR)M_SHOT },
+	{ NM_ITEM, NM_BARLABEL, NULL, 0, 0, NULL },
+	/* save states (1.4, 28 Oct 2026): PROGDIR:States/<game>.<slot>.sna; the slot labels come from the host */
+	{ NM_ITEM, (STRPTR)"Save state", NULL, 0, 0, NULL },
+	{ NM_SUB, (STRPTR)"Slot 1", NULL, 0, 0, (APTR)M_SSAVE1 },
+	{ NM_SUB, (STRPTR)"Slot 2", NULL, 0, 0, (APTR)M_SSAVE2 },
+	{ NM_SUB, (STRPTR)"Slot 3", NULL, 0, 0, (APTR)M_SSAVE3 },
+	{ NM_SUB, (STRPTR)"Slot 4", NULL, 0, 0, (APTR)M_SSAVE4 },
+	{ NM_ITEM, (STRPTR)"Load state", NULL, 0, 0, NULL },
+	{ NM_SUB, (STRPTR)"Slot 1", NULL, 0, 0, (APTR)M_SLOAD1 },
+	{ NM_SUB, (STRPTR)"Slot 2", NULL, 0, 0, (APTR)M_SLOAD2 },
+	{ NM_SUB, (STRPTR)"Slot 3", NULL, 0, 0, (APTR)M_SLOAD3 },
+	{ NM_SUB, (STRPTR)"Slot 4", NULL, 0, 0, (APTR)M_SLOAD4 },
 	{ NM_ITEM, NM_BARLABEL, NULL, 0, 0, NULL },
 	{ NM_ITEM, (STRPTR)"Save Prefs", (STRPTR)"S", 0, 0, (APTR)M_SAVE },
 	{ NM_ITEM, (STRPTR)"Save for game", (STRPTR)"G", 0, 0, (APTR)M_SAVEGAME },
@@ -415,8 +429,15 @@ static void set_checks(struct SysMenu *m)
 
 static int make_menus(struct SysMenu *m)
 {
+	int i;
 	build_menu_table();
 	set_checks(m);
+	/* the save state slots as the host describes them (empty, or the game) */
+	for (i = 0; nmx[i].nm_Type != NM_END; i++) {
+		int id = (int)(ULONG)nmx[i].nm_UserData;
+		if (id >= M_SSAVE1 && id <= M_SLOAD4 && m->state_label[(id - M_SSAVE1) & 3][0])
+			nmx[i].nm_Label = (STRPTR)m->state_label[(id - M_SSAVE1) & 3];
+	}
 	menustrip = CreateMenus(nmx, GTMN_FullMenu, TRUE, TAG_DONE);
 	return menustrip && LayoutMenus(menustrip, vi, GTMN_NewLookMenus, TRUE, TAG_DONE);
 }
@@ -520,7 +541,7 @@ static int open_menu(struct SysMenu *m)
 	if (!g) { close_menu(); return 0; }
 	if (!make_menus(m)) { close_menu(); return 0; }
 	/* version, credit and build time (date and hh:mm) in the title bar */
-	sprintf(wintitle, "Arnold v1.3 for Amiga - core: Kevin Thacker - built %.6s %.4s %.5s", __DATE__, __DATE__ + 7, __TIME__);
+	sprintf(wintitle, "Arnold v1.4 for Amiga - core: Kevin Thacker - built %.6s %.4s %.5s", __DATE__, __DATE__ + 7, __TIME__);
 	mwin = OpenWindowTags(NULL, WA_CustomScreen, (ULONG)mscr, WA_Left, wl, WA_Top, wt,
 		WA_Width, 640, WA_Height, wh,
 		WA_Title, (ULONG)wintitle,
@@ -633,6 +654,14 @@ static int menu_pick(struct SysMenu *m, struct MenuItem *item)
 	case M_KEYS: Sys_ShowPicture(mscr, "PROGDIR:Keyboard.iff"); redraw_after_picture(m); break;
 	case M_SHOT: if (m->can_continue) return SYS_MENU_SHOT; status("Screenshot: nothing is running yet."); break;
 	case M_SAVE: return SYS_MENU_SAVE;
+	case M_SSAVE1: case M_SSAVE2: case M_SSAVE3: case M_SSAVE4:
+		if (!m->can_continue) { status("Save state: nothing is running yet (Power ON a game)."); break; }
+		m->state_slot = id - M_SSAVE1 + 1;
+		return SYS_MENU_SAVESTATE;
+	case M_SLOAD1: case M_SLOAD2: case M_SLOAD3: case M_SLOAD4:
+		if (!m->can_continue) { status("Load state: Power ON the game first, then load its state."); break; }
+		m->state_slot = id - M_SLOAD1 + 1;
+		return SYS_MENU_LOADSTATE;
 	case M_SAVEGAME: return SYS_MENU_SAVEGAME;
 	case M_FORGETGAME:
 		if (m->game_prefs == 2) { status("These settings come from Games.db: Save for game overrides them."); break; }

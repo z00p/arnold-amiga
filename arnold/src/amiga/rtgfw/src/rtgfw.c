@@ -482,12 +482,252 @@ static int c_target_ready(int b) { return R.writable[b] && !R.safe_out[b] && !R.
 static int c_all_back(int unused) { int i; (void)unused; for (i = 0; i < R.nbuf; i++) if (R.safe_out[i] || R.disp_out[i]) return 0; return 1; }
 static int c_disp_back(int unused) { int i; (void)unused; for (i = 0; i < R.nbuf; i++) if (R.disp_out[i]) return 0; return 1; }
 
+/* ------------------------------------------------------------------ */
+/* flip task (RTG_F_FLIPTASK, 27 Oct 2026)                             */
+/*
+ * The Emu68 VideoCore driver waits for the 60 Hz flip inside
+ * ChangeScreenBuffer (8-9 ms a call, BENCH-RESULTS.md). With this flag a
+ * small task owns the screen buffer messages and makes every
+ * ChangeScreenBuffer call, so rtg_present only writes a free buffer and
+ * hands it over:
+ *   - the buffer states (shown, writable, safe_out, disp_out) change only in
+ *     the flip task, under Forbid; rtg_present reads them under Forbid;
+ *   - one buffer may wait in F.req; a newer frame takes it back and writes it
+ *     again (a steal: the flip task is behind, the older frame is never shown);
+ *   - with no free buffer the frame is dropped (rtgc_skip keeps its lines owed);
+ *   - CLUT8: every handed-over buffer carries the whole palette it was written
+ *     with (F.snap); the flip task loads the entries that differ from what is
+ *     loaded right after its flip returns, so a frame and its palette change
+ *     together (as near as the driver allows).
+ * The task makes no DOS calls and logs nothing. It ends at close, after
+ * every message is back and the screen's own bitmap is shown again. */
+
+static struct {
+	struct Task *task, *owner;
+	UBYTE *stack;
+	BYTE ack_bit;               /* owner's signal: task started / ended */
+	ULONG go_mask;              /* task's signal: a buffer is queued, or quit */
+	volatile int req;           /* buffer waiting to be shown, -1 none */
+	volatile int flipping;      /* buffer inside ChangeScreenBuffer, -1 none */
+	volatile int quit, ok, outstanding;
+	int rel_pri;
+	RtgFlipStats st;
+	ULONG cur[256];             /* CLUT8: the palette as written (owner) */
+	ULONG snap[RTGC_MAXBUF][256];
+	ULONG loaded[256];          /* the palette in the CLUT now (task) */
+	ULONG pal32[2 + 256 * 3];   /* LoadRGB32 table (task) */
+} F = { 0, 0, 0, -1, 0, -1, -1, 0, 0, 0, 1 };
+
+#define FT_STACK 4096
+
+static void ft_load_clut(int b)
+{
+	int i = 0, lo, hi, n = 0;
+	const ULONG *s = F.snap[b];
+	while (i < 256 && s[i] == F.loaded[i]) i++;
+	if (i == 256) return;
+	lo = i;
+	for (hi = 255; s[hi] == F.loaded[hi]; hi--) ;
+	F.pal32[n++] = ((ULONG)(hi - lo + 1) << 16) | (ULONG)lo;
+	for (i = lo; i <= hi; i++) {
+		ULONG c = s[i];
+		F.loaded[i] = c;
+		F.pal32[n++] = ((c >> 16) & 0xff) * 0x01010101u;
+		F.pal32[n++] = ((c >> 8) & 0xff) * 0x01010101u;
+		F.pal32[n++] = (c & 0xff) * 0x01010101u;
+	}
+	F.pal32[n] = 0;
+	LoadRGB32(&R.scr->ViewPort, F.pal32);
+}
+
+/* drain the reply ports (flip task only); states change under Forbid */
+static void ft_drain(void)
+{
+	Forbid();
+	drain(1);
+	Permit();
+}
+
+static void ft_entry(void)
+{
+	struct MsgPort *sp = CreateMsgPort(), *dp = CreateMsgPort();
+	BYTE go = AllocSignal(-1);
+	int i, b, n;
+	if (!sp || !dp || go < 0) {
+		if (sp) DeleteMsgPort(sp);
+		if (dp) DeleteMsgPort(dp);
+		if (go >= 0) FreeSignal(go);
+		F.ok = 0;
+		Forbid();
+		Signal(F.owner, 1UL << F.ack_bit);
+		return;                              /* the task ends here, still under Forbid */
+	}
+	for (i = 0; i < R.nbuf; i++) {
+		R.sb[i]->sb_DBufInfo->dbi_SafeMessage.mn_ReplyPort = sp;
+		R.sb[i]->sb_DBufInfo->dbi_DispMessage.mn_ReplyPort = dp;
+	}
+	R.safeport = sp; R.dispport = dp;
+	F.go_mask = 1UL << go;
+	F.ok = 1;
+	Signal(F.owner, 1UL << F.ack_bit);
+
+	while (!F.quit) {
+		Wait(F.go_mask | (1UL << sp->mp_SigBit) | (1UL << dp->mp_SigBit));
+		ft_drain();
+		for (;;) {
+			u64 t0, t1;
+			ULONG us;
+			int ok;
+			Forbid();
+			b = F.req;
+			if (b >= 0 && !F.quit) { F.req = -1; F.flipping = b; } else b = -1;
+			Permit();
+			if (b < 0) break;
+			t0 = eclock();
+			ok = ChangeScreenBuffer(R.scr, R.sb[b]);
+			t1 = eclock();
+			us = ticks_us(t1 - t0);
+			F.st.us_flip += us;
+			if (us > F.st.us_flip_max) F.st.us_flip_max = us;
+			if (ok && R.fmt == RTG_FMT_CLUT8) { ft_load_clut(b); F.st.us_clut += ticks_us(eclock() - t1); }
+			Forbid();
+			if (ok) {
+				R.safe_out[b] = R.disp_out[b] = 1;
+				R.prev_of[b] = R.shown;
+				R.writable[R.shown] = 0;
+				R.writable[b] = 0;
+				R.shown = b;
+				F.st.flips++;
+			} else F.st.fails++;             /* b stays writable: written but never shown */
+			F.flipping = -1;
+			Permit();
+			ft_drain();
+		}
+	}
+
+	/* close: every message back, then the screen's own bitmap on display */
+	for (n = 0; n < 50 && !c_all_back(0); n++) { WaitTOF(); ft_drain(); }
+	if (R.shown != 0 && c_all_back(0)) {
+		for (n = 0; n < 10; n++) {
+			if (ChangeScreenBuffer(R.scr, R.sb[0])) {
+				Forbid(); R.safe_out[0] = R.disp_out[0] = 1; R.prev_of[0] = R.shown; R.shown = 0; Permit();
+				break;
+			}
+			WaitTOF();
+		}
+		for (n = 0; n < 50 && !c_all_back(0); n++) { WaitTOF(); ft_drain(); }
+	}
+	F.outstanding = !c_all_back(0);
+	if (!F.outstanding) { DeleteMsgPort(sp); DeleteMsgPort(dp); }
+	R.safeport = R.dispport = NULL;          /* kept (leaked) if a message is still out */
+	FreeSignal(go);
+	Forbid();
+	Signal(F.owner, 1UL << F.ack_bit);
+	/* returning ends the task; Forbid holds until it is gone, so the owner
+	 * cannot free the stack under it */
+}
+
+static int ft_start(void)
+{
+	struct Task *t;
+	int pri;
+	F.owner = FindTask(NULL);
+	F.req = F.flipping = -1;
+	F.quit = 0; F.ok = 0; F.outstanding = 0;
+	memset(&F.st, 0, sizeof F.st);
+	memset(F.loaded, 0xff, sizeof F.loaded);   /* never a colour: the first flip loads all in use */
+	memset(F.cur, 0, sizeof F.cur);
+	if ((F.ack_bit = AllocSignal(-1)) < 0) return 0;
+	t = (struct Task *)AllocMem(sizeof(struct Task), MEMF_PUBLIC | MEMF_CLEAR);
+	F.stack = (UBYTE *)AllocMem(FT_STACK, MEMF_PUBLIC | MEMF_CLEAR);
+	if (!t || !F.stack) {
+		if (t) FreeMem(t, sizeof(struct Task));
+		if (F.stack) FreeMem(F.stack, FT_STACK);
+		F.stack = NULL;
+		FreeSignal(F.ack_bit); F.ack_bit = -1;
+		return 0;
+	}
+	pri = F.owner->tc_Node.ln_Pri + F.rel_pri;
+	if (pri > 20) pri = 20;
+	if (pri < -20) pri = -20;
+	t->tc_Node.ln_Type = NT_TASK;
+	t->tc_Node.ln_Pri = (BYTE)pri;
+	t->tc_Node.ln_Name = (char *)"rtgfw flip";
+	t->tc_SPLower = F.stack;
+	t->tc_SPUpper = F.stack + FT_STACK;
+	t->tc_SPReg = F.stack + FT_STACK;
+	/* the task makes its own reply ports (their signals must be its own); no
+	 * flip has been made yet, so nothing can be in flight on these */
+	if (R.safeport) DeleteMsgPort(R.safeport);
+	if (R.dispport) DeleteMsgPort(R.dispport);
+	R.safeport = R.dispport = NULL;
+	SetSignal(0, 1UL << F.ack_bit);
+	F.task = t;
+	AddTask(t, (APTR)ft_entry, NULL);
+	Wait(1UL << F.ack_bit);
+	if (!F.ok) {                             /* the task has ended */
+		FreeMem(t, sizeof(struct Task)); FreeMem(F.stack, FT_STACK);
+		F.task = NULL; F.stack = NULL;
+		FreeSignal(F.ack_bit); F.ack_bit = -1;
+		return 0;
+	}
+	F.st.pri = pri;
+	return 1;
+}
+
+static void ft_stop(void)
+{
+	if (!F.task) return;
+	F.quit = 1;
+	Signal(F.task, F.go_mask);
+	Wait(1UL << F.ack_bit);                  /* the task has shown sb[0] and ended */
+	FreeMem(F.task, sizeof(struct Task)); FreeMem(F.stack, FT_STACK);
+	F.task = NULL; F.stack = NULL;
+	FreeSignal(F.ack_bit); F.ack_bit = -1;
+	if (F.outstanding) logf_(0, "rtgfw: flip task: screen buffer messages still out at close; ports kept");
+	logf_(1, "rtgfw: flip task: %lu queued, %lu flips (%lu refused), %lu replaced, %lu dropped; flip avg %lu us, worst %lu us",
+	      (unsigned long)F.st.queued, (unsigned long)F.st.flips, (unsigned long)F.st.fails, (unsigned long)F.st.steals,
+	      (unsigned long)F.st.drops, (unsigned long)(F.st.flips ? F.st.us_flip / F.st.flips : 0), (unsigned long)F.st.us_flip_max);
+}
+
+void rtg_x_flip_stats(RtgFlipStats *s) { if (s) { *s = F.st; if (!F.task) s->pri = 0; } }
+void rtg_x_set_flip_pri(int rel) { F.rel_pri = rel; }
+
+/* vblank-timed writes (RTG_F_VBLANK): state here, code before present_common */
+static struct {
+	struct Task *task, *owner;
+	UBYTE *stack;
+	BYTE ack_bit;
+	ULONG go_mask;
+	volatile int quit, ok;
+	int rel_pri;
+	struct SignalSemaphore sem;
+	UBYTE *stage;               /* vis_w x vis_h, the frame as presented */
+	UBYTE *pend;                /* per visible line: presented since the last write */
+	int pending;
+	ULONG pal[256];
+	int pal_lo, pal_hi;         /* palette entries changed since the last write */
+	int border;                 /* new border pen, -1 none */
+	/* timing, task only (E-clock ticks) */
+	u64 vb0, vb, last_anchor;   /* first anchor, latest anchor */
+	u64 per_fx;                 /* period, ticks << 16 */
+	ULONG nb;                   /* blanks from vb0 to vb */
+	ULONG delta;                /* ticks after the blank start to write */
+	struct MsgPort *tp;
+	struct timerequest *tr;
+	char calib[100];            /* the calibration steps in us, for the log */
+	RtgVblStats st;
+} V = { 0, 0, 0, -1, 0, 0, 0, 1 };
+static int vt_start(void);
+static void vt_stop(void);
+static int32_t vt_set_palette(int first, int count, const void *colours, int colfmt);
+
 int32_t rtg_x_sync_display(uint32_t timeout_us, uint32_t *waited_us)
 {
 	u64 t0 = eclock();
 	int ok;
 	if (!R.open) return RTG_E_NOTOPEN;
-	ok = R.nbuf > 1 ? wait_msgs(c_disp_back, 0, timeout_us) : 1;
+	ok = R.nbuf > 1 && !F.task ? wait_msgs(c_disp_back, 0, timeout_us) : 1;
 	if (waited_us) *waited_us = ticks_us(eclock() - t0);
 	return ok ? RTG_OK : RTG_E_BUFFERS;
 }
@@ -498,7 +738,8 @@ int32_t rtg_x_sync_display(uint32_t timeout_us, uint32_t *waited_us)
 static void free_buffers(void)
 {
 	int i, outstanding = 0;
-	if (R.nbuf > 1 && R.scr) {
+	if (F.task) ft_stop();                    /* it waits for the messages and shows sb[0] itself */
+	else if (R.nbuf > 1 && R.scr) {
 		logf_(1, "rtgfw: close: waiting for buffer messages (shown %d)", R.shown);
 		wait_msgs(c_all_back, 0, 500000);
 		if (R.shown != 0 && R.sb[0]) {
@@ -517,7 +758,8 @@ static void free_buffers(void)
 		if (R.sb[i] && R.scr) FreeScreenBuffer(R.scr, R.sb[i]);
 		R.sb[i] = NULL;
 	}
-	if (outstanding) {
+	if (F.outstanding) { F.outstanding = 0; outstanding = 0; }   /* ports already kept by the flip task */
+	else if (outstanding) {
 		/* A message never came back: keep the ports (a small leak) rather
 		 * than let the driver reply into freed memory later. */
 		logf_(0, "rtgfw: screen buffer messages still out at close; ports kept");
@@ -533,6 +775,7 @@ static void free_buffers(void)
 
 static void close_all(void)
 {
+	vt_stop();
 	free_buffers();
 	if (R.offbm) { WaitBlit(); FreeBitMap(R.offbm); R.offbm = NULL; }
 	if (R.win) { ClearPointer(R.win); CloseWindow(R.win); R.win = NULL; }
@@ -574,7 +817,7 @@ static int try_mode(RtgOpen *o, const RtgModeInfo *m, int buffers)
 	ULONG idcmp = IDCMP_RAWKEY | IDCMP_MOUSEBUTTONS;
 	if (!dims_of(m->id, &w, &h, &depth)) return RTG_E_NOMODE;
 	R.scr = OpenScreenTags(NULL,
-		SA_DisplayID, m->id, SA_Width, w, SA_Height, h, SA_Depth, depth,
+		SA_DisplayID, m->id, SA_Width, w, SA_Height, (o->flags & RTG_F_VBLANK) ? 2 * h : h, SA_Depth, depth,
 		SA_Quiet, TRUE, SA_ShowTitle, FALSE, SA_Type, CUSTOMSCREEN,
 		SA_Title, (ULONG)"rtgfw", SA_Draggable, FALSE, SA_Exclusive, TRUE,
 		SA_AutoScroll, FALSE, SA_Interleaved, FALSE, TAG_DONE);
@@ -651,6 +894,7 @@ int32_t rtg_open(RTG_REG(RtgOpen *, o, a0))
 	if ((o->flags & RTG_F_PERLINE) && o->depth == 8) return RTG_E_ARGS;
 	if (o->buffers > 3 || o->scale > 8) return RTG_E_ARGS;
 	if ((o->flags & RTG_F_BLIT) && (o->flags & RTG_F_OSCOPY)) return RTG_E_ARGS;
+	if ((o->flags & RTG_F_VBLANK) && (o->flags & (RTG_F_BLIT | RTG_F_OSCOPY | RTG_F_FLIPTASK | RTG_F_PERLINE))) return RTG_E_ARGS;
 	if (o->scan > RTG_SCAN_BLEND || o->scan_pct > 100) return RTG_E_ARGS;
 	if (o->scan == RTG_SCAN_BLEND && o->depth == 8) return RTG_E_ARGS;   /* blended lines need 16/32-bit */
 	if (o->scan && o->scale && (o->scale & 1)) return RTG_E_ARGS;        /* scanlines: even scales only */
@@ -679,7 +923,7 @@ int32_t rtg_open(RTG_REG(RtgOpen *, o, a0))
 		struct Screen *wb = LockPubScreen(NULL);
 		if (wb) { wb_w = wb->Width; wb_h = wb->Height; UnlockPubScreen(NULL, wb); }
 	}
-	want_buf = (o->flags & RTG_F_BLIT) ? 1 : (o->buffers ? o->buffers : 3);
+	want_buf = (o->flags & (RTG_F_BLIT | RTG_F_VBLANK)) ? 1 : (o->buffers ? o->buffers : 3);
 
 	err = RTG_E_NOMODE;
 	if (o->mode_id) {
@@ -723,8 +967,12 @@ int32_t rtg_open(RTG_REG(RtgOpen *, o, a0))
 			int raw2, f2 = fmt_of_bitmap(R.offbm, &raw2);
 			if (f2 != R.fmt) { logf_(0, "rtgfw: off-screen bitmap format %d differs from the screen's %d", f2, R.fmt); rtg_close(); return RTG_E_FORMAT; }
 		}
-	} else if (alloc_buffers(want_buf) != RTG_OK) {
+	} else if (alloc_buffers((o->flags & RTG_F_FLIPTASK) ? 3 : want_buf) != RTG_OK) {
 		logf_(0, "rtgfw: AllocScreenBuffer refused, single buffer");
+	} else if ((o->flags & RTG_F_FLIPTASK) && !ft_start()) {
+		logf_(0, "rtgfw: flip task did not start, single buffer");
+		free_buffers();
+		alloc_buffers(1);
 	}
 
 	/* converter: OS copy of direct formats without P96 goes through ARGB32 + WritePixelArray(RECTFMT_ARGB) */
@@ -746,6 +994,7 @@ int32_t rtg_open(RTG_REG(RtgOpen *, o, a0))
 	}
 	R.surround_need = (UBYTE)((1 << RTGC_MAXBUF) - 1);
 	R.open = 1;
+	if (o->flags & RTG_F_VBLANK) vt_start();   /* else (or if it fails) plain direct writes */
 
 	o->out_mode_id = GetVPModeID(&R.scr->ViewPort);
 	o->out_w = (uint16_t)R.scr_w; o->out_h = (uint16_t)R.scr_h;
@@ -769,7 +1018,8 @@ int32_t rtg_set_palette(RTG_REG(int32_t, line, d0), RTG_REG(int32_t, first, d1),
 {
 	if (!R.open) return RTG_E_NOTOPEN;
 	if (!colours || (colfmt != RTG_RGB24 && colfmt != RTG_RGB12)) return RTG_E_ARGS;
-	if (line <= 0) return rtgc_set_palette(&R.conv, 0, first, count, colours, colfmt);
+	if (line <= 0) return V.task ? vt_set_palette(first, count, colours, colfmt) : rtgc_set_palette(&R.conv, 0, first, count, colours, colfmt);
+	if (V.task) return RTG_E_RUNS;
 	line -= R.vis_y;
 	if (line >= R.vis_h) return RTG_OK;                     /* below the visible part */
 	return rtgc_add_run(&R.conv, line < 0 ? 0 : line, first, count, colours, colfmt);
@@ -779,6 +1029,7 @@ int32_t rtg_set_border(RTG_REG(int32_t, pen, d0))
 {
 	if (!R.open) return RTG_E_NOTOPEN;
 	if (pen < 0 || pen > 255) return RTG_E_ARGS;
+	if (V.task) { ObtainSemaphore(&V.sem); V.border = pen; V.pending = 1; ReleaseSemaphore(&V.sem); return RTG_OK; }
 	if (pen != R.border_pen) {
 		R.border_pen = pen; R.conv.border = pen;
 		R.surround_need = (UBYTE)((1 << RTGC_MAXBUF) - 1);
@@ -897,6 +1148,355 @@ static void blit_spans(void)
 	}
 }
 
+/* ------------------------------------------------------------------ */
+/* vblank-timed writes (RTG_F_VBLANK, 27 Oct 2026)                     */
+/*
+ * One buffer, no flips, and still no tearing: the copy into board memory is
+ * far faster than the display scans it out (a CPC frame 0.2-0.8 ms against a
+ * 16.7 ms refresh), so a frame written just after the refresh's vertical
+ * blank starts stays ahead of the scan all the way down.
+ *
+ * Finding the blank. The Emu68 VideoCore driver gives no vertical blank
+ * signal, but a pan (ScrollVPort to another RyOffset) busy-waits until the
+ * display is inside its blank and returns there; a second pan inside the
+ * same blank returns at once (panbench, 27 Oct 2026). So the screen is
+ * opened two pages tall: page 0 is the picture, page 1 is only ever panned
+ * to and straight back within one blank. Seven such anchors at open give
+ * the period; one anchor every second, 300 us before a predicted blank,
+ * keeps the phase (prediction error on the A1200: under 10 us) and refines
+ * the period over a growing baseline.
+ *
+ * Work split:
+ *   rtg_present (caller): copies its dirty lines into a staging frame,
+ *     marks them, signals; no lock, no wait (well under 0.1 ms).
+ *   the vblank task (caller's priority + 1): at the next blank + 50 us it
+ *     applies the palette and border changes, writes the marked lines
+ *     through the converter, loads the CLUT range, clears the marks.
+ *   A semaphore guards the staging frame, the marks and the pending palette;
+ *   the caller waits for it only if it presents during a write.
+ * Frames presented faster than the refresh merge (the newest lines win).
+ * Palette runs and line flags are not supported in this mode (RTG_E_RUNS /
+ * RTG_E_ARGS). If the anchors do not give a steady period (a board that
+ * returns at once, e.g. WinUAE's uaegfx), rtg_open falls back to plain
+ * direct writes and logs it. */
+
+
+#define VT_STACK 8192
+
+static void vt_wait_until(u64 t)
+{
+	V.tr->tr_node.io_Command = TR_ADDREQUEST;
+	V.tr->tr_time.tv_secs = (ULONG)(t >> 32);
+	V.tr->tr_time.tv_micro = (ULONG)t;
+	DoIO((struct IORequest *)V.tr);
+}
+
+static u64 us_ticks(ULONG us) { return ((u64)us * R.efreq + 500000) / 1000000; }
+
+/* pan to page 1 and straight back: returns the E-clock at the blank start */
+static u64 vt_pan_pair(void)
+{
+	struct ViewPort *vp = &R.scr->ViewPort;
+	u64 t;
+	vp->RasInfo->RyOffset = (WORD)R.scr_h;
+	ScrollVPort(vp);
+	t = eclock();
+	vp->RasInfo->RyOffset = 0;
+	ScrollVPort(vp);
+	return t;
+}
+
+/* the next predicted blank start at or after t */
+static u64 vt_next_blank(u64 t)
+{
+	u64 k;
+	if (t <= V.vb) return V.vb;
+	k = (((t - V.vb) << 16) + V.per_fx - 1) / V.per_fx;
+	return V.vb + ((k * V.per_fx) >> 16);
+}
+
+/* 9 anchors, each 2 ms after the last blank (so the next pan waits for the next
+ * one), after one to settle. The steps must all be whole multiples (1-3) of the
+ * shortest, within 400 us: a pan may miss a blank while the board is busy (seen
+ * on the first 8-bit screen, 27 Oct 2026). 1 if they agree. */
+static int vt_calibrate(void)
+{
+	u64 a[9];
+	ULONG d[8], dmin = ~0ul, k, K = 0;
+	int i, n = 0;
+	vt_pan_pair();
+	vt_wait_until(eclock() + us_ticks(2000));
+	for (i = 0; i < 9; i++) {
+		a[i] = vt_pan_pair();
+		if (i < 8) vt_wait_until(a[i] + us_ticks(2000));
+	}
+	for (i = 0; i < 8; i++) {
+		d[i] = ticks_us(a[i + 1] - a[i]);
+		if (d[i] < dmin) dmin = d[i];
+		n += snprintf(V.calib + n, sizeof V.calib - n, " %lu", (unsigned long)d[i]);
+		if (n >= (int)sizeof V.calib) n = sizeof V.calib - 1;
+	}
+	V.st.period_us = dmin;
+	if (dmin < 8000 || dmin > 25000) return 0;
+	for (i = 0; i < 8; i++) {
+		k = (d[i] + dmin / 2) / dmin;
+		if (k < 1 || k > 3) return 0;
+		if (d[i] > k * dmin + 400 || d[i] + 400 < k * dmin) return 0;
+		K += k;
+	}
+	V.per_fx = ((a[8] - a[0]) << 16) / K;
+	V.st.period_us = (ULONG)((V.per_fx * 1000000ull / R.efreq) >> 16);
+	V.vb0 = a[0]; V.vb = a[8]; V.nb = K; V.last_anchor = a[8];
+	return 1;
+}
+
+static void vt_anchor(void)
+{
+	u64 p = vt_next_blank(eclock() + us_ticks(600)), r;
+	int32_t e;
+	vt_wait_until(p - us_ticks(300));
+	r = vt_pan_pair();
+	e = (int32_t)((int64_t)(r - p) * 1000000 / (int64_t)R.efreq);
+	V.st.anchors++;
+	if (e > -1500 && e < 1500) {
+		ULONG n = (ULONG)((((r - V.vb0) << 16) + V.per_fx / 2) / V.per_fx);
+		if (e < 0) e = -e;
+		if ((ULONG)e > V.st.anchor_err_max) V.st.anchor_err_max = (ULONG)e;
+		if (n > V.nb) { V.per_fx = ((r - V.vb0) << 16) / n; V.nb = n; }
+		V.vb = r;
+		V.st.period_us = (ULONG)((V.per_fx * 1000000ull / R.efreq) >> 16);
+	} else V.st.anchor_fails++;
+	V.last_anchor = eclock();
+}
+
+static void vt_write(void)
+{
+	struct BitMap *bm = R.scr->RastPort.BitMap;
+	UBYTE *addr = NULL;
+	LONG bpr = 0;
+	APTR h;
+	int lo, hi;
+	u64 t0 = eclock();
+	ULONG us, lw = R.conv.lines_written, bw = R.conv.bytes_written;
+	ObtainSemaphore(&V.sem);
+	if (V.pal_lo <= V.pal_hi) {
+		rtgc_set_palette(&R.conv, 0, V.pal_lo, V.pal_hi - V.pal_lo + 1, &V.pal[V.pal_lo], RTG_RGB24);
+		V.pal_lo = 256; V.pal_hi = -1;
+	}
+	if (V.border >= 0) {
+		if (V.border != R.border_pen) {
+			R.border_pen = V.border; R.conv.border = V.border;
+			R.surround_need = 1;
+			rtgc_invalidate(&R.conv);
+		}
+		V.border = -1;
+	}
+	h = lock_bm(bm, &addr, &bpr);
+	if (!h || !addr) {
+		if (h) unlock_bm(bm, h);
+		R.errs++;
+		ReleaseSemaphore(&V.sem);            /* marks kept: tried again at the next blank */
+		return;
+	}
+	if (R.surround_need & 1) { fill_surround(addr, bpr, surround_value(0)); R.surround_need &= (UBYTE)~1; R.surround_val[0] = surround_value(0); }
+	rtgc_present(&R.conv, 0, V.stage, R.vis_w, V.pend, NULL, addr + (long)R.oy * bpr + (long)R.ox * R.bpp, bpr, &lo, &hi);
+	unlock_bm(bm, h);
+	if (R.fmt == RTG_FMT_CLUT8) load_clut(lo, hi);
+	memset(V.pend, 0, R.vis_h);
+	V.pending = 0;
+	ReleaseSemaphore(&V.sem);
+	us = ticks_us(eclock() - t0);
+	V.st.writes++;
+	V.st.us_write += us;
+	if (us > V.st.us_write_max) V.st.us_write_max = us;
+	R.st.lines_written += R.conv.lines_written - lw;
+	R.st.bytes_written += R.conv.bytes_written - bw;
+	R.st.us_convert += us;
+}
+
+static void vt_entry(void)
+{
+	BYTE go = AllocSignal(-1);
+	V.tp = CreateMsgPort();
+	V.tr = V.tp ? (struct timerequest *)CreateIORequest(V.tp, sizeof(struct timerequest)) : NULL;
+	if (go < 0 || !V.tr || OpenDevice((CONST_STRPTR)TIMERNAME, UNIT_WAITECLOCK, (struct IORequest *)V.tr, 0)) {
+		if (V.tr) { DeleteIORequest((struct IORequest *)V.tr); V.tr = NULL; }
+		if (V.tp) { DeleteMsgPort(V.tp); V.tp = NULL; }
+		if (go >= 0) FreeSignal(go);
+		V.ok = 0;
+		Forbid();
+		Signal(V.owner, 1UL << V.ack_bit);
+		return;
+	}
+	V.go_mask = 1UL << go;
+	V.ok = vt_calibrate();
+	if (V.ok) Signal(V.owner, 1UL << V.ack_bit);   /* if not, the one signal is the one at the end */
+	while (V.ok && !V.quit) {
+		u64 now, b;
+		Wait(V.go_mask);
+		while (V.pending && !V.quit) {
+			now = eclock();
+			b = vt_next_blank(now);           /* the first blank at or after now */
+			if (b - now > (V.per_fx >> 16) - us_ticks(250)) V.st.at_once++;   /* the one before was under 250 us ago: still at the top, write now */
+			else {
+				ULONG late;
+				vt_wait_until(b + V.delta);
+				now = eclock();
+				late = now > b + V.delta ? ticks_us(now - (b + V.delta)) : 0;
+				if (late > V.st.late_max_us) V.st.late_max_us = late;
+			}
+			vt_write();
+			if (eclock() - V.last_anchor > (u64)R.efreq) vt_anchor();
+		}
+	}
+	CloseDevice((struct IORequest *)V.tr);
+	DeleteIORequest((struct IORequest *)V.tr); V.tr = NULL;
+	DeleteMsgPort(V.tp); V.tp = NULL;
+	FreeSignal(go);
+	Forbid();
+	Signal(V.owner, 1UL << V.ack_bit);
+}
+
+static void vt_free(void)
+{
+	if (V.stage) { free(V.stage); V.stage = NULL; }
+	if (V.pend) { free(V.pend); V.pend = NULL; }
+}
+
+/* after rtg_open has set up the screen (two pages) and the converter */
+static int vt_start(void)
+{
+	struct Task *t;
+	int pri;
+	V.owner = FindTask(NULL);
+	V.quit = 0; V.ok = 0; V.pending = 0;
+	V.pal_lo = 256; V.pal_hi = -1; V.border = -1;
+	V.delta = (ULONG)us_ticks(50);
+	memset(&V.st, 0, sizeof V.st);
+	V.calib[0] = 0;
+	InitSemaphore(&V.sem);
+	V.stage = malloc((long)R.vis_w * R.vis_h);
+	V.pend = calloc(R.vis_h, 1);
+	if (!V.stage || !V.pend) { vt_free(); return 0; }
+	memset(V.stage, R.border_pen, (long)R.vis_w * R.vis_h);
+	{
+		/* page 1 in the border pen: it is never meant to be seen */
+		UBYTE *addr; LONG bpr;
+		APTR h = lock_bm(R.scr->RastPort.BitMap, &addr, &bpr);
+		if (h) { fill_rect(addr + (long)R.scr_h * bpr, bpr, 0, 0, R.scr_w, R.scr_h, surround_value(0)); unlock_bm(R.scr->RastPort.BitMap, h); }
+	}
+	if ((V.ack_bit = AllocSignal(-1)) < 0) { vt_free(); return 0; }
+	t = (struct Task *)AllocMem(sizeof(struct Task), MEMF_PUBLIC | MEMF_CLEAR);
+	V.stack = (UBYTE *)AllocMem(VT_STACK, MEMF_PUBLIC | MEMF_CLEAR);
+	if (!t || !V.stack) {
+		if (t) FreeMem(t, sizeof(struct Task));
+		if (V.stack) FreeMem(V.stack, VT_STACK);
+		V.stack = NULL;
+		FreeSignal(V.ack_bit); V.ack_bit = -1;
+		vt_free();
+		return 0;
+	}
+	pri = V.owner->tc_Node.ln_Pri + V.rel_pri;
+	if (pri > 20) pri = 20;
+	if (pri < -20) pri = -20;
+	t->tc_Node.ln_Type = NT_TASK;
+	t->tc_Node.ln_Pri = (BYTE)pri;
+	t->tc_Node.ln_Name = (char *)"rtgfw vblank";
+	t->tc_SPLower = V.stack;
+	t->tc_SPUpper = V.stack + VT_STACK;
+	t->tc_SPReg = V.stack + VT_STACK;
+	SetSignal(0, 1UL << V.ack_bit);
+	V.task = t;
+	AddTask(t, (APTR)vt_entry, NULL);
+	Wait(1UL << V.ack_bit);                  /* calibrated (about 0.1 s) or failed */
+	if (!V.ok) {
+		FreeMem(t, sizeof(struct Task)); FreeMem(V.stack, VT_STACK);
+		V.task = NULL; V.stack = NULL; V.go_mask = 0;
+		FreeSignal(V.ack_bit); V.ack_bit = -1;
+		logf_(0, "rtgfw: vblank timing: no steady refresh from the pans (steps%s us), plain direct writes", V.calib);
+		vt_free();
+		return 0;
+	}
+	V.st.pri = pri;
+	logf_(1, "rtgfw: vblank timing: refresh %lu us (steps%s), task pri %d", (unsigned long)V.st.period_us, V.calib, pri);
+	return 1;
+}
+
+static void vt_stop(void)
+{
+	if (!V.task) return;
+	V.quit = 1;
+	Signal(V.task, V.go_mask);
+	Wait(1UL << V.ack_bit);
+	FreeMem(V.task, sizeof(struct Task)); FreeMem(V.stack, VT_STACK);
+	V.task = NULL; V.stack = NULL; V.go_mask = 0;
+	FreeSignal(V.ack_bit); V.ack_bit = -1;
+	logf_(1, "rtgfw: vblank timing: %lu presents, %lu writes (%lu at once), %lu merged; write avg %lu max %lu us, late max %lu us; "
+	      "%lu anchors (%lu off), error max %lu us, refresh %lu us",
+	      (unsigned long)V.st.presents, (unsigned long)V.st.writes, (unsigned long)V.st.at_once, (unsigned long)V.st.merged,
+	      (unsigned long)(V.st.writes ? V.st.us_write / V.st.writes : 0), (unsigned long)V.st.us_write_max, (unsigned long)V.st.late_max_us,
+	      (unsigned long)V.st.anchors, (unsigned long)V.st.anchor_fails, (unsigned long)V.st.anchor_err_max, (unsigned long)V.st.period_us);
+	vt_free();
+}
+
+/* rtg_present in this mode: the dirty lines into the staging frame */
+static int32_t vt_present(const uint8_t *pix, int32_t stride, const uint8_t *dirty)
+{
+	int y;
+	u64 t0 = eclock();
+	ObtainSemaphore(&V.sem);
+	for (y = 0; y < R.vis_h; y++, pix += stride)
+		if (!dirty || dirty[y]) { memcpy(V.stage + (long)y * R.vis_w, pix, R.vis_w); V.pend[y] = 1; }
+	if (V.pending) V.st.merged++;
+	V.pending = 1;
+	V.st.presents++;
+	ReleaseSemaphore(&V.sem);
+	Signal(V.task, V.go_mask);
+	R.st.frames++;
+	R.st.us_flip_wait += ticks_us(eclock() - t0);   /* the caller's whole cost here */
+	return RTG_OK;
+}
+
+static int32_t vt_set_palette(int first, int count, const void *colours, int colfmt)
+{
+	int i;
+	if (first < 0 || count < 0 || first + count > 256) return RTG_E_ARGS;
+	ObtainSemaphore(&V.sem);
+	for (i = 0; i < count; i++) {
+		ULONG c;
+		if (colfmt == RTG_RGB12) {
+			UWORD w = ((const UWORD *)colours)[i];
+			c = ((ULONG)((w >> 8) & 15) * 0x110000u) | ((ULONG)((w >> 4) & 15) * 0x1100u) | ((ULONG)(w & 15) * 0x11u);
+		} else c = ((const ULONG *)colours)[i] & 0xffffff;
+		V.pal[first + i] = c;
+	}
+	if (count) {
+		if (first < V.pal_lo) V.pal_lo = first;
+		if (first + count - 1 > V.pal_hi) V.pal_hi = first + count - 1;
+		V.pending = 1;
+	}
+	ReleaseSemaphore(&V.sem);
+	return RTG_OK;
+}
+
+/* wait until the last presented frame is on the screen (for grabs) */
+int32_t rtg_x_vbl_sync(uint32_t timeout_us)
+{
+	ULONG waited = 0;
+	if (!V.task) return RTG_OK;
+	while (V.pending && waited < timeout_us && R.treq2) {
+		R.treq2->tr_node.io_Command = TR_ADDREQUEST;
+		R.treq2->tr_time.tv_secs = 0;
+		R.treq2->tr_time.tv_micro = 1000;
+		DoIO((struct IORequest *)R.treq2);
+		waited += 1000;
+	}
+	return V.pending ? RTG_E_BUFFERS : RTG_OK;
+}
+
+void rtg_x_vbl_stats(RtgVblStats *s) { if (s) { *s = V.st; if (!V.task) s->pri = 0; } }
+void rtg_x_set_vbl_pri(int rel) { V.rel_pri = rel; }
+
 static int32_t present_common(const uint8_t *pixels, int32_t stride, const uint8_t *dirty, const uint8_t *lineflags)
 {
 	struct BitMap *bm;
@@ -908,10 +1508,32 @@ static int32_t present_common(const uint8_t *pixels, int32_t stride, const uint8
 	pix = pixels + (long)R.vis_y * stride + R.vis_x;
 	if (dirty) dirty += R.vis_y;
 	if (lineflags) lineflags += R.vis_y;
+	if (V.task) {
+		if (lineflags || R.conv.nruns) { R.conv.nruns = 0; R.conv.pool_used = 0; return lineflags ? RTG_E_ARGS : RTG_E_RUNS; }
+		return vt_present(pix, stride, dirty);
+	}
 
 	/* pick the buffer */
 	t0 = eclock();
-	if (R.nbuf > 1 && !R.degraded) {
+	if (F.task) {
+		int i;
+		Forbid();
+		if (F.req >= 0) { b = F.req; F.req = -1; F.st.steals++; }   /* not taken yet: write it again */
+		else {
+			b = -1;
+			for (i = 1; i < R.nbuf; i++) {
+				int c = (R.shown + i) % R.nbuf;
+				if (c != F.flipping && c_target_ready(c)) { b = c; break; }
+			}
+		}
+		Permit();
+		if (b < 0) {
+			F.st.drops++;
+			rtgc_skip(&R.conv, dirty);        /* nothing free: the lines stay owed */
+			R.st.us_flip_wait += ticks_us(eclock() - t0);
+			return RTG_OK;
+		}
+	} else if (R.nbuf > 1 && !R.degraded) {
 		b = (R.shown + 1) % R.nbuf;
 		if (!wait_msgs(c_target_ready, b, FLIP_TIMEOUT_US)) {
 			/* messages did not come back: keep writing the buffer on display, no more flips */
@@ -921,7 +1543,7 @@ static int32_t present_common(const uint8_t *pixels, int32_t stride, const uint8
 		}
 	}
 	if (R.nbuf == 1) b = 0;
-	else if (R.degraded) b = R.shown;
+	else if (R.degraded && !F.task) b = R.shown;
 	t1 = eclock();
 	R.st.us_flip_wait += ticks_us(t1 - t0);
 
@@ -986,8 +1608,23 @@ static int32_t present_common(const uint8_t *pixels, int32_t stride, const uint8
 		}
 	}
 	if (err != RTG_OK) return err;
-	if (R.fmt == RTG_FMT_CLUT8) load_clut(lo, hi);
 	R.last = b;
+	if (F.task) {
+		if (R.fmt == RTG_FMT_CLUT8) {
+			int i;
+			for (i = lo; i <= hi; i++) F.cur[i] = rtgc_clut_colour(&R.conv, i);
+			if (lo <= hi) R.st.palette_loads++;
+		}
+		Forbid();
+		if (R.fmt == RTG_FMT_CLUT8) memcpy(F.snap[b], F.cur, sizeof F.cur);
+		F.req = b;
+		F.st.queued++;
+		Permit();
+		Signal(F.task, F.go_mask);
+		R.st.frames++;
+		return RTG_OK;
+	}
+	if (R.fmt == RTG_FMT_CLUT8) load_clut(lo, hi);
 	if (R.nbuf > 1 && !R.degraded) {
 		if (ChangeScreenBuffer(R.scr, R.sb[b])) {
 			R.safe_out[b] = R.disp_out[b] = 1;

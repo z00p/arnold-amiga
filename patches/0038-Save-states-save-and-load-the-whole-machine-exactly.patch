@@ -1,0 +1,1619 @@
+From 664757b7ec81b232673cbe0320affe91d73c0a12 Mon Sep 17 00:00:00 2001
+From: John Stringer <jcec_1@yahoo.co.uk>
+Date: Wed, 28 Oct 2026 15:20:01 +0000
+Subject: [PATCH 38/41] Save states: save and load the whole machine exactly
+
+cpc/savestate.c: SaveState_Save / SaveState_Load / SaveState_Check for a host,
+between two CPCEmulation_Run calls. The file is a standard SNA v3 (upstream's
+writer: RAM and registers for other emulators) with an extra ARNS chunk: a
+versioned, CRC-checked block of sections, one per core file (Z80, CPC, Gate
+Array, PAL, ASIC, CRTC, AY, sound events, FDC, drives, disc interface, printer,
+tape, renderer, main loop) plus the host's own bytes, all big-endian and of
+fixed width, so a state saved on a little-endian PC loads on a 68k Amiga and
+back. Every inserted disk is stored whole. Each core file gets an SS_ function
+that saves or restores its state (pointers as offsets or indices); caches and
+tables are worked out again. A load is checked first (structure, CRC, format,
+machine, cartridge, tape) and applied whole: if anything fails part way, the
+running machine, kept in memory, is put back. A plain .sna still loads through
+Snapshot_Insert, after a bounds check of its chunks. Resumed runs give the same
+frames and sound as uninterrupted ones (headless tests: carts, disks, tapes,
+frame skip). NO_SAVESTATE builds the core without it.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ src/cpc/arnold.c            |  23 ++
+ src/cpc/asic.c              |  80 +++++
+ src/cpc/audioevent.c        |  62 ++++
+ src/cpc/cassette.c          |  20 ++
+ src/cpc/cpc.c               |  61 ++++
+ src/cpc/crtc.c              |  48 +++
+ src/cpc/diskimage/diskimg.c |  65 ++++
+ src/cpc/fdc.c               |  43 +++
+ src/cpc/fdd.c               |  13 +
+ src/cpc/fdi.c               |  19 ++
+ src/cpc/garray.c            |  13 +
+ src/cpc/pal.c               |  10 +
+ src/cpc/printer.c           |  10 +
+ src/cpc/psg.c               |   9 +
+ src/cpc/psgplay.c           |  40 +++
+ src/cpc/render5.c           |  94 ++++++
+ src/cpc/savestate.c         | 583 ++++++++++++++++++++++++++++++++++++
+ src/cpc/savestate.h         | 112 +++++++
+ src/cpc/tzxold.c            |  75 +++++
+ src/cpc/z80/z80.c           |  16 +
+ src/objects.mak             |   3 +-
+ 21 files changed, 1398 insertions(+), 1 deletion(-)
+ create mode 100644 src/cpc/savestate.c
+ create mode 100644 src/cpc/savestate.h
+
+diff --git a/src/cpc/arnold.c b/src/cpc/arnold.c
+index af15078..5596a87 100644
+--- a/src/cpc/arnold.c
++++ b/src/cpc/arnold.c
+@@ -627,3 +627,26 @@ BOOL	CPCEmulation_CheckEndianness(void)
+ #endif
+ 	return EndianCorrect;
+ }
++
++#ifndef NO_SAVESTATE
++/* Amiga port (save states, 28 Oct 2026): the main loop's state between two
++ * CPCEmulation_Run calls (cpc/savestate.c). FrameSkip and the skip hook are the
++ * host's; the I/O lead is stored as 0 in a NO_IOTIME_FIX build (same stream). */
++#include "savestate.h"
++void SS_Arnold(SS_IO *io)
++{
++	int pre = 0, ahead = 0;
++#ifndef NO_IOTIME_FIX
++	pre = CPC_IOPre; ahead = CPC_IOAhead;
++#endif
++	SS_V(io, NopCountToDate); SS_V(io, RenderOnEarlyAt); SS_V(io, DontRender);
++	SS_V(io, FrameMeantToRender); SS_V(io, RenderNextFrame); SS_V(io, CurrentFrameIndex);
++	SS_V(io, pre); SS_V(io, ahead);
++	if (io->load) {
++#ifndef NO_IOTIME_FIX
++		CPC_IOPre = pre; CPC_IOAhead = ahead;
++#endif
++		if (CurrentFrameIndex > FrameSkip) CurrentFrameIndex = 0;   /* another frame skip set now */
++	}
++}
++#endif
+diff --git a/src/cpc/asic.c b/src/cpc/asic.c
+index fa8455b..5f8a77d 100644
+--- a/src/cpc/asic.c
++++ b/src/cpc/asic.c
+@@ -2613,3 +2613,83 @@ void	ASIC_UpdateColours(void)
+     }
+ }
+ 
++
++#ifdef NO_DMA_STAGGER
++int ASIC_DMA_IntPending;   /* always 0: arnold.c's deferral reads it (NO_DMA_STAGGER did not link before; here at the end so no line above moves: PGO) */
++#endif
++
++#ifndef NO_SAVESTATE
++/* Amiga port (save states, 28 Oct 2026): the ASIC for cpc/savestate.c. The RAM
++ * paging mask is stored as on/off (it is a pointer mask); the sprite column and
++ * line caches are rebuilt on first use after a load. The cartridge itself is not
++ * stored: ASIC_CartCrc identifies it (its blocks and how the 32 pages use them). */
++#include "savestate.h"
++unsigned long ASIC_CartCrc(void)
++{
++	unsigned long crc = 0;
++	unsigned char map[32];
++	int i, j;
++	if (NumCartridgeBlocks == 0) return 0;
++	for (i = 0; i < (int)NumCartridgeBlocks && i < 32; i++)
++		if (CartridgeBlocks[i]) crc = SaveState_Crc32(crc, CartridgeBlocks[i], 16384);
++	for (i = 0; i < 32; i++) {
++		map[i] = 0x0ff;
++		for (j = 0; j < (int)NumCartridgeBlocks && j < 32; j++)
++			if (CartridgePages[i] == CartridgeBlocks[j]) { map[i] = (unsigned char)j; break; }
++	}
++	crc = SaveState_Crc32(crc, map, 32);
++	return crc ? crc : 1;
++}
++
++void SS_Asic(SS_IO *io)
++{
++	ASIC_DATA *a = &ASIC_Data;
++	long rammask = a->ASIC_RamMask != 0;
++	int i, done = 0, d0 = 0, d1 = 0, d2 = 0, pend = 0, base = 0;
++	int stale = ASIC_SpriteMaskStale;   /* speed14: a state saved after an undrawn line keeps the rebuild due (crtc.c) */
++#ifndef NO_DMA_STAGGER
++	done = ASIC_DMA_Stagger.Done; d0 = ASIC_DMA_Stagger.Delay[0]; d1 = ASIC_DMA_Stagger.Delay[1]; d2 = ASIC_DMA_Stagger.Delay[2];
++	pend = ASIC_DMA_IntPending;
++#endif
++#ifndef NO_DMAPHASE
++	base = ASIC_DMA_PhaseBase;
++#endif
++	SS_V(io, a->Flags); rammask = SS_Long(io, rammask);
++	SS_V(io, a->SpriteEnableMask); SS_V(io, a->SpriteEnableMaskOnLine);
++	for (i = 0; i < 16; i++) {
++		SS_V(io, a->Sprites[i].SpriteX.SpriteX_W); SS_V(io, a->Sprites[i].SpriteY.SpriteY_W); SS_V(io, a->Sprites[i].SpriteMag);
++		SS_V(io, a->SpriteInfo[i].WidthInColumns); SS_V(io, a->SpriteInfo[i].MinColumn); SS_V(io, a->SpriteInfo[i].HeightInLines);
++		SS_V(io, a->SpriteInfo[i].XMagShift); SS_V(io, a->SpriteInfo[i].YMagShift);
++		SS_V(io, a->SpriteInfo[i].x); SS_V(io, a->SpriteInfo[i].y);
++	}
++	SS_V(io, a->DMAPauseActive);
++	for (i = 0; i < 3; i++) {
++		SS_V(io, a->DMA[i].Addr.Addr_W); SS_V(io, a->DMA[i].Prescale);
++		SS_V(io, a->DMAChannel[i].PauseActive); SS_V(io, a->DMAChannel[i].PauseCount);
++		SS_V(io, a->DMAChannel[i].PrescaleCount); SS_V(io, a->DMAChannel[i].LoopStart);
++		SS_V(io, a->DMAChannel[i].RepeatCount);
++	}
++	SS_V(io, a->ASIC_InterruptVector); SS_V(io, a->ASIC_RasterInterruptLine); SS_V(io, a->ASIC_SoftScroll);
++	SS_V(io, a->ASIC_RasterSplitLine); SS_V(io, a->ASIC_SecondaryScreenAddress.Addr_W); SS_V(io, a->InternalDCSR);
++	SS_V(io, a->ASIC_DCSR2); SS_V(io, a->SecondaryRomMapping); SS_A(io, a->AnalogueInputs);
++	SS_Pack(io, a->ASIC_Ram, 16384);
++	SS_V(io, RecogniseSequenceState); SS_V(io, CurrentSequencePos); SS_V(io, CurrentLine);
++	SS_V(io, done); SS_V(io, d0); SS_V(io, d1); SS_V(io, d2); SS_V(io, pend); SS_V(io, base);
++	SS_V(io, stale);
++	if (io->load && !io->err) {
++		a->ASIC_RamMask = rammask ? (unsigned long)~0UL : 0;
++#ifndef NO_DMA_STAGGER
++		ASIC_DMA_Stagger.Done = done; ASIC_DMA_Stagger.Delay[0] = d0; ASIC_DMA_Stagger.Delay[1] = d1; ASIC_DMA_Stagger.Delay[2] = d2;
++		ASIC_DMA_IntPending = pend;
++#endif
++#ifndef NO_DMAPHASE
++		ASIC_DMA_PhaseBase = base;
++#endif
++		ASIC_SpriteMaskStale = stale;
++		ASIC_ColMaskValid = 0;
++#ifndef NO_SPRLINE
++		ASIC_LineBufOK = 0;
++#endif
++	}
++}
++#endif
+diff --git a/src/cpc/audioevent.c b/src/cpc/audioevent.c
+index fea20d2..9bc8fad 100644
+--- a/src/cpc/audioevent.c
++++ b/src/cpc/audioevent.c
+@@ -1146,3 +1146,65 @@ void	AudioEvent_ConvertToOutputFormat_8BitStereo(char *pSrcBuffer, char *pDestBu
+ 	}
+ }
+ 
++
++#ifndef NO_SAVESTATE
++/* Amiga port (save states, 28 Oct 2026): for cpc/savestate.c. The sample rate set-up
++ * (the float and fixed-point steps, the buffers) is the host's; what is kept is
++ * the event buffer (empty after each frame while sound is on; it fills up and
++ * stays full while sound is off), the fraction carried between frames and the
++ * Digiblaster's position (its block is only used by 8-bit output). Each event is
++ * stored as its NOP time, type and the two values (PSG register and data). */
++#include "savestate.h"
++void SS_Audio(SS_IO *io)
++{
++	long n = NoOfEventsInBuffer, dig = 0, max = pEventBuffer ? (long)(EventBufferLength / sizeof(AUDIO_EVENT)) : 0;
++	unsigned char *ev = NULL;
++	int i;
++	if (!io->load && Digiblaster_Buffer) dig = (long)(pDigiblaster_Data - Digiblaster_Buffer);
++	SS_V(io, NopCount.FixedPoint.L); SS_V(io, EventBufferNopCount); SS_V(io, AudioEvent_PreviousFraction);
++	SS_V(io, Digiblaster_PreviousData); SS_V(io, Digiblaster_CPCNopCountOfLastWrite); SS_V(io, Digiblaster_PreviousFraction);
++	SS_V(io, Digiblaster_Volume); SS_V(io, Tape_Volume); SS_V(io, Vol); SS_V(io, DAC_AudioActive);
++	SS_V(io, SamplesToGenerate);   /* NO_SNDLUT_FIX: still 0 for the first block after start-up */
++	dig = SS_Long(io, dig);
++	if (dig > 0 && !io->err) {
++		if (!Digiblaster_Buffer || dig > AudioBufSize) SS_Fail(io, "The state's Digiblaster data does not fit");
++		else SS_Raw(io, Digiblaster_Buffer, dig);
++	}
++	n = SS_Long(io, n);
++	if (io->err) return;
++	if (n < 0 || n > max) { SS_Fail(io, "The state's sound events do not fit"); return; }
++	if (n) {
++		ev = (unsigned char *)malloc(n * 11);
++		if (!ev) { SS_Fail(io, "Not enough memory for the sound events"); return; }
++		if (!io->load)
++			for (i = 0; i < n; i++) {
++				AUDIO_EVENT *e = (AUDIO_EVENT *)pEventBuffer + i;
++				unsigned long long t = e->NopCount;
++				unsigned char *p = ev + i * 11;
++				int k;
++				if (e->Type > 255 || e->AudioEvent.PSG_Event.PSG_Register > 255 || e->AudioEvent.PSG_Event.PSG_RegisterData > 255) SS_Fail(io, "Save state: a sound event out of range");
++				for (k = 7; k >= 0; k--) { p[k] = (unsigned char)t; t >>= 8; }
++				p[8] = (unsigned char)e->Type; p[9] = (unsigned char)e->AudioEvent.PSG_Event.PSG_Register;
++				p[10] = (unsigned char)e->AudioEvent.PSG_Event.PSG_RegisterData;
++			}
++		SS_Pack(io, ev, (unsigned long)n * 11);
++		if (io->load && !io->err)
++			for (i = 0; i < n; i++) {
++				AUDIO_EVENT *e = (AUDIO_EVENT *)pEventBuffer + i;
++				unsigned long long t = 0;
++				unsigned char *p = ev + i * 11;
++				int k;
++				for (k = 0; k < 8; k++) t = (t << 8) | p[k];
++				memset(e, 0, sizeof *e);
++				e->NopCount = (unsigned long)t; e->Type = p[8];
++				e->AudioEvent.PSG_Event.PSG_Register = p[9]; e->AudioEvent.PSG_Event.PSG_RegisterData = p[10];
++			}
++		free(ev);
++	}
++	if (io->load && !io->err) {
++		NoOfEventsInBuffer = (int)n;
++		pEventBufferPtr = pEventBuffer + n * sizeof(AUDIO_EVENT);
++		if (Digiblaster_Buffer) pDigiblaster_Data = Digiblaster_Buffer + (dig > 0 ? dig : 0);
++	}
++}
++#endif
+diff --git a/src/cpc/cassette.c b/src/cpc/cassette.c
+index 147e8fe..771decf 100644
+--- a/src/cpc/cassette.c
++++ b/src/cpc/cassette.c
+@@ -162,3 +162,23 @@ void	TapeAudio_Mix(unsigned short *s16, int samples)
+ 	}
+ 	ta_level = level; ta_prev = now; ta_n = 0;
+ }
++
++#ifndef NO_SAVESTATE
++/* Amiga port (save states, 28 Oct 2026): the cassette type and the tape sound's
++ * state for cpc/savestate.c (TapeAudio_On is the host's switch). */
++#include "savestate.h"
++int SS_TapeSampleInUse(void) { return CPC_CassetteType == CASSETTE_TYPE_SAMPLE; }
++void SS_TapeAudio(SS_IO *io)
++{
++	long n = ta_n;
++	SS_V(io, CPC_CassetteType); SS_V(io, TapeAudio_Changes); SS_V(io, ta_last); SS_V(io, ta_level);
++	SS_V(io, ta_lp); SS_V(io, ta_was); SS_V(io, ta_prev);
++	n = SS_Long(io, n);
++	if (n < 0 || n > TAPEAUDIO_MAXEV) { SS_Fail(io, "The state is damaged (tape sound)"); return; }
++	if (io->load) ta_n = (int)n;
++	{
++		int i;
++		for (i = 0; i < n; i++) { SS_V(io, ta_t[i]); SS_V(io, ta_b[i]); }
++	}
++}
++#endif
+diff --git a/src/cpc/cpc.c b/src/cpc/cpc.c
+index 03f3616..060a6d4 100644
+--- a/src/cpc/cpc.c
++++ b/src/cpc/cpc.c
+@@ -3229,3 +3229,64 @@ void	CPC_UpdateColours(void)
+ /* Amiga port (tape, 24 Oct 2026): the cassette motor bit as last written.
+    At the end of the file so the PGO profile still matches every other function. */
+ int	CPC_GetTapeMotor(void) { return (PPI_CurrentPortC & 0x010)!=0; }
++
++#ifndef NO_SAVESTATE
++/* Amiga port (save states, 28 Oct 2026): RAM, PPI, keyboard, ROM selection and
++ * the machine description for cpc/savestate.c. The ROM pointers are stored as
++ * what they point at (the lower ROM as a cartridge page, -1 = the OS ROM); the
++ * upper ROM follows from RomSelection, the paging from GateArray_RethinkMemory. */
++#include "savestate.h"
++void SS_GetMachine(SS_MACHINE *m)
++{
++	memset(m, 0, sizeof *m);
++	m->hardware = CPC_Hardware;
++	m->disc = Amstrad_DiscInterface_Enabled != 0;
++	m->ramexp = Amstrad_RamExpansion_Enabled != 0;
++	m->ramconfig = (long)CPC_CurrentRamConfig;
++	m->crtc = CurrentCRTCType;
++	m->extraram = (long)Amstrad_ExtraRamSize;
++	if (CPC_Hardware == CPC_HW_CPCPLUS)
++		m->cart_crc = ASIC_CartCrc();
++	else {
++		if (pOS) m->rom_crc[0] = SaveState_Crc32(0, pOS, 16384);
++		if (pBasic) m->rom_crc[1] = SaveState_Crc32(0, pBasic, 16384);
++		if (pDOS) m->rom_crc[2] = SaveState_Crc32(0, pDOS, 16384);
++	}
++}
++
++void SS_Cpc(SS_IO *io)
++{
++	long lower = -2, wr = 0;
++	int i;
++	if (!io->load) {
++		const unsigned char *base = pLowerRom + ((LowerRomIndex >> 1) << 14);
++		if (base == pOS) lower = -1;
++		else if (CPC_Hardware == CPC_HW_CPCPLUS)
++			for (i = 0; i < 32; i++) if (ASIC_GetCartPage(i) == base) { lower = i; break; }
++		if (lower == -2) SS_Fail(io, "Save state: the lower ROM is not one the state can name");
++		if (pUpperRom != ExpansionROMTable[RomSelection & 0x0ff]) SS_Fail(io, "Save state: the upper ROM is not the selected one");
++		wr = pWriteMemory == CPCPlus_WriteMemoryWithASICRamEnabled;
++	}
++	lower = SS_Long(io, lower);
++	wr = SS_Long(io, wr);
++	SS_V(io, CPC_NopCount); SS_V(io, RomSelection); SS_V(io, LowerRomIndex);
++	SS_V(io, SelectedKeyboardLine); SS_V(io, KeyboardScanned); SS_A(io, KeyboardData);
++	SS_A(io, ppi8255.latched_outputs); SS_A(io, ppi8255.final_outputs); SS_A(io, ppi8255.inputs);
++	SS_A(io, ppi8255.io_mask); SS_V(io, ppi8255.control);
++	SS_V(io, PortBRead_PreviousNopCount); SS_V(io, PortCWrite_PreviousNopCount);
++	SS_V(io, PPI_PreviousPortC); SS_V(io, PPI_CurrentPortC); SS_V(io, PPI_PortBInputData);
++	SS_V(io, ComputerNameIndex); SS_V(io, kcc_int_ff); SS_V(io, previous_counter_outputs);
++	SS_Pack(io, Z80MemoryBase, 64 * 1024);
++	if ((long)SS_Long(io, (long)Amstrad_ExtraRamSize) != (long)Amstrad_ExtraRamSize) SS_Fail(io, "The state's expansion RAM is another size");
++	else if (Amstrad_ExtraRamSize) SS_Pack(io, Amstrad_ExtraRam, Amstrad_ExtraRamSize);
++	if (io->load && !io->err) {
++		const unsigned char *base;
++		if (lower == -1) base = pOS;
++		else if (lower >= 0 && lower < 32 && CPC_Hardware == CPC_HW_CPCPLUS) base = ASIC_GetCartPage((int)lower);
++		else { SS_Fail(io, "The state is damaged (lower ROM)"); return; }
++		pLowerRom = base - ((LowerRomIndex >> 1) << 14);
++		pUpperRom = ExpansionROMTable[RomSelection & 0x0ff];
++		CPC_EnableASICRamWrites(wr != 0);
++	}
++}
++#endif
+diff --git a/src/cpc/crtc.c b/src/cpc/crtc.c
+index 21b0306..a74c31b 100644
+--- a/src/cpc/crtc.c
++++ b/src/cpc/crtc.c
+@@ -4984,3 +4984,51 @@ void	CRTC_LightPen_Update(unsigned long NopsPassed)
+ 	}
+ }
+ #endif
++
++#ifndef NO_SAVESTATE
++/* Amiga port (save states, 28 Oct 2026): the CRTC, monitor and Plus CRTC state for
++ * cpc/savestate.c. Cells still deferred (CRTC_Pending) are drawn first: what they
++ * draw cannot change any more. The render functions and the run context are set
++ * up again on load (the run is worked out afresh before the next cycles). */
++#include "savestate.h"
++void SS_Crtc(SS_IO *io)
++{
++	CRTC_INTERNAL_STATE *s = &CRTC_InternalState;
++	MONITOR_INTERNAL_STATE *m = &s->Monitor_State;
++	GA_INTERNAL_STATE *g = &s->GA_State;
++	int fp = 64 * 16, fu = 0, fc = 0;
++#ifndef NO_HFLYWHEEL
++	fp = HFlyP; fu = HFlyU; fc = HFlyCells;
++#endif
++	if (!io->load) CRTC_Flush();
++	SS_V(io, s->CRTC_Flags); SS_V(io, s->CRTC_HalfHtotFlags); SS_V(io, s->CRTC_FlagsAtLastHsync); SS_V(io, s->CRTC_FlagsAtLastHtot);
++	SS_V(io, s->HCount); SS_V(io, s->HStart); SS_V(io, s->HEnd); SS_V(io, s->HorizontalSyncWidth); SS_V(io, s->HorizontalSyncCount);
++	SS_V(io, s->RasterCounter); SS_V(io, s->LineCounter); SS_V(io, s->VerticalSyncWidth); SS_V(io, s->VerticalSyncCount);
++	SS_A(io, s->CRTC_HSyncTable); SS_A(io, s->GA_HsyncTable); SS_A(io, s->CRTC_WriteMaskTable); SS_A(io, s->CRTC_ReadMaskTable);
++	SS_V(io, s->InterlaceAndVideoMode); SS_V(io, s->Frame); SS_V(io, s->VertAdjustCount); SS_V(io, s->HDelayReg8);
++	SS_V(io, s->CRTC_RenderType); SS_V(io, s->CRTC_Type); SS_V(io, s->CRTC_Reg); SS_V(io, s->HDispAdd);
++	SS_V(io, s->Reg9Mask); SS_V(io, s->RasterMA); SS_V(io, s->MA); SS_V(io, s->MALine); SS_V(io, s->MAStore);
++	SS_V(io, m->LinesAfterVsync); SS_V(io, m->CharsAfterHsync); SS_V(io, m->MonitorScanLineCount);
++	SS_V(io, m->VSyncRetraceCount); SS_V(io, m->HSyncRetraceCount); SS_V(io, m->MonitorVsyncCount);
++	SS_V(io, m->MonitorFlags); SS_V(io, m->pad); SS_V(io, m->MonitorHorizontalCount);
++	SS_V(io, g->GA_Flags); SS_V(io, g->GA_HSyncWidth); SS_V(io, g->GA_HSyncCount); SS_V(io, g->GA_VSyncWidth);
++	SS_V(io, g->GA_VSyncCounter); SS_V(io, g->CRTC_PreviousVsyncState);
++	SS_V(io, s->DontRender); SS_V(io, s->GraphicsLong); SS_A(io, s->Pixels);
++	SS_A(io, CRTCRegisters); SS_A(io, CRTCRegistersBackup);
++	SS_V(io, UM6845R_StatusRegister); SS_V(io, CRTC_LightPenMA); SS_V(io, ASIC_RasterMA);
++	SS_V(io, ASICCRTC_SoftScroll); SS_V(io, ASICCRTC_VerticalSoftScroll); SS_V(io, ASICCRTC_Line);
++	SS_V(io, ASICCRTC_RasterLine); SS_V(io, ASICCRTC_MALine); SS_V(io, ASIC_RasterLineMatch);
++	SS_V(io, ASICCRTC_BlackDisplay); SS_V(io, ASIC_DoScreenSplit); SS_V(io, ASIC_DoScreenSplitDelayed);
++	SS_V(io, PreviousHsyncFlags); SS_V(io, fp); SS_V(io, fu); SS_V(io, fc);
++	SS_V(io, CRTC_RenderMode); SS_V(io, CPCHardware);
++	if (io->load && !io->err) {
++#ifndef NO_HFLYWHEEL
++		HFlyP = fp; HFlyU = fu; HFlyCells = fc;
++#endif
++		CRTC_SetRenderFunction(CRTC_RenderMode);
++		CRTC_Run.valid = 0;
++		CRTC_RunLeft = 0;
++		CRTC_Pending = 0;
++	}
++}
++#endif
+diff --git a/src/cpc/diskimage/diskimg.c b/src/cpc/diskimage/diskimg.c
+index 80c2ca1..006c12a 100644
+--- a/src/cpc/diskimage/diskimg.c
++++ b/src/cpc/diskimage/diskimg.c
+@@ -232,3 +232,68 @@ BOOL	DiskImage_GetUnitPointer(int DriveID, DISKIMAGE_UNIT **ppUnit)
+ 	*ppUnit = &Drives[DriveID];
+ 	return TRUE;
+ }
++
++#ifndef NO_SAVESTATE
++/* Amiga port (save states, 28 Oct 2026): a drive's whole disk for cpc/savestate.c,
++ * in the core's own form: for each of the 170 track slots its sector IDs (with
++ * the stored length) and the bytes the controller can read (the ID's size).
++ * The same bytes give the CRC-32 that identifies a disk in a state. On load a
++ * new image is built first and only then swapped in. */
++#include "../savestate.h"
++void SS_DiskImage(SS_IO *io, int drive)
++{
++	DISKIMAGE_UNIT *u = &Drives[drive];
++	EXTDSK_INTERNAL *x = io->load ? ExtDskInternal_New() : (EXTDSK_INTERNAL *)u->pDiskImage;
++	int t, s;
++	if (io->load && (!x || !x->pTrackList)) { SS_Fail(io, "Not enough memory for the state's disk"); return; }
++	for (t = 0; t < 85 * 2 && !io->err; t++) {
++		EXTDSK_INTERNAL_TRACK *tr = (x && x->pTrackList) ? x->pTrackList[t] : NULL;
++		long n;
++		if (!SS_Long(io, tr != NULL)) continue;
++		if (io->load) {
++			ExtDskInternal_AddTrack(x, t);
++			tr = x->pTrackList[t];
++			if (!tr) { SS_Fail(io, "Not enough memory for the state's disk"); break; }
++		}
++		SS_V(io, tr->ModifiedFlag);
++		n = SS_Long(io, tr->NoOfSectors);
++		if (n < 0 || n > 64) { SS_Fail(io, "The state is damaged (disk track)"); break; }
++		for (s = 0; s < n && !io->err; s++) {
++			EXTDSKCHRN c;
++			long data, size;
++			if (!io->load) c = tr->SectorIDs[s];
++			SS_Raw(io, &c, sizeof c);
++			data = SS_Long(io, io->load ? 0 : tr->pSectorData[s] != NULL);
++			size = (c.SectorSizeLow & 0x0ff) | ((c.SectorSizeHigh & 0x0ff) << 8);
++			if (io->err) break;
++			if (io->load) {
++				if (data) {
++					int before = tr->NoOfSectors;
++					ExtDskInternal_AddSectorToTrack(x, t, &c, 0, size > 0 ? size : 1);
++					if (tr->NoOfSectors != before + 1) { SS_Fail(io, "The state's disk could not be built"); break; }
++				} else {
++					if (tr->NoOfSectors >= 64) { SS_Fail(io, "The state is damaged (disk track)"); break; }
++					tr->pSectorData[tr->NoOfSectors++] = NULL;
++				}
++				tr->SectorIDs[s] = c;
++			}
++			if (data && size > 0) SS_Pack(io, tr->pSectorData[s], size);
++		}
++	}
++	if (io->load) {
++		DISKIMAGE_UNIT tmp;
++		tmp.pDiskImage = (unsigned char *)x;
++		if (io->err) { ExtDskInternal_Free(&tmp); return; }
++		ExtDskInternal_Free(u);
++		u->pDiskImage = (unsigned char *)x;
++	}
++}
++/* the unit's flags (inserted, dirty) and image type: read, or set when set != 0 */
++int SS_DiskImageFlags(int drive, int *type, int set, int flags, int ntype)
++{
++	DISKIMAGE_UNIT *u = &Drives[drive];
++	if (set) { u->Flags = flags; u->nImageType = ntype; if (!(flags & DISKIMAGE_DISK_INSERTED)) DiskImage_RemoveDisk(drive); }
++	if (type) *type = u->nImageType;
++	return u->Flags;
++}
++#endif
+diff --git a/src/cpc/fdc.c b/src/cpc/fdc.c
+index 03127cd..2c164d5 100644
+--- a/src/cpc/fdc.c
++++ b/src/cpc/fdc.c
+@@ -2563,3 +2563,46 @@ static int	FDC_GetSectorSize(int N)
+ }
+ 
+ 
++
++#ifndef NO_SAVESTATE
++/* Amiga port (save states, 28 Oct 2026): the uPD765 for cpc/savestate.c. The command
++ * handler is stored as its index in FDC_CommandTable, the execution buffer as an
++ * offset into FDC_DataBuffer (-1: none). */
++#include "savestate.h"
++void SS_Fdc(SS_IO *io)
++{
++	long h = -1, b = -1;
++	int i;
++	if (!io->load) {
++		if (fdc.CommandHandler) {
++			for (i = 0; i < (int)(sizeof FDC_CommandTable / sizeof FDC_CommandTable[0]); i++)
++				if (FDC_CommandTable[i].CommandHandler == fdc.CommandHandler) { h = i; break; }
++			if (h < 0) SS_Fail(io, "Save state: unknown disk controller command");
++		}
++		if (fdc.ExecutionBuffer) {
++			if (fdc.ExecutionBuffer >= FDC_DataBuffer && fdc.ExecutionBuffer < FDC_DataBuffer + sizeof FDC_DataBuffer)
++				b = (long)(fdc.ExecutionBuffer - FDC_DataBuffer);
++			else SS_Fail(io, "Save state: unknown disk controller buffer");
++		}
++	}
++	h = SS_Long(io, h); b = SS_Long(io, b);
++	SS_V(io, fdc.Flags); SS_V(io, fdc.ST0); SS_V(io, fdc.ST1); SS_V(io, fdc.ST2); SS_V(io, fdc.ST3);
++	SS_V(io, fdc.chrn.C); SS_V(io, fdc.chrn.H); SS_V(io, fdc.chrn.R); SS_V(io, fdc.chrn.N); SS_V(io, fdc.chrn.ST1); SS_V(io, fdc.chrn.ST2);
++	SS_V(io, fdc.CurrentDrive); SS_V(io, fdc.CurrentSide); SS_V(io, fdc.StepDirection); SS_A(io, fdc.StepCount);
++	SS_V(io, fdc.StepTime); SS_A(io, fdc.StepTimeForDrive); SS_V(io, fdc.NCN); SS_A(io, fdc.PCN);
++	SS_V(io, fdc.LowLevelState); SS_V(io, fdc.HighLevelState); SS_V(io, fdc.PushedHighLevelState);
++	SS_V(io, fdc.CommandState); SS_V(io, fdc.NextCommandState); SS_V(io, fdc.CyclesToDataRequest);
++	SS_V(io, fdc.NopCountOfDataRequestStart); SS_V(io, fdc.ExecutionBufferByteIndex); SS_V(io, fdc.ExecutionNoOfBytes);
++	SS_V(io, fdc.CommandByteIndex); SS_V(io, fdc.CommandBytesRemaining); SS_V(io, fdc.StoredDelay); SS_V(io, fdc.CRC);
++	SS_V(io, fdc.MainStatusRegister); SS_V(io, fdc.DataRegister); SS_V(io, fdc.SectorCounter); SS_A(io, fdc.CommandBytes);
++	SS_Pack(io, FDC_DataBuffer, sizeof FDC_DataBuffer);
++	if (io->load && !io->err) {
++		if (h >= (long)(sizeof FDC_CommandTable / sizeof FDC_CommandTable[0]) || b >= (long)sizeof FDC_DataBuffer)
++			SS_Fail(io, "The state is damaged (disk controller)");
++		else {
++			fdc.CommandHandler = h < 0 ? NULL : FDC_CommandTable[h].CommandHandler;
++			fdc.ExecutionBuffer = b < 0 ? NULL : FDC_DataBuffer + b;
++		}
++	}
++}
++#endif
+diff --git a/src/cpc/fdd.c b/src/cpc/fdd.c
+index f377661..3ba939d 100644
+--- a/src/cpc/fdd.c
++++ b/src/cpc/fdd.c
+@@ -195,3 +195,16 @@ void	FDD_SetMotorState(int Drive, int MotorState)
+ 		drive->Flags &=~FDD_FLAGS_DRIVE_READY;
+ }
+ 
++
++#ifndef NO_SAVESTATE
++/* Amiga port (save states, 28 Oct 2026): the two drives for cpc/savestate.c */
++#include "savestate.h"
++void SS_Fdd(SS_IO *io)
++{
++	int i;
++	for (i = 0; i < 2; i++) {
++		SS_V(io, drive[i].Flags); SS_V(io, drive[i].CurrentTrack);
++		SS_V(io, drive[i].NumberOfTracks); SS_V(io, drive[i].CurrentIDIndex);
++	}
++}
++#endif
+diff --git a/src/cpc/fdi.c b/src/cpc/fdi.c
+index 12ad4c3..f0ec156 100644
+--- a/src/cpc/fdi.c
++++ b/src/cpc/fdi.c
+@@ -197,3 +197,22 @@ void	FDI_SetDensity(int State)
+ 		fdi.Density = 0;
+ 	}
+ }
++
++#ifndef NO_SAVESTATE
++/* Amiga port (save states, 28 Oct 2026): the disc interface for cpc/savestate.c (the
++ * drive pointer as the drive number, -1: none) */
++#include "savestate.h"
++void SS_Fdi(SS_IO *io)
++{
++	long d = -1;
++	if (!io->load && fdi.drive) d = fdi.drive == FDD_GetDrive(0) ? 0 : fdi.drive == FDD_GetDrive(1) ? 1 : -2;
++	if (d == -2) SS_Fail(io, "Save state: unknown drive selected");
++	d = SS_Long(io, d);
++	SS_V(io, fdi.PhysicalDrive); SS_V(io, fdi.PhysicalSide); SS_V(io, fdi.Density);
++	SS_V(io, FDI_DriveSwitch); SS_V(io, FDI_SideSwitch); SS_V(io, FDI_MotorState);
++	if (io->load && !io->err) {
++		if (d < -1 || d > 1) SS_Fail(io, "The state is damaged (disc interface)");
++		else fdi.drive = d < 0 ? NULL : FDD_GetDrive((int)d);
++	}
++}
++#endif
+diff --git a/src/cpc/garray.c b/src/cpc/garray.c
+index a2e513a..241ceec 100644
+--- a/src/cpc/garray.c
++++ b/src/cpc/garray.c
+@@ -704,3 +704,16 @@ void	GateArray_UpdateColours(void)
+ }
+ 
+ 
++
++#ifndef NO_SAVESTATE
++/* Amiga port (save states, 28 Oct 2026): for cpc/savestate.c. The read/write
++ * pointers are set again by GateArray_RethinkMemory after the load. */
++#include "savestate.h"
++void SS_GateArray(SS_IO *io)
++{
++	SS_V(io, GateArray_State.InterruptLineCount); SS_V(io, GateArray_State.InterruptSyncCount);
++	SS_V(io, GateArray_State.PenSelection); SS_V(io, GateArray_State.ColourSelection);
++	SS_V(io, GateArray_State.RomConfiguration); SS_A(io, GateArray_State.PenColour);
++	SS_V(io, GateArray_State.PenIndex);
++}
++#endif
+diff --git a/src/cpc/pal.c b/src/cpc/pal.c
+index a9a0f79..1bd6539 100644
+--- a/src/cpc/pal.c
++++ b/src/cpc/pal.c
+@@ -38,3 +38,13 @@ void	PAL_WriteConfig(int Function)
+ 		GateArray_RethinkMemory();
+ 	}
+ }
++
++#ifndef NO_SAVESTATE
++/* Amiga port (save states, 28 Oct 2026): for cpc/savestate.c */
++#include "savestate.h"
++void SS_Pal(SS_IO *io)
++{
++	SS_V(io, PAL.RamConfig);
++	if (io->load) PAL.pChosenRamConfig = &RamConfigurationTable[(PAL.RamConfig & 0x03f) << 2];
++}
++#endif
+diff --git a/src/cpc/printer.c b/src/cpc/printer.c
+index ad006e2..f422a86 100644
+--- a/src/cpc/printer.c
++++ b/src/cpc/printer.c
+@@ -153,3 +153,13 @@ void	Printer_Finish(void)
+ 
+ */
+ 
++
++#ifndef NO_SAVESTATE
++/* Amiga port (save states, 28 Oct 2026): for cpc/savestate.c */
++#include "savestate.h"
++void SS_Printer(SS_IO *io)
++{
++	SS_V(io, printer.CurrentBit7State); SS_V(io, printer.PreviousBit7State);
++	SS_V(io, printer.CurrentDataByte); SS_V(io, printer.PreviousDataByte);
++}
++#endif
+diff --git a/src/cpc/psg.c b/src/cpc/psg.c
+index 9ec6679..dc7b2d8 100644
+--- a/src/cpc/psg.c
++++ b/src/cpc/psg.c
+@@ -182,3 +182,12 @@ int		PSG_GetRegisterData(int RegisterIndex)
+ 
+ 	return ay.PSG_Registers[RegisterIndex];
+ }
++
++#ifndef NO_SAVESTATE
++/* Amiga port (save states, 28 Oct 2026): for cpc/savestate.c */
++#include "savestate.h"
++void SS_Psg(SS_IO *io)
++{
++	SS_V(io, ay.PSG_SelectedRegister); SS_A(io, ay.PSG_Registers); SS_A(io, ay.io_mask);
++}
++#endif
+diff --git a/src/cpc/psgplay.c b/src/cpc/psgplay.c
+index 94ac84c..af5614e 100644
+--- a/src/cpc/psgplay.c
++++ b/src/cpc/psgplay.c
+@@ -834,3 +834,43 @@ void PSGPlay_Write(int Register, int Data)
+ #endif
+ 	AudioEvent_AddEventToBuffer(AUDIO_EVENT_PSG, Register, Data);
+ }
++
++#ifndef NO_SAVESTATE
++/* Amiga port (save states, 28 Oct 2026): the sound generator for cpc/savestate.c.
++ * Update (the step for the host's sample rate) stays the host's; the envelope
++ * pattern pointer is stored as an offset (-1: the start-up Attack table). */
++#include "savestate.h"
++void SS_PsgPlay(SS_IO *io)
++{
++	long env = -2;
++	int i, rep = 0;
++#ifndef NO_SNDENV_FIX
++	rep = EnvelopeRepeats;
++#endif
++	if (!io->load) {
++		if (pEnvelope == (char *)Attack) env = -1;
++		else if ((unsigned char *)pEnvelope >= EnvelopePatterns && (unsigned char *)pEnvelope < EnvelopePatterns + 1024)   /* NO_SNDENV_FIX: up to 15 x 48 */
++			env = (long)((unsigned char *)pEnvelope - EnvelopePatterns);
++		else SS_Fail(io, "Save state: unknown sound envelope");
++	}
++	env = SS_Long(io, env);
++	for (i = 0; i < 3; i++) {
++		SS_V(io, ChannelPeriods[i].Period); SS_V(io, ChannelPeriods[i].PeriodPosition.FixedPoint.L);
++		SS_V(io, ChannelPeriods[i].WaveFormState); SS_V(io, ChannelPeriods[i].ToneUpdate.FixedPoint.L);
++	}
++	SS_V(io, NoisePeriod.FixedPoint.L); SS_V(io, NoisePeriodPosition.FixedPoint.L); SS_V(io, RNG);
++	SS_V(io, NoiseOutput); SS_V(io, NewNoisePeriod); SS_V(io, NewNoiseUpdate.FixedPoint.L);
++	SS_V(io, NoiseUpdate.FixedPoint.L); SS_V(io, EnvelopePeriod);
++	SS_A(io, PSGPlay_Registers); SS_A(io, PSGPlay_ChannelOutputVolumes);
++	SS_V(io, EnvelopePhase); SS_V(io, EnvelopePeriodPosition.FixedPoint.L); SS_V(io, PositionInEnvelope);
++	SS_V(io, EnvelopeVolume); SS_V(io, CurrentEnvelope); SS_V(io, EnvelopeUpdate.FixedPoint.L); SS_V(io, rep);
++	if (io->load && !io->err) {
++		if (env == -1) pEnvelope = (char *)Attack;
++		else if (env >= 0 && env < 1024) pEnvelope = (char *)&EnvelopePatterns[env];
++		else SS_Fail(io, "The state is damaged (sound envelope)");
++#ifndef NO_SNDENV_FIX
++		EnvelopeRepeats = rep;
++#endif
++	}
++}
++#endif
+diff --git a/src/cpc/render5.c b/src/cpc/render5.c
+index c88a30a..bd4863e 100644
+--- a/src/cpc/render5.c
++++ b/src/cpc/render5.c
+@@ -2243,3 +2243,97 @@ BOOL	Render_IsRendererActive(void)
+ 
+ 
+         
++
++#ifndef NO_SAVESTATE
++/* Amiga port (save states, 28 Oct 2026): the renderer for cpc/savestate.c: the
++ * draw position, mode and scroll, the pens' colours, the paletted renderer's
++ * palette (so even the index numbers come back) and the part of the render
++ * buffer Render_DumpScreen4 shows: the frame end is not the CPC's vertical
++ * sync, so the buffer holds the top of the next picture. If the display was set
++ * up differently (hires/lores, depth) when loading, the buffer and draw position
++ * can't be used as they are: the window is cleared and the position scaled,
++ * and only the next picture is complete. Host-reserved palette entries
++ * (PALETTE_ENTRY_DO_NOT_MATCH) stay as the host has them. */
++#include "savestate.h"
++void SS_Render(SS_IO *io)
++{
++	int geo_mm = 0, geo_ms = 0, geo_ts = 0;
++	long geo[7], cur[7], line = (long)(pScreenLine - pScreenBase), same;
++	int i;
++	cur[0] = BytesPerPixel; cur[1] = PIXEL_STEP; cur[2] = (long)ScreenPitch; cur[3] = Render_CPCXOffset;
++	cur[4] = Render_CPCYOffset; cur[5] = Render_CPCRenderWidth; cur[6] = Render_CPCRenderHeight;
++	if (!pScreenBase) { cur[5] = cur[6] = 0; line = 0; }
++	for (i = 0; i < 7; i++) geo[i] = SS_Long(io, cur[i]);
++	same = !memcmp(geo, cur, sizeof geo) && pScreenBase;
++	line = SS_Long(io, line);
++	SS_V(io, RenderLine); SS_V(io, CurrentMode); SS_V(io, HorizontalPixelScroll); SS_V(io, ModeHorizontalPixelScroll);
++	{ int mm = CurrentModeMask, ms = CurrentModeShift, ts = CurrentTopShift;   /* as set (mode 3 leaves them) */
++	  SS_V(io, mm); SS_V(io, ms); SS_V(io, ts);
++	  if (io->load) { geo_mm = mm; geo_ms = ms; geo_ts = ts; } }
++	for (i = 0; i < 32; i++) {
++		SS_V(io, UnConvertedColourTable[i].RGB.SeperateElements.u.element.Red);
++		SS_V(io, UnConvertedColourTable[i].RGB.SeperateElements.u.element.Green);
++		SS_V(io, UnConvertedColourTable[i].RGB.SeperateElements.u.element.Blue);
++	}
++	{
++		unsigned conv[32];
++		signed int remap[32];
++		PALETTE_ENTRY pal[256];
++		int border = Render_PaletteIndexBorder;
++		memcpy(conv, ConvertedColourTable, sizeof conv); memcpy(remap, PaletteRemap, sizeof remap); memcpy(pal, CPCPalette, sizeof pal);
++		SS_A(io, conv); SS_A(io, remap); SS_V(io, border);
++		for (i = 0; i < 256; i++) { SS_V(io, pal[i].Red); SS_V(io, pal[i].Green); SS_V(io, pal[i].Blue); SS_V(io, pal[i].Flags); }
++		if (io->load && !io->err) {
++			int ok = 1;
++			if (geo[0] == cur[0]) memcpy(ConvertedColourTable, conv, sizeof conv);
++			else for (i = 0; i < 32; i++) pRender_SetColour(&UnConvertedColourTable[i].RGB.SeperateElements, i);
++			for (i = 0; i < 256; i++) {
++				if (CPCPalette[i].Flags & PALETTE_ENTRY_DO_NOT_MATCH) continue;   /* the host's */
++				CPCPalette[i] = pal[i];
++				if (pal[i].Flags & PALETTE_ENTRY_DO_NOT_MATCH) CPCPalette[i].Flags = 0;   /* the saving host's */
++			}
++			for (i = 0; i < 32; i++) {
++				PaletteRemap[i] = remap[i];
++				if (remap[i] >= 256 || (remap[i] >= 0 && (CPCPalette[remap[i]].Flags & (PALETTE_ENTRY_USED | PALETTE_ENTRY_DO_NOT_MATCH)) != PALETTE_ENTRY_USED)) ok = 0;
++			}
++			Render_PaletteIndexBorder = border;
++			if (!ok) {
++				/* another host's reserved entries were in use: pens get entries again */
++				for (i = 0; i < 256; i++) if (!(CPCPalette[i].Flags & PALETTE_ENTRY_DO_NOT_REMOVE)) CPCPalette[i].Flags = 0;
++				Render_ReserveBlack();
++				for (i = 0; i < 32; i++) PaletteRemap[i] = -1;
++				for (i = 0; i < 32; i++) if (BytesPerPixel == 1) Render_Paletted_SetColour(&UnConvertedColourTable[i].RGB.SeperateElements, i);
++			}
++		}
++	}
++	/* the visible part of the render buffer */
++	{
++		long rows = geo[6], bytes = geo[5] * geo[0], y;
++		unsigned char *row = NULL;
++		if (rows < 0 || rows > 1024 || bytes < 0 || bytes > 8192) { SS_Fail(io, "The state is damaged (render window)"); return; }
++		if (!same) row = (unsigned char *)malloc(bytes ? bytes : 1);
++		for (y = 0; y < rows && !io->err; y++) {
++			unsigned char *p = same ? pScreenBase + (geo[4] + y) * ScreenPitch + geo[3] * geo[0] : row;
++			if (!p) { SS_Fail(io, "Not enough memory for the state"); break; }
++			SS_Pack(io, p, bytes);
++		}
++		free(row);
++	}
++	if (io->load && !io->err) {
++		if (!same && pScreenBase) {
++			/* another display set-up: an empty window, the position on the same row and cell */
++			long cellold = (16 >> (geo[1] == 1 ? 0 : 1)) * geo[0], col = geo[2] > 0 ? line % geo[2] : 0;
++			memset(pScreenBase, 0, ScreenPitch * ScreenHeight);
++			line = (long)RenderLine * (long)ScreenPitch + (cellold > 0 ? col / cellold : 0) * Render_CellBytes;
++		}
++		if (RenderLine < 0 || (unsigned)RenderLine >= ScreenHeight || line < 0 || (unsigned long)line >= (unsigned long)ScreenPitch * ScreenHeight)
++			{ SS_Fail(io, "The state is damaged (render position)"); return; }
++		pScreenLine = pScreenBase + line;
++		pRowStart = pScreenBase + RenderLine * ScreenPitch;
++		RenderRowVisible = (unsigned)(RenderLine - Render_VisTop) < (unsigned)Render_VisLines;
++		{ int sc = ModeHorizontalPixelScroll; Render_SetPixelTranslation(CurrentMode); ModeHorizontalPixelScroll = sc;
++		  CurrentModeMask = geo_mm; CurrentModeShift = geo_ms; CurrentTopShift = geo_ts; }
++		Render_RemapStamp++;   /* cached screen bytes are stale */
++	}
++}
++#endif
+diff --git a/src/cpc/savestate.c b/src/cpc/savestate.c
+new file mode 100644
+index 0000000..0cdf38e
+--- /dev/null
++++ b/src/cpc/savestate.c
+@@ -0,0 +1,583 @@
++/* Arnold for Amiga: exact save states (1.4, 28 Oct 2026), see savestate.h and
++ * Docs/agent_notes/savestate.md.
++ *
++ * File: an SNA v3 snapshot (upstream's writer: 256-byte header, 64 or 128 KB
++ * of RAM, the CPC+ chunk on a Plus) followed by the chunk "ARNS":
++ *     "ARNS" <length, 4 bytes little-endian, as every SNA/RIFF chunk>
++ *     "ArnoldSS" <format> <flags> <payload length> <CRC-32 of the payload>
++ *     payload: sections "TAG " <length> <data>, all numbers big-endian
++ * Integers are written as 1, 2 or 8 bytes (C types of 4 and 8 bytes both as 8,
++ * since long is 4 bytes on the Amiga and 8 on the 64-bit PC). Pointers are not
++ * stored: they become offsets or indices, or are worked out again on load.
++ *
++ * Load: the whole file is checked first (structure, CRC, format, machine,
++ * media) and refused without any change if anything is wrong. Then the state
++ * of the running machine is kept in memory (with its media) and the new one
++ * applied; if that fails part way (it should not: the CRC is good), the kept
++ * one is put back, so a load never leaves a half-loaded machine. */
++#include <stdio.h>
++#include <stdlib.h>
++#include <string.h>
++#include "savestate.h"
++#include "cpcglob.h"
++#include "cpc.h"
++#include "snapshot.h"
++#include "diskimage/diskimg.h"
++#include "tzx.h"
++#include "cassette.h"
++
++#ifndef NO_SAVESTATE
++
++unsigned long SaveState_Crc32(unsigned long crc, const unsigned char *p, unsigned long n)
++{
++	static unsigned long tab[256];
++	static int init;
++	if (!init) {
++		unsigned long i, c; int k;
++		for (i = 0; i < 256; i++) {
++			c = i;
++			for (k = 0; k < 8; k++) c = (c & 1) ? 0xEDB88320UL ^ (c >> 1) : c >> 1;
++			tab[i] = c;
++		}
++		init = 1;
++	}
++	crc = ~crc & 0xFFFFFFFFUL;
++	while (n--) crc = tab[(crc ^ *p++) & 0xFF] ^ (crc >> 8);
++	return ~crc & 0xFFFFFFFFUL;
++}
++
++/* ---- the stream ---- */
++void SS_Fail(SS_IO *io, const char *msg)
++{
++	if (io->err) return;
++	io->err = 1;
++	strncpy(io->msg, msg, sizeof io->msg - 1);
++	io->msg[sizeof io->msg - 1] = 0;
++}
++
++static void ss_put(SS_IO *io, const void *p, unsigned long n)
++{
++	if (io->err) return;
++	if (io->pos + n > io->cap) {
++		unsigned long cap = io->cap ? io->cap : 65536;
++		unsigned char *b;
++		while (cap < io->pos + n) cap *= 2;
++		b = (unsigned char *)realloc(io->buf, cap);
++		if (!b) { SS_Fail(io, "Not enough memory for the state"); return; }
++		io->buf = b; io->cap = cap;
++	}
++	memcpy(io->buf + io->pos, p, n);
++	io->pos += n;
++	if (io->pos > io->len) io->len = io->pos;
++}
++
++static unsigned long ss_limit(SS_IO *io) { return io->depth ? io->end[io->depth - 1] : io->len; }
++
++static int ss_get(SS_IO *io, void *p, unsigned long n)
++{
++	if (io->err) return 0;
++	if (n > ss_limit(io) - io->pos) { SS_Fail(io, "The state is damaged (data ends early)"); return 0; }
++	if (p) memcpy(p, io->buf + io->pos, n);
++	io->pos += n;
++	return 1;
++}
++
++void SS_Int(SS_IO *io, void *p, int size, int sign)
++{
++	unsigned char b[8];
++	unsigned long long v = 0;
++	int n = size >= 4 ? 8 : size, i;
++	if (io->err) return;
++	if (size != 1 && size != 2 && size != 4 && size != 8) { SS_Fail(io, "state: field of an unexpected size"); return; }
++	if (!io->load) {
++		if (size == 1) { unsigned char u = *(unsigned char *)p; v = sign ? (unsigned long long)(long long)(signed char)u : u; }
++		else if (size == 2) { unsigned short u; memcpy(&u, p, 2); v = sign ? (unsigned long long)(long long)(short)u : u; }
++		else if (size == 4) { unsigned int u; memcpy(&u, p, 4); v = sign ? (unsigned long long)(long long)(int)u : u; }
++		else memcpy(&v, p, 8);
++		for (i = n - 1; i >= 0; i--) { b[i] = (unsigned char)v; v >>= 8; }
++		ss_put(io, b, n);
++	} else {
++		if (!ss_get(io, b, n)) return;
++		for (i = 0; i < n; i++) v = (v << 8) | b[i];
++		if (size == 1) *(unsigned char *)p = (unsigned char)v;
++		else if (size == 2) { unsigned short u = (unsigned short)v; memcpy(p, &u, 2); }
++		else if (size == 4) { unsigned int u = (unsigned int)v; memcpy(p, &u, 4); }
++		else memcpy(p, &v, 8);
++	}
++}
++
++long SS_Long(SS_IO *io, long v)
++{
++	long long x = v;
++	SS_Int(io, &x, 8, 1);
++	return io->load ? (long)x : v;
++}
++
++static unsigned long ss_ulong(SS_IO *io, unsigned long v)
++{
++	unsigned long long x = v & 0xFFFFFFFFUL;
++	SS_Int(io, &x, 8, 0);
++	return io->load ? (unsigned long)(x & 0xFFFFFFFFUL) : v;
++}
++
++void SS_Raw(SS_IO *io, void *p, unsigned long n)
++{
++	if (io->load) ss_get(io, p, n); else ss_put(io, p, n);
++}
++
++/* PackBits: control c < 128: c + 1 bytes follow; c > 128: the next byte 257 - c times */
++void SS_Pack(SS_IO *io, void *p, unsigned long n)
++{
++	unsigned char *d = (unsigned char *)p;
++	unsigned long len;
++	if (io->err) return;
++	if (!io->load) {
++		unsigned char *o = (unsigned char *)malloc(n + n / 128 + 16);
++		unsigned long i = 0, k = 0;
++		if (!o) { SS_Fail(io, "Not enough memory for the state"); return; }
++		while (i < n) {
++			unsigned long j = i + 1;
++			while (j < n && j - i < 128 && d[j] == d[i]) j++;
++			if (j - i >= 3) { o[k++] = (unsigned char)(257 - (j - i)); o[k++] = d[i]; i = j; continue; }
++			j = i;
++			while (i < n && i - j < 128) {
++				if (i + 2 < n && d[i] == d[i + 1] && d[i] == d[i + 2]) break;
++				i++;
++			}
++			o[k++] = (unsigned char)(i - j - 1);
++			memcpy(o + k, d + j, i - j); k += i - j;
++		}
++		ss_ulong(io, n);
++		ss_ulong(io, k);
++		ss_put(io, o, k);
++		free(o);
++	} else {
++		unsigned long i = 0, end;
++		if (ss_ulong(io, 0) != n) { SS_Fail(io, "The state is damaged (packed block of the wrong size)"); return; }
++		len = ss_ulong(io, 0);
++		if (io->err) return;
++		if (len > ss_limit(io) - io->pos) { SS_Fail(io, "The state is damaged (packed block ends early)"); return; }
++		end = io->pos + len;
++		while (io->pos < end && !io->err) {
++			unsigned int c = io->buf[io->pos++];
++			if (c < 128) {
++				if (c + 1 > n - i || c + 1 > end - io->pos) break;
++				memcpy(d + i, io->buf + io->pos, c + 1); i += c + 1; io->pos += c + 1;
++			} else if (c > 128) {
++				if (257 - c > n - i || io->pos >= end) break;
++				memset(d + i, io->buf[io->pos++], 257 - c); i += 257 - c;
++			}
++		}
++		if (io->pos != end || i != n) SS_Fail(io, "The state is damaged (bad packed block)");
++	}
++}
++
++static void put32be(unsigned char *p, unsigned long v) { p[0] = (unsigned char)(v >> 24); p[1] = (unsigned char)(v >> 16); p[2] = (unsigned char)(v >> 8); p[3] = (unsigned char)v; }
++static unsigned long get32be(const unsigned char *p) { return ((unsigned long)p[0] << 24) | ((unsigned long)p[1] << 16) | ((unsigned long)p[2] << 8) | p[3]; }
++static unsigned long get32le(const unsigned char *p) { return ((unsigned long)p[3] << 24) | ((unsigned long)p[2] << 16) | ((unsigned long)p[1] << 8) | p[0]; }
++static void put32le(unsigned char *p, unsigned long v) { p[3] = (unsigned char)(v >> 24); p[2] = (unsigned char)(v >> 16); p[1] = (unsigned char)(v >> 8); p[0] = (unsigned char)v; }
++
++void SS_Begin(SS_IO *io, const char *tag)
++{
++	unsigned char h[8];
++	if (io->err) return;
++	if (io->depth >= 8) { SS_Fail(io, "state: sections nested too deep"); return; }
++	if (!io->load) {
++		memcpy(h, tag, 4); put32be(h + 4, 0);
++		io->start[io->depth++] = io->pos + 4;
++		ss_put(io, h, 8);
++	} else {
++		unsigned long l;
++		if (!ss_get(io, h, 8)) return;
++		if (memcmp(h, tag, 4)) {
++			char m[80];
++			sprintf(m, "The state is damaged (section '%.4s' where '%.4s' belongs)", (char *)h, tag);
++			SS_Fail(io, m);
++			return;
++		}
++		l = get32be(h + 4);
++		if (l > ss_limit(io) - io->pos) { SS_Fail(io, "The state is damaged (a section ends early)"); return; }
++		io->end[io->depth++] = io->pos + l;
++	}
++}
++
++void SS_End(SS_IO *io)
++{
++	if (io->err) return;
++	if (io->depth <= 0) { SS_Fail(io, "state: section end without a start"); return; }
++	io->depth--;
++	if (!io->load) put32be(io->buf + io->start[io->depth], io->pos - io->start[io->depth] - 4);
++	else if (io->pos != io->end[io->depth]) {
++		char m[80];
++		sprintf(m, "The state is damaged (a section is %ld bytes off)", (long)(io->end[io->depth] - io->pos));
++		SS_Fail(io, m);
++	}
++}
++
++static void ss_str(SS_IO *io, char *s, int size)
++{
++	long n = io->load ? 0 : (long)strlen(s);
++	n = SS_Long(io, n);
++	if (io->err) return;
++	if (!io->load) { ss_put(io, s, n); return; }
++	if (n < 0 || (unsigned long)n > ss_limit(io) - io->pos) { SS_Fail(io, "The state is damaged (bad name)"); return; }
++	memcpy(s, io->buf + io->pos, n < size ? n : size - 1);
++	s[n < size ? n : size - 1] = 0;
++	io->pos += n;
++}
++
++/* the file part of a host path (Amiga "Work:Games/Sonic.cpr" or Unix "/x/y.cpr") */
++static void ss_name(char *out, int size, const char *path)
++{
++	const char *s = path ? path : "", *p;
++	for (p = s; *p; p++) if (*p == '/' || *p == ':' || *p == '\\') s = p + 1;
++	strncpy(out, s, size - 1); out[size - 1] = 0;
++}
++
++/* ---- machine and media ---- */
++#define SS_NAME 64
++typedef struct
++{
++	SS_MACHINE m;
++	char cart[SS_NAME];
++	long disk_present[2], disk_embedded[2], disk_flags[2], disk_type[2];
++	unsigned long disk_crc[2];
++	char disk[2][SS_NAME];
++	long tape_present, tape_embedded;
++	unsigned long tape_crc, tape_size;
++	char tape[SS_NAME];
++} SS_MEDIA;
++
++static void ss_machine(SS_IO *io, SS_MACHINE *m, char *cart)
++{
++	int i;
++	SS_V(io, m->hardware); SS_V(io, m->disc); SS_V(io, m->ramexp); SS_V(io, m->ramconfig);
++	SS_V(io, m->crtc); SS_V(io, m->extraram); SS_V(io, m->cart_crc);
++	for (i = 0; i < 3; i++) SS_V(io, m->rom_crc[i]);
++	ss_str(io, cart, SS_NAME);
++}
++
++static void ss_media(SS_IO *io, SS_MEDIA *md)
++{
++	int d;
++	for (d = 0; d < 2; d++) {
++		SS_V(io, md->disk_present[d]); SS_V(io, md->disk_embedded[d]); SS_V(io, md->disk_flags[d]);
++		SS_V(io, md->disk_type[d]); SS_V(io, md->disk_crc[d]); ss_str(io, md->disk[d], SS_NAME);
++	}
++	SS_V(io, md->tape_present); SS_V(io, md->tape_embedded); SS_V(io, md->tape_crc);
++	SS_V(io, md->tape_size); ss_str(io, md->tape, SS_NAME);
++}
++
++/* CRC-32 of a drive's disk as the state stores it (SS_DiskImage) */
++static int ss_disk_crc(int drive, unsigned long *crc)
++{
++	SS_IO t;
++	memset(&t, 0, sizeof t);
++	SS_DiskImage(&t, drive);
++	*crc = t.err ? 0 : SaveState_Crc32(0, t.buf, t.pos);
++	free(t.buf);
++	return !t.err;
++}
++
++static void ss_gather(SS_MEDIA *md, const SAVESTATE_INFO *info, int embed_all)
++{
++	int d, type;
++	memset(md, 0, sizeof *md);
++	SS_GetMachine(&md->m);
++	if (info) ss_name(md->cart, SS_NAME, info->cart_name);
++	for (d = 0; d < 2; d++) {
++		int f = SS_DiskImageFlags(d, &type, 0, 0, 0);
++		/* stored without "changed": a loaded copy is marked changed (below), and a state
++		 * saved again straight after loading is the same file */
++		md->disk_flags[d] = embed_all ? f : (f & ~DISKIMAGE_DISK_DIRTY); md->disk_type[d] = type;
++		md->disk_present[d] = (f & DISKIMAGE_DISK_INSERTED) != 0;
++		if (md->disk_present[d]) {
++			ss_disk_crc(d, &md->disk_crc[d]);
++			/* John, 28 Oct 2026: every inserted disk travels with the state, so a load is
++			 * never refused for a disk (the game may have written to it since) */
++			md->disk_embedded[d] = 1;
++		}
++		if (info) ss_name(md->disk[d], SS_NAME, info->disk_name[d]);
++	}
++	md->tape_present = SS_TapeCrc(&md->tape_crc, &md->tape_size);
++	md->tape_embedded = md->tape_present && embed_all;
++	if (info) ss_name(md->tape, SS_NAME, info->tape_name);
++}
++
++static const char *ss_model(const SS_MACHINE *m)
++{
++	if (m->hardware == CPC_HW_CPCPLUS) return m->disc ? "CPC 6128 Plus" : "GX4000";
++	if (!m->disc) return "CPC 464";
++	return m->ramexp ? "CPC 6128" : "CPC 664";
++}
++
++/* the checks before a load: 1 = this machine can take it */
++static int ss_compatible(const SS_MEDIA *s, char *msg, int msglen)
++{
++	SS_MEDIA c;
++	char m[300];
++	int d;
++	ss_gather(&c, NULL, 0);
++	m[0] = 0;
++	if (s->m.hardware != c.m.hardware || s->m.disc != c.m.disc || s->m.ramexp != c.m.ramexp)
++		sprintf(m, "This state is for a %s; the machine running is a %s.", ss_model(&s->m), ss_model(&c.m));
++	else if (s->m.ramconfig != c.m.ramconfig || s->m.crtc != c.m.crtc || s->m.extraram != c.m.extraram)
++		sprintf(m, "This state is for a %s set up differently (RAM or CRTC).", ss_model(&s->m));
++	else if (s->m.cart_crc != c.m.cart_crc)
++		sprintf(m, "This state is for another cartridge: '%.60s' (CRC %08lX).", s->cart[0] ? s->cart : "?", s->m.cart_crc);
++	else if (s->m.rom_crc[0] != c.m.rom_crc[0] || s->m.rom_crc[1] != c.m.rom_crc[1] || s->m.rom_crc[2] != c.m.rom_crc[2])
++		sprintf(m, "This state was saved with other system ROMs.");
++	for (d = 0; d < 2 && !m[0]; d++)
++		if (s->disk_present[d] && !s->disk_embedded[d] && (!c.disk_present[d] || s->disk_crc[d] != c.disk_crc[d]))
++			sprintf(m, "This state needs disk '%.60s' in drive %c, as it was when saved%s.", s->disk[d][0] ? s->disk[d] : "?", 'A' + d,
++				c.disk_present[d] ? " (the disk in it now is another one or has changed since)" : "");
++	if (!m[0] && s->tape_present && !s->tape_embedded && (!c.tape_present || s->tape_crc != c.tape_crc))
++		sprintf(m, "This state needs tape '%.60s' in the cassette deck.", s->tape[0] ? s->tape : "?");
++	if (!m[0]) return 1;
++	if (msg && msglen > 0) { strncpy(msg, m, msglen - 1); msg[msglen - 1] = 0; }
++	return 0;
++}
++
++/* ---- the whole state ---- */
++static int ss_restoring;   /* 1 while the kept machine is put back after a failed load */
++static void ss_stream(SS_IO *io, SS_MEDIA *md, const SAVESTATE_INFO *info, const unsigned char **phost, unsigned long *phostlen)
++{
++	int d;
++	SS_Begin(io, "MACH"); ss_machine(io, &md->m, md->cart); SS_End(io);
++	SS_Begin(io, "MEDI"); ss_media(io, md); SS_End(io);
++	if (io->err) return;
++	for (d = 0; d < 2; d++) {
++		if (md->disk_embedded[d]) {
++			SS_Begin(io, d ? "DSK1" : "DSK0");
++			SS_DiskImage(io, d);
++			/* loaded: marked changed, so the host's write-back puts it in its .dsk file
++			 * (not when the running machine is being put back after a failed load) */
++			SS_DiskImageFlags(d, NULL, io->load, (int)md->disk_flags[d] | (io->load && !ss_restoring ? DISKIMAGE_DISK_DIRTY : 0), (int)md->disk_type[d]);
++			SS_End(io);
++		} else if (io->load && !md->disk_present[d] && (SS_DiskImageFlags(d, NULL, 0, 0, 0) & DISKIMAGE_DISK_INSERTED))
++			DiskImage_RemoveDisk(d);   /* the drive was empty */
++		else if (io->load && md->disk_present[d])
++			SS_DiskImageFlags(d, NULL, 1, (int)md->disk_flags[d], (int)md->disk_type[d]);
++	}
++	if (md->tape_embedded) {
++		SS_Begin(io, "TIMG");
++		if (!io->load) {
++			unsigned long crc, size;
++			extern unsigned char *SS_TapeData(void);
++			SS_TapeCrc(&crc, &size);
++			SS_Pack(io, SS_TapeData(), size);
++		} else {
++			unsigned char *t = (unsigned char *)malloc(md->tape_size ? md->tape_size : 1);
++			if (!t) SS_Fail(io, "Not enough memory for the tape");
++			SS_Pack(io, t, md->tape_size);
++			if (!io->err) {
++				TapeImage_Remove();
++				if (TapeImage_Insert(t, md->tape_size) != ARNOLD_STATUS_OK) SS_Fail(io, "The state's tape could not be put back");
++			}
++			free(t);
++		}
++		SS_End(io);
++	} else if (io->load && !md->tape_present) {
++		unsigned long crc, size;
++		if (SS_TapeCrc(&crc, &size)) TapeImage_Remove();   /* the deck was empty */
++	}
++	SS_Begin(io, "Z80 "); SS_Z80(io); SS_End(io);
++	SS_Begin(io, "CPC "); SS_Cpc(io); SS_End(io);
++	SS_Begin(io, "GA  "); SS_GateArray(io); SS_End(io);
++	SS_Begin(io, "PAL "); SS_Pal(io); SS_End(io);
++	SS_Begin(io, "ASIC"); SS_Asic(io); SS_End(io);
++	SS_Begin(io, "CRTC"); SS_Crtc(io); SS_End(io);
++	SS_Begin(io, "PSG "); SS_Psg(io); SS_End(io);
++	SS_Begin(io, "PSGP"); SS_PsgPlay(io); SS_End(io);
++	SS_Begin(io, "AUDI"); SS_Audio(io); SS_End(io);
++	SS_Begin(io, "FDC "); SS_Fdc(io); SS_End(io);
++	SS_Begin(io, "FDD "); SS_Fdd(io); SS_End(io);
++	SS_Begin(io, "FDI "); SS_Fdi(io); SS_End(io);
++	SS_Begin(io, "PRNT"); SS_Printer(io); SS_End(io);
++	SS_Begin(io, "TAPE"); SS_Tape(io); SS_End(io);
++	SS_Begin(io, "TAUD"); SS_TapeAudio(io); SS_End(io);
++	SS_Begin(io, "REND"); SS_Render(io); SS_End(io);
++	SS_Begin(io, "LOOP"); SS_Arnold(io); SS_End(io);
++	SS_Begin(io, "HOST");
++	{
++		long n = SS_Long(io, info && info->host ? (long)info->hostlen : 0);
++		if (!io->load) { if (n) ss_put(io, info->host, n); }
++		else if (!io->err) {
++			if (n < 0 || (unsigned long)n > ss_limit(io) - io->pos) SS_Fail(io, "The state is damaged (host data)");
++			else { if (phost) { *phost = io->buf + io->pos; *phostlen = n; } io->pos += n; }
++		}
++	}
++	SS_End(io);
++	if (io->load && !io->err) {
++		extern void GateArray_RethinkMemory(void);
++		GateArray_RethinkMemory();   /* paging from the restored ROM/RAM/ASIC settings */
++	}
++	if (!io->err && io->load && io->pos != io->len) SS_Fail(io, "The state is damaged (data after the end)");
++}
++
++static void ss_copymsg(char *msg, int msglen, const char *m)
++{
++	if (msg && msglen > 0) { strncpy(msg, m, msglen - 1); msg[msglen - 1] = 0; }
++}
++
++/* the current machine as a payload (save, and the copy kept while loading) */
++static int ss_build(SS_IO *io, const SAVESTATE_INFO *info, int embed_all)
++{
++	SS_MEDIA md;
++	SS_MACHINE m;
++	memset(io, 0, sizeof *io);
++	SS_GetMachine(&m);
++	if (m.hardware != CPC_HW_CPC && m.hardware != CPC_HW_CPCPLUS) { SS_Fail(io, "Save states need a CPC or a CPC Plus (not a KC Compact)"); return 0; }
++	if (SS_TapeSampleInUse()) { SS_Fail(io, "Save states can't hold a sampled (WAV/VOC) tape; use a .cdt"); return 0; }
++	ss_gather(&md, info, embed_all);
++	ss_stream(io, &md, info, NULL, NULL);
++	return !io->err;
++}
++
++int SaveState_Save(unsigned char **pData, unsigned long *pLen, const SAVESTATE_INFO *info, char *msg, int msglen)
++{
++	SS_IO io;
++	SS_MACHINE m;
++	unsigned long snalen, total;
++	unsigned char *b, *p;
++	int memk;
++	*pData = NULL; *pLen = 0;
++	if (!ss_build(&io, info, 0)) { ss_copymsg(msg, msglen, io.msg); free(io.buf); return 0; }
++	SS_GetMachine(&m);
++	memk = m.ramexp ? 128 : 64;
++	snalen = Snapshot_CalculateOutputSize(memk, 3);
++	total = snalen + 8 + 24 + io.pos;
++	b = (unsigned char *)malloc(total);
++	if (!b) { ss_copymsg(msg, msglen, "Not enough memory for the state"); free(io.buf); return 0; }
++	memset(b, 0, snalen);
++	Snapshot_GenerateOutputData(b, memk, 3);
++	p = b + snalen;
++	memcpy(p, "ARNS", 4); put32le(p + 4, 24 + io.pos);
++	memcpy(p + 8, "ArnoldSS", 8);
++	put32be(p + 16, SAVESTATE_FORMAT); put32be(p + 20, 0);
++	put32be(p + 24, io.pos); put32be(p + 28, SaveState_Crc32(0, io.buf, io.pos));
++	memcpy(p + 32, io.buf, io.pos);
++	free(io.buf);
++	*pData = b; *pLen = total;
++	ss_copymsg(msg, msglen, "");
++	return 1;
++}
++
++/* finds the ARNS payload: 1 = found and sound, 2 = a plain SNA (no ARNS), 0 = refused */
++static int ss_find(const unsigned char *d, unsigned long len, const unsigned char **pay, unsigned long *paylen, char *m)
++{
++	unsigned long memsize, pos;
++	int version;
++	if (!d || len < 256 || memcmp(d, "MV - SNA", 8)) { strcpy(m, "Not a CPC snapshot (.sna)"); return 0; }
++	version = d[0x10];
++	if (version < 1 || version > 3) { sprintf(m, "Snapshot version %d is not supported", version); return 0; }
++	memsize = ((unsigned long)d[0x6b] | ((unsigned long)d[0x6c] << 8)) << 10;
++	if (version < 3) return 2;
++	if (len < 256 + memsize) { strcpy(m, "The snapshot is damaged (shorter than its RAM size)"); return 0; }
++	pos = 256 + memsize;
++	while (pos < len) {
++		unsigned long cl;
++		if (len - pos < 8) { strcpy(m, "The snapshot is damaged (a chunk is cut off)"); return 0; }
++		cl = get32le(d + pos + 4);
++		if (cl > len - pos - 8) { strcpy(m, "The snapshot is damaged (a chunk is cut off)"); return 0; }
++		if (!memcmp(d + pos, "ARNS", 4)) {
++			const unsigned char *h = d + pos + 8;
++			unsigned long f, l;
++			if (cl < 24 || memcmp(h, "ArnoldSS", 8)) { strcpy(m, "The save state is damaged (bad ARNS chunk)"); return 0; }
++			f = get32be(h + 8); l = get32be(h + 16);
++			if (f != SAVESTATE_FORMAT) { sprintf(m, "This save state was made by another version of Arnold (state format %lu, this one reads %d)", f, SAVESTATE_FORMAT); return 0; }
++			if (l != cl - 24) { strcpy(m, "The save state is damaged (wrong length)"); return 0; }
++			if (SaveState_Crc32(0, h + 24, l) != get32be(h + 20)) { strcpy(m, "The save state is damaged (CRC error)"); return 0; }
++			*pay = h + 24; *paylen = l;
++			return 1;
++		}
++		pos += 8 + cl;
++	}
++	return 2;
++}
++
++/* the start of the payload: machine and media, without touching anything */
++static int ss_peek(const unsigned char *pay, unsigned long paylen, SS_MEDIA *md, char *m)
++{
++	SS_IO io;
++	memset(&io, 0, sizeof io);
++	memset(md, 0, sizeof *md);
++	io.load = 1; io.buf = (unsigned char *)pay; io.len = paylen;
++	SS_Begin(&io, "MACH"); ss_machine(&io, &md->m, md->cart); SS_End(&io);
++	SS_Begin(&io, "MEDI"); ss_media(&io, md); SS_End(&io);
++	if (io.err) { strcpy(m, io.msg); return 0; }
++	return 1;
++}
++
++/* a plain snapshot: upstream's loader copies everything after the first 64 KB
++ * into the expansion RAM, so a file must not hold more than that */
++static int ss_plain_ok(unsigned long len, char *m)
++{
++	SS_MACHINE mc;
++	SS_GetMachine(&mc);
++	if (len > 256 + 65536 && len - 256 - 65536 > (unsigned long)mc.extraram) { strcpy(m, "The snapshot is too big for this machine's RAM"); return 0; }
++	return 1;
++}
++
++int SaveState_Check(const unsigned char *data, unsigned long len, char *msg, int msglen)
++{
++	const unsigned char *pay; unsigned long paylen;
++	char m[300];
++	SS_MEDIA md;
++	int r = ss_find(data, len, &pay, &paylen, m);
++	if (r == 2) { if (!ss_plain_ok(len, m)) { ss_copymsg(msg, msglen, m); return 0; } ss_copymsg(msg, msglen, ""); return 2; }
++	if (r == 0 || !ss_peek(pay, paylen, &md, m) || !ss_compatible(&md, m, sizeof m)) { ss_copymsg(msg, msglen, m); return 0; }
++	ss_copymsg(msg, msglen, "");
++	return 1;
++}
++
++int SaveState_Load(const unsigned char *data, unsigned long len, char *msg, int msglen, SAVESTATE_LOADED *out)
++{
++	const unsigned char *pay; unsigned long paylen;
++	char m[300];
++	SS_MEDIA md, keep, before;
++	SS_IO backup, io;
++	const unsigned char *host = NULL; unsigned long hostlen = 0;
++	int r = ss_find(data, len, &pay, &paylen, m), d;
++	if (out) memset(out, 0, sizeof *out);
++	if (r == 2) {
++		if (!ss_plain_ok(len, m)) { ss_copymsg(msg, msglen, m); return SAVESTATE_REFUSED; }
++		if (Snapshot_Insert(data, len) != ARNOLD_STATUS_OK) { ss_copymsg(msg, msglen, "The snapshot could not be loaded"); return SAVESTATE_REFUSED; }
++		ss_copymsg(msg, msglen, "Plain snapshot: loaded the upstream way (not exact)");
++		return SAVESTATE_PLAIN;
++	}
++	if (r == 0 || !ss_peek(pay, paylen, &md, m) || !ss_compatible(&md, m, sizeof m)) { ss_copymsg(msg, msglen, m); return SAVESTATE_REFUSED; }
++	/* keep the running machine (with all its media) to put back if this fails */
++	if (!ss_build(&backup, NULL, 1)) { ss_copymsg(msg, msglen, backup.msg); free(backup.buf); return SAVESTATE_REFUSED; }
++	ss_gather(&before, NULL, 0);
++	memset(&io, 0, sizeof io);
++	io.load = 1; io.buf = (unsigned char *)pay; io.len = paylen;
++	ss_stream(&io, &md, NULL, &host, &hostlen);
++	if (io.err) {
++		SS_IO back;
++		memset(&back, 0, sizeof back);
++		back.load = 1; back.buf = backup.buf; back.len = backup.pos;
++		ss_restoring = 1;
++		if (ss_peek(backup.buf, backup.pos, &keep, m)) ss_stream(&back, &keep, NULL, NULL, NULL);
++		else back.err = 1;
++		ss_restoring = 0;
++		sprintf(m, "%.150s%s", io.msg, back.err ? " (and the machine could not be put back: Power ON)" : " (nothing changed)");
++		free(backup.buf);
++		ss_copymsg(msg, msglen, m);
++		return SAVESTATE_REFUSED;
++	}
++	free(backup.buf);
++	if (out) {
++		out->host = host; out->hostlen = hostlen;
++		for (d = 0; d < 2; d++) {
++			out->disk[d] = md.disk_embedded[d] ? 2 : (!md.disk_present[d] && before.disk_present[d]) ? 1 : 0;
++			strcpy(out->disk_name[d], md.disk[d]);
++		}
++		out->tape = !md.tape_present && before.tape_present;
++		strcpy(out->cart_name, md.cart); strcpy(out->tape_name, md.tape);
++	}
++	ss_copymsg(msg, msglen, "");
++	return SAVESTATE_EXACT;
++}
++
++#endif /* NO_SAVESTATE */
+diff --git a/src/cpc/savestate.h b/src/cpc/savestate.h
+new file mode 100644
+index 0000000..d7b208f
+--- /dev/null
++++ b/src/cpc/savestate.h
+@@ -0,0 +1,112 @@
++/* Arnold for Amiga: exact save states (1.4, 28 Oct 2026). See savestate.c and
++ * Docs/agent_notes/savestate.md.
++ *
++ * A state is a standard SNA v3 file (header, RAM, the CPC+ chunk), so other
++ * emulators can read the RAM and registers, plus a private "ARNS" chunk with
++ * the exact Arnold state (big-endian, versioned, CRC-32 checked). Loading an
++ * ARNS state resumes the emulation exactly; a plain .SNA loads as before
++ * (upstream's Snapshot_Insert, lossy).
++ *
++ * Save and load only between two calls of CPCEmulation_Run(): a host's
++ * Host_ProcessSystemEvents returns TRUE to stop the loop at the end of a
++ * frame, the host saves or loads, then calls CPCEmulation_Run() again. That
++ * is the same point as the menu (Help), and running on from it is exactly the
++ * same as never having stopped. */
++#ifndef SAVESTATE_H
++#define SAVESTATE_H
++
++#define SAVESTATE_FORMAT 1        /* bump on any change to what the sections hold */
++
++/* SaveState_Load results */
++#define SAVESTATE_REFUSED 0       /* nothing changed; msg says why */
++#define SAVESTATE_EXACT   1       /* an Arnold state, resumed exactly */
++#define SAVESTATE_PLAIN   2       /* a plain .SNA (no ARNS chunk), loaded the lossy upstream way */
++
++typedef struct
++{
++	/* names shown in messages when the media don't match (file part only is kept) */
++	const char *cart_name, *disk_name[2], *tape_name;
++	/* the host's own data, stored as is (byte order is the host's job) */
++	const unsigned char *host;
++	unsigned long hostlen;
++	/* no longer used: every inserted disk is stored in the state (John, 28 Oct 2026) */
++	int embed_disk[2];
++} SAVESTATE_INFO;
++
++/* what a load did besides the machine (SaveState_Load fills it) */
++typedef struct
++{
++	const unsigned char *host;    /* the host's data in the state (points into the loaded file) */
++	unsigned long hostlen;
++	int disk[2];                  /* 0 as it was, 1 emptied (the state's drive was empty), 2 the state's own copy put in */
++	int tape;                     /* 0 as it was, 1 taken out (the state's deck was empty) */
++	char cart_name[64], disk_name[2][64], tape_name[64];   /* as recorded when saved (file part) */
++} SAVESTATE_LOADED;
++
++/* save: *pData is malloc'd (*pLen bytes); 1 = done, 0 = failed (msg) */
++int SaveState_Save(unsigned char **pData, unsigned long *pLen, const SAVESTATE_INFO *info, char *msg, int msglen);
++/* load: data stays the caller's (out->host points into it); out may be NULL */
++int SaveState_Load(const unsigned char *data, unsigned long len, char *msg, int msglen, SAVESTATE_LOADED *out);
++/* checks only (no change): 1 = an Arnold state that this machine can load, 2 = a
++ * plain .SNA that would load the lossy way, 0 = refused (msg) */
++int SaveState_Check(const unsigned char *data, unsigned long len, char *msg, int msglen);
++unsigned long SaveState_Crc32(unsigned long crc, const unsigned char *p, unsigned long n);   /* start with 0 */
++
++/* ---- the stream, for each module's state function (SS_xxx at the end of its file) ---- */
++typedef struct SS_IO
++{
++	int load;                     /* 1 reading into the machine, 0 writing it out */
++	unsigned char *buf;           /* save: grows (malloc); load: the data read */
++	unsigned long pos, len, cap;
++	unsigned long end[8];         /* load: end of each open section */
++	unsigned long start[8];       /* save: where each open section's length goes */
++	int depth;
++	int err;                      /* set: stop, msg says why */
++	char msg[200];
++} SS_IO;
++
++void SS_Int(SS_IO *io, void *p, int size, int sign);       /* an integer of 1, 2, 4 or 8 bytes */
++void SS_Raw(SS_IO *io, void *p, unsigned long n);          /* bytes as they are */
++void SS_Pack(SS_IO *io, void *p, unsigned long n);         /* bytes, run-length packed */
++long SS_Long(SS_IO *io, long v);                           /* save v / return the value read */
++void SS_Begin(SS_IO *io, const char *tag);                 /* a section: 4-character tag + length */
++void SS_End(SS_IO *io);
++void SS_Fail(SS_IO *io, const char *msg);
++#define SS_SIGNED(x) ((__typeof__(x))-1 < (__typeof__(x))0)
++#define SS_V(io, x) SS_Int((io), &(x), (int)sizeof(x), SS_SIGNED(x))
++#define SS_A(io, a) do { int ss_i_; for (ss_i_ = 0; ss_i_ < (int)(sizeof(a) / sizeof((a)[0])); ss_i_++) SS_V((io), (a)[ss_i_]); } while (0)
++#define SS_RAWA(io, a) SS_Raw((io), (a), (unsigned long)sizeof(a))
++
++/* the modules (each at the end of its own file; savestate.c calls them in order) */
++void SS_Z80(SS_IO *io);
++void SS_Cpc(SS_IO *io);
++void SS_GateArray(SS_IO *io);
++void SS_Pal(SS_IO *io);
++void SS_Crtc(SS_IO *io);
++void SS_Asic(SS_IO *io);
++void SS_Psg(SS_IO *io);
++void SS_PsgPlay(SS_IO *io);
++void SS_Audio(SS_IO *io);
++void SS_TapeAudio(SS_IO *io);
++void SS_Fdc(SS_IO *io);
++void SS_Fdd(SS_IO *io);
++void SS_Fdi(SS_IO *io);
++void SS_Printer(SS_IO *io);
++void SS_Tape(SS_IO *io);
++void SS_Render(SS_IO *io);
++void SS_Arnold(SS_IO *io);
++void SS_DiskImage(SS_IO *io, int drive);                   /* a drive's whole disk (the MEDI section) */
++int  SS_DiskImageFlags(int drive, int *type, int set, int flags, int ntype);   /* the unit's flags/type */
++
++/* machine description for the checks before a load (cpc.c, asic.c, tzxold.c) */
++typedef struct
++{
++	long hardware, disc, ramexp, ramconfig, crtc, extraram;
++	unsigned long cart_crc;       /* Plus: the cartridge's ROM (asic.c), 0 none */
++	unsigned long rom_crc[3];     /* plain CPC: OS, BASIC, AMSDOS (0 none) */
++} SS_MACHINE;
++void SS_GetMachine(SS_MACHINE *m);
++unsigned long ASIC_CartCrc(void);
++int  SS_TapeCrc(unsigned long *crc, unsigned long *size);  /* 1 = a tape is in */
++int  SS_TapeSampleInUse(void);
++#endif
+diff --git a/src/cpc/tzxold.c b/src/cpc/tzxold.c
+index c1bee6e..7527981 100644
+--- a/src/cpc/tzxold.c
++++ b/src/cpc/tzxold.c
+@@ -2211,5 +2211,80 @@ void	TZX_WriteData(unsigned char DataBit)
+ 
+ 
+ 
++}
++#endif
++
++#ifndef NO_SAVESTATE
++/* Amiga port (save states, 28 Oct 2026): the tape position for cpc/savestate.c.
++ * The tape itself is identified by SS_TapeCrc (the core's own copy of it);
++ * pointers into it are stored as offsets (-1: none), the current block handler
++ * and the pulse being played as small numbers. */
++#include "savestate.h"
++int SS_TapeCrc(unsigned long *crc, unsigned long *size)
++{
++	*crc = 0; *size = 0;
++	if (!pTapeImage) return 0;
++	*crc = SaveState_Crc32(0, pTapeImage, TapeImageSize);
++	*size = TapeImageSize;
++	return 1;
++}
++unsigned char *SS_TapeData(void) { return pTapeImage; }
++
++static long ss_tape_off(SS_IO *io, unsigned char **pp)
++{
++	long o = -1;
++	if (!io->load && *pp && pTapeImage && *pp >= pTapeImage && *pp <= pTapeImage + TapeImageSize) o = (long)(*pp - pTapeImage);
++	o = SS_Long(io, o);
++	if (io->load && !io->err) {
++		if (o < 0 || !pTapeImage) *pp = NULL;
++		else if ((unsigned long)o > TapeImageSize) SS_Fail(io, "The state is damaged (tape position)");
++		else *pp = pTapeImage + o;
++	}
++	return o;
++}
++
++static void ss_pulse(SS_IO *io, TZX_BASIC_PULSE *p)
++{
++	SS_V(io, p->NumCycles); SS_V(io, p->PulseWidthInTStates); SS_V(io, p->TStatesRemaining); SS_V(io, p->TStatesSoFar);
++}
++
++void SS_Tape(SS_IO *io)
++{
++	static BOOL (*const hl[])(void) = { NULL, TapeImage_HandleBlock0x010, TapeImage_HandleBlock0x011, TapeImage_HandleBlock0x012,
++		TapeImage_HandleBlock0x013, TapeImage_HandleBlock0x014, TapeImage_HandleBlock0x015, TapeImage_HandleBlock0x020 };
++	long h = -1, l = -1;
++	int i;
++	if (!io->load) {
++		for (i = 0; i < (int)(sizeof hl / sizeof hl[0]); i++) if (TapeImage_HighLevelStateData == hl[i]) h = i;
++		if (TapeImage_LowLevelStateData == NULL) l = 0;
++		else if (TapeImage_LowLevelStateData == (void *)&BasicTone) l = 1;
++		else if (TapeImage_LowLevelStateData == (void *)&BasicToneData) l = 2;
++		else if (TapeImage_LowLevelStateData == (void *)&BasicPause) l = 3;
++		if (h < 0 || l < 0) SS_Fail(io, "Save state: the tape player is in an unknown state");
++	}
++	h = SS_Long(io, h); l = SS_Long(io, l);
++	ss_tape_off(io, &pCurrentBlockPtr);
++	ss_tape_off(io, &TapeImage_HighLevelStateBlockPtr);
++	ss_tape_off(io, &TapeImage_pData);
++	SS_V(io, CurrentBlockIndex); SS_V(io, NextBlockIndex);
++	SS_V(io, Cycle); SS_V(io, BaseCycle); SS_V(io, TapeImage_Global_TStatesRemaining);
++	SS_V(io, TapeImage_LowLevelActive); SS_V(io, TapeImage_HighLevelActive);
++	SS_V(io, TapeImage_LowLevelState); SS_V(io, TapeImage_HighLevelState);
++	SS_V(io, TapeImage_LengthOfOneBitPulseInTStates); SS_V(io, TapeImage_LengthOfZeroBitPulseInTStates);
++	SS_V(io, TapeImage_CurrentExpandedDataByte); SS_V(io, TapeImage_NumBitsUsedInLastByte);
++	SS_V(io, TapeImage_BitsRemainingInCurrentByte); SS_V(io, TapeImage_BytesRemaining);
++	ss_pulse(io, &BasicToneData); ss_pulse(io, &BasicTone);
++	SS_V(io, BasicPause.PauseInTStates); SS_V(io, BasicPause.pad0); SS_V(io, BasicPause.TStatesRemaining); SS_V(io, BasicPause.TStatesSoFar);
++	SS_V(io, TZX_LoopStack_NumEntries); SS_V(io, TZX_CurrentLoop.BlockIndex); SS_V(io, TZX_CurrentLoop.LoopCount);
++	for (i = 0; i < TZX_MAX_NESTED_LOOPS; i++) { SS_V(io, TZX_LoopStack[i].BlockIndex); SS_V(io, TZX_LoopStack[i].LoopCount); }
++	SS_V(io, TZX_BlockStack_NumEntries); SS_A(io, TZX_BlockStack);
++	if (io->load && !io->err) {
++		static void *const ll[] = { NULL, &BasicTone, &BasicToneData, &BasicPause };
++		if (h < 0 || h >= (long)(sizeof hl / sizeof hl[0]) || l < 0 || l > 3 ||
++			TZX_LoopStack_NumEntries > TZX_MAX_NESTED_LOOPS || TZX_BlockStack_NumEntries > TZX_MAX_PUSHED_BLOCKS ||
++			(pTapeImage && (CurrentBlockIndex > (unsigned long)tzx_num_blocks || NextBlockIndex > (unsigned long)tzx_num_blocks + 1)))
++			SS_Fail(io, "The state is damaged (tape)");
++		else { TapeImage_HighLevelStateData = hl[h]; TapeImage_LowLevelStateData = ll[l]; }
++	}
+ }
+ #endif
+diff --git a/src/cpc/z80/z80.c b/src/cpc/z80/z80.c
+index 53ee65b..5f05f70 100644
+--- a/src/cpc/z80/z80.c
++++ b/src/cpc/z80/z80.c
+@@ -13815,3 +13815,19 @@ int Z80_WriteNop(Z80_WORD Addr)
+ 	return 0;
+ }
+ #endif
++
++#ifndef NO_SAVESTATE
++/* Amiga port (save states, 28 Oct 2026): the Z80 for cpc/savestate.c. The PC as its
++ * two words: the union's long is laid out differently on big-endian machines. */
++#include "../savestate.h"
++void SS_Z80(SS_IO *io)
++{
++	SS_V(io, R.PC.W.l); SS_V(io, R.PC.W.h);
++	SS_V(io, R.AF.W); SS_V(io, R.HL.W); SS_V(io, R.SP.W); SS_V(io, R.DE.W); SS_V(io, R.BC.W);
++	SS_V(io, R.MemPtr.W); SS_V(io, R.IX.W); SS_V(io, R.IY.W);
++	SS_V(io, R.altHL.W); SS_V(io, R.altDE.W); SS_V(io, R.altBC.W); SS_V(io, R.altAF.W);
++	SS_V(io, R.I); SS_V(io, R.R); SS_V(io, R.IFF1); SS_V(io, R.IFF2); SS_V(io, R.RBit7);
++	SS_V(io, R.IM); SS_V(io, R.TempByte); SS_V(io, R.InterruptVectorBase); SS_V(io, R.Flags);
++	SS_V(io, Z80_HaltHit);
++}
++#endif
+diff --git a/src/objects.mak b/src/objects.mak
+index 62db506..d372382 100644
+--- a/src/objects.mak
++++ b/src/objects.mak
+@@ -11,7 +11,8 @@ CPC_O=	cpc/arnold.o cpc/asic.o cpc/audioevent.o cpc/bmp.o cpc/cpc.o \
+ 	cpc/diskimage/iextdsk.o cpc/diskimage/dskwrite.o \
+ 	cpc/z80/z80.o cpc/debugger/memdump.o \
+ 	cpc/riff.o cpc/snapv3.o \
+-	cpc/messages.o
++	cpc/messages.o \
++	cpc/savestate.o
+ 
+ UNIX_O= unix/main.o unix/host.o unix/global.o unix/display.o \
+ 	unix/display_sdl.o unix/gtkui.o unix/sdlsound.o unix/configfile.o \
+-- 
+2.50.0.windows.2
+

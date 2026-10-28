@@ -2213,3 +2213,78 @@ void	TZX_WriteData(unsigned char DataBit)
 
 }
 #endif
+
+#ifndef NO_SAVESTATE
+/* Amiga port (save states, 28 Oct 2026): the tape position for cpc/savestate.c.
+ * The tape itself is identified by SS_TapeCrc (the core's own copy of it);
+ * pointers into it are stored as offsets (-1: none), the current block handler
+ * and the pulse being played as small numbers. */
+#include "savestate.h"
+int SS_TapeCrc(unsigned long *crc, unsigned long *size)
+{
+	*crc = 0; *size = 0;
+	if (!pTapeImage) return 0;
+	*crc = SaveState_Crc32(0, pTapeImage, TapeImageSize);
+	*size = TapeImageSize;
+	return 1;
+}
+unsigned char *SS_TapeData(void) { return pTapeImage; }
+
+static long ss_tape_off(SS_IO *io, unsigned char **pp)
+{
+	long o = -1;
+	if (!io->load && *pp && pTapeImage && *pp >= pTapeImage && *pp <= pTapeImage + TapeImageSize) o = (long)(*pp - pTapeImage);
+	o = SS_Long(io, o);
+	if (io->load && !io->err) {
+		if (o < 0 || !pTapeImage) *pp = NULL;
+		else if ((unsigned long)o > TapeImageSize) SS_Fail(io, "The state is damaged (tape position)");
+		else *pp = pTapeImage + o;
+	}
+	return o;
+}
+
+static void ss_pulse(SS_IO *io, TZX_BASIC_PULSE *p)
+{
+	SS_V(io, p->NumCycles); SS_V(io, p->PulseWidthInTStates); SS_V(io, p->TStatesRemaining); SS_V(io, p->TStatesSoFar);
+}
+
+void SS_Tape(SS_IO *io)
+{
+	static BOOL (*const hl[])(void) = { NULL, TapeImage_HandleBlock0x010, TapeImage_HandleBlock0x011, TapeImage_HandleBlock0x012,
+		TapeImage_HandleBlock0x013, TapeImage_HandleBlock0x014, TapeImage_HandleBlock0x015, TapeImage_HandleBlock0x020 };
+	long h = -1, l = -1;
+	int i;
+	if (!io->load) {
+		for (i = 0; i < (int)(sizeof hl / sizeof hl[0]); i++) if (TapeImage_HighLevelStateData == hl[i]) h = i;
+		if (TapeImage_LowLevelStateData == NULL) l = 0;
+		else if (TapeImage_LowLevelStateData == (void *)&BasicTone) l = 1;
+		else if (TapeImage_LowLevelStateData == (void *)&BasicToneData) l = 2;
+		else if (TapeImage_LowLevelStateData == (void *)&BasicPause) l = 3;
+		if (h < 0 || l < 0) SS_Fail(io, "Save state: the tape player is in an unknown state");
+	}
+	h = SS_Long(io, h); l = SS_Long(io, l);
+	ss_tape_off(io, &pCurrentBlockPtr);
+	ss_tape_off(io, &TapeImage_HighLevelStateBlockPtr);
+	ss_tape_off(io, &TapeImage_pData);
+	SS_V(io, CurrentBlockIndex); SS_V(io, NextBlockIndex);
+	SS_V(io, Cycle); SS_V(io, BaseCycle); SS_V(io, TapeImage_Global_TStatesRemaining);
+	SS_V(io, TapeImage_LowLevelActive); SS_V(io, TapeImage_HighLevelActive);
+	SS_V(io, TapeImage_LowLevelState); SS_V(io, TapeImage_HighLevelState);
+	SS_V(io, TapeImage_LengthOfOneBitPulseInTStates); SS_V(io, TapeImage_LengthOfZeroBitPulseInTStates);
+	SS_V(io, TapeImage_CurrentExpandedDataByte); SS_V(io, TapeImage_NumBitsUsedInLastByte);
+	SS_V(io, TapeImage_BitsRemainingInCurrentByte); SS_V(io, TapeImage_BytesRemaining);
+	ss_pulse(io, &BasicToneData); ss_pulse(io, &BasicTone);
+	SS_V(io, BasicPause.PauseInTStates); SS_V(io, BasicPause.pad0); SS_V(io, BasicPause.TStatesRemaining); SS_V(io, BasicPause.TStatesSoFar);
+	SS_V(io, TZX_LoopStack_NumEntries); SS_V(io, TZX_CurrentLoop.BlockIndex); SS_V(io, TZX_CurrentLoop.LoopCount);
+	for (i = 0; i < TZX_MAX_NESTED_LOOPS; i++) { SS_V(io, TZX_LoopStack[i].BlockIndex); SS_V(io, TZX_LoopStack[i].LoopCount); }
+	SS_V(io, TZX_BlockStack_NumEntries); SS_A(io, TZX_BlockStack);
+	if (io->load && !io->err) {
+		static void *const ll[] = { NULL, &BasicTone, &BasicToneData, &BasicPause };
+		if (h < 0 || h >= (long)(sizeof hl / sizeof hl[0]) || l < 0 || l > 3 ||
+			TZX_LoopStack_NumEntries > TZX_MAX_NESTED_LOOPS || TZX_BlockStack_NumEntries > TZX_MAX_PUSHED_BLOCKS ||
+			(pTapeImage && (CurrentBlockIndex > (unsigned long)tzx_num_blocks || NextBlockIndex > (unsigned long)tzx_num_blocks + 1)))
+			SS_Fail(io, "The state is damaged (tape)");
+		else { TapeImage_HighLevelStateData = hl[h]; TapeImage_LowLevelStateData = ll[l]; }
+	}
+}
+#endif

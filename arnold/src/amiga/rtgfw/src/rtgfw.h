@@ -71,6 +71,14 @@ enum {
 #define RTG_F_NOHWSCALE 0x0008 /* never rely on the board's scaler; use a big mode + integer scale */
 #define RTG_F_LOG      0x0010  /* call log() with one line per stage */
 #define RTG_F_BLIT     0x0020  /* v0: no screen buffers; write an off-screen bitmap, blit the changed lines */
+#define RTG_F_FLIPTASK 0x0040  /* screen buffers flipped by a helper task: rtg_present never waits for the
+                                  refresh (27 Oct 2026; for drivers whose ChangeScreenBuffer blocks, e.g.
+                                  the Emu68 VideoCore). Needs 3 buffers; a frame with no free buffer is
+                                  dropped (its lines stay owed). Falls back to 1 buffer if the task fails. */
+#define RTG_F_VBLANK   0x0080  /* one buffer written at the display's vertical blank by a helper task, so the
+                                  copy stays ahead of the scan: no tearing, no flips (27 Oct 2026). The blank
+                                  is found by panning a two-page screen (rtgfw.c). No palette runs or line
+                                  flags. Falls back to plain direct writes if no steady refresh is found. */
 
 /* ---- scanlines (RtgOpen.scan; added 26 Oct 2026). The picture is drawn at
  * an even integer scale (2x, 4x); in each source line's group of output rows
@@ -216,5 +224,35 @@ int32_t     rtg_x_read_pixel(int x, int y, uint32_t *rgb); /* read back the last
 int32_t     rtg_x_read_frame(uint8_t *pens, uint32_t *clut); /* CLUT8: the whole shown screen (out_w x out_h pens) + its CLUT */
 int32_t     rtg_x_read_rgb(uint32_t *rgb);              /* any format: the whole shown screen as 0x00RRGGBB (out_w x out_h) */
 uint32_t    rtg_x_scan_info(uint32_t *high_pen_lines);  /* scanline mode in use (RTG_SCAN_*); lines drawn with pens 128+ in CLUT8 hard mode */
+
+/* RTG_F_FLIPTASK figures (27 Oct 2026) */
+typedef struct RtgFlipStats {
+	uint32_t queued;       /* frames handed to the flip task */
+	uint32_t flips;        /* ChangeScreenBuffer calls that worked */
+	uint32_t fails;        /* ChangeScreenBuffer refused (the frame was not shown) */
+	uint32_t steals;       /* frames queued but not yet taken, replaced by a newer frame */
+	uint32_t drops;        /* presents with no free buffer (nothing written, lines owed) */
+	uint32_t us_flip, us_flip_max;   /* time inside ChangeScreenBuffer, in the flip task: sum, worst */
+	uint32_t us_clut;      /* time of the CLUT loads after the flips, sum */
+	int32_t  pri;          /* flip task priority in use (0 = no task) */
+} RtgFlipStats;
+void        rtg_x_flip_stats(RtgFlipStats *s);
+void        rtg_x_set_flip_pri(int rel);                /* flip task priority relative to the caller's, set before rtg_open (default +1) */
+
+/* RTG_F_VBLANK figures (27 Oct 2026) */
+typedef struct RtgVblStats {
+	uint32_t presents;     /* rtg_present calls */
+	uint32_t writes;       /* frames written at a blank */
+	uint32_t at_once;      /* written at once (the blank had just begun) */
+	uint32_t merged;       /* presents that came before the previous one was written (newest lines win) */
+	uint32_t us_write, us_write_max;   /* time of a write (palette, lock, lines, CLUT): sum, worst */
+	uint32_t late_max_us;  /* worst start after the planned time (blank + 50 us) */
+	uint32_t anchors, anchor_fails, anchor_err_max;   /* phase checks, ones off by 1.5 ms or more, worst error in us */
+	uint32_t period_us;    /* the refresh period in use */
+	int32_t  pri;          /* task priority (0 = not running) */
+} RtgVblStats;
+void        rtg_x_vbl_stats(RtgVblStats *s);
+int32_t     rtg_x_vbl_sync(uint32_t timeout_us);      /* wait until the last presented frame is written (grabs) */
+void        rtg_x_set_vbl_pri(int rel);                 /* vblank task priority relative to the caller's (default +1) */
 
 #endif

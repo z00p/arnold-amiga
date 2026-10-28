@@ -90,7 +90,13 @@ void CPC_IOCatchUp(void)
  * the CRTC may already be past the end of the instruction. Carry that lead into
  * the next instruction instead of a negative count (which drew nothing but moved
  * the monitor counters back while HCount stayed ahead). NO_IOAHEAD_DEBT: as before. */
+#ifndef NO_IOTAKE_TEST
+/* speed14: the lead is rarely there (only after I/O or a late write), so test it
+ * first instead of storing 0 after every instruction. NO_IOTAKE_TEST: as before. */
+#define IO_AHEAD_TAKE(n) do { if (__builtin_expect(CPC_IOAhead != 0, 0)) { (n) -= CPC_IOAhead; CPC_IOAhead = 0; if (__builtin_expect((n) < 0, 0)) { CPC_IOAhead = -(n); (n) = 0; } } } while (0)
+#else
 #define IO_AHEAD_TAKE(n) do { (n) -= CPC_IOAhead; CPC_IOAhead = 0; if (__builtin_expect((n) < 0, 0)) { CPC_IOAhead = -(n); (n) = 0; } } while (0)
+#endif
 #else
 #define IO_AHEAD_TAKE(n) do { (n) -= CPC_IOAhead; CPC_IOAhead = 0; } while (0)
 #endif
@@ -621,3 +627,26 @@ BOOL	CPCEmulation_CheckEndianness(void)
 #endif
 	return EndianCorrect;
 }
+
+#ifndef NO_SAVESTATE
+/* Amiga port (save states, 28 Oct 2026): the main loop's state between two
+ * CPCEmulation_Run calls (cpc/savestate.c). FrameSkip and the skip hook are the
+ * host's; the I/O lead is stored as 0 in a NO_IOTIME_FIX build (same stream). */
+#include "savestate.h"
+void SS_Arnold(SS_IO *io)
+{
+	int pre = 0, ahead = 0;
+#ifndef NO_IOTIME_FIX
+	pre = CPC_IOPre; ahead = CPC_IOAhead;
+#endif
+	SS_V(io, NopCountToDate); SS_V(io, RenderOnEarlyAt); SS_V(io, DontRender);
+	SS_V(io, FrameMeantToRender); SS_V(io, RenderNextFrame); SS_V(io, CurrentFrameIndex);
+	SS_V(io, pre); SS_V(io, ahead);
+	if (io->load) {
+#ifndef NO_IOTIME_FIX
+		CPC_IOPre = pre; CPC_IOAhead = ahead;
+#endif
+		if (CurrentFrameIndex > FrameSkip) CurrentFrameIndex = 0;   /* another frame skip set now */
+	}
+}
+#endif

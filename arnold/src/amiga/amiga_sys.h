@@ -72,10 +72,13 @@ struct SysMenu {
 	char tapepos[32];        /* "Tape 3/5  " for the status line (host fills it) */
 	int rtg;                 /* RTG screen (experimental, 26 Oct 2026): the emulation (and the menu) on an RTG board's 8-bit screen */
 	int scan;                /* Scanlines on the RTG screen (SYS_SCAN_*, 1.2) */
+	int state_slot;          /* save states (1.4): the slot (1-4) of SYS_MENU_SAVESTATE / SYS_MENU_LOADSTATE */
+	char state_label[4][40]; /* the host's labels for the slots ("Slot 1 (empty)"), shown in the Project menu */
 };
+#define SYS_STATE_SLOTS 4
 enum { SYS_MODEL_464 = 0, SYS_MODEL_664, SYS_MODEL_6128, SYS_MODEL_PLUS, SYS_MODEL_GX4000, SYS_MODELS };
 enum { SYS_MENU_QUIT = 0, SYS_MENU_POWER, SYS_MENU_CONTINUE, SYS_MENU_RESET, SYS_MENU_SAVE,
-       SYS_MENU_SAVEGAME, SYS_MENU_FORGETGAME, SYS_MENU_SHOT };
+       SYS_MENU_SAVEGAME, SYS_MENU_FORGETGAME, SYS_MENU_SHOT, SYS_MENU_SAVESTATE, SYS_MENU_LOADSTATE };
 int  Sys_KeyMapEdit(void *screen, void *parent, void *visinfo, char *remap);   /* amiga_keymap.c: the editor window; 1 = OK (remap updated) */
 const char *Host_AmigaKeyName(int rawkey, char *buf);   /* host_amiga.c: remap= name of an Amiga rawkey, NULL if none */
 int  Sys_Menu(struct SysMenu *m);
@@ -104,6 +107,7 @@ extern int Sys_RtgWanted;            /* the next Sys_OpenDisplay tries the RTG s
 extern int Sys_RtgActive;            /* the display open now is the RTG screen */
 extern int Sys_RtgBlit;              /* RTGBLIT (diagnostic): off-screen bitmap + blit of the changed lines */
 extern int Sys_RtgBuffers;           /* RTGBUF=1|3 (diagnostic): 3 = ChangeScreenBuffer triple buffering */
+extern int Sys_RtgVblank;            /* RTGVBL (27 Oct 2026): rtgfw RTG_F_VBLANK, the frame written at the display's blank: no tearing */
 extern int Sys_RtgDead;              /* RTG failed once: AGA until the user ticks RTG screen again (no retry on every Help) */
 extern int Sys_RtgGrabOn;            /* RTGGRAB (tests): every SNAP also reads the RTG screen back (rtg-NNNNN.png) */
 extern char Sys_RtgStatus[80];       /* why RTG fell back to AGA, for the next menu's status line ("" none) */
@@ -152,6 +156,8 @@ extern int Sys_SafeFlip;            /* SAFEFLIP: wait for the previous flip's me
 extern int Sys_Osd, Sys_OsdSkip;     /* OSD: test-mode label in the picture's corner; skip value it shows */
 #define SYS_OSD_PEN 255             /* palette entry the host keeps for the label (yellow) */
 void Sys_MakeDir(const char *path);   /* create a drawer if it is missing (SNAPDIR) */
+void Sys_OsdMessage(const char *text);   /* save states: a short message over the picture for about 2 s (not in the chunky buffer) */
+void Sys_AudioDcState(long *v, int set);   /* save states: the sound DC filter (5 values: x l/r, y l/r, on) */
 void Sys_LogStart(int argc);        /* the first line: machine, memory, start mode */
 void Sys_Log(const char *fmt, ...);
 void Sys_LogClose(void);

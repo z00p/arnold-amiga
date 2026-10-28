@@ -704,3 +704,16 @@ void	GateArray_UpdateColours(void)
 }
 
 
+
+#ifndef NO_SAVESTATE
+/* Amiga port (save states, 28 Oct 2026): for cpc/savestate.c. The read/write
+ * pointers are set again by GateArray_RethinkMemory after the load. */
+#include "savestate.h"
+void SS_GateArray(SS_IO *io)
+{
+	SS_V(io, GateArray_State.InterruptLineCount); SS_V(io, GateArray_State.InterruptSyncCount);
+	SS_V(io, GateArray_State.PenSelection); SS_V(io, GateArray_State.ColourSelection);
+	SS_V(io, GateArray_State.RomConfiguration); SS_A(io, GateArray_State.PenColour);
+	SS_V(io, GateArray_State.PenIndex);
+}
+#endif

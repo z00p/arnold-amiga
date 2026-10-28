@@ -13815,3 +13815,19 @@ int Z80_WriteNop(Z80_WORD Addr)
 	return 0;
 }
 #endif
+
+#ifndef NO_SAVESTATE
+/* Amiga port (save states, 28 Oct 2026): the Z80 for cpc/savestate.c. The PC as its
+ * two words: the union's long is laid out differently on big-endian machines. */
+#include "../savestate.h"
+void SS_Z80(SS_IO *io)
+{
+	SS_V(io, R.PC.W.l); SS_V(io, R.PC.W.h);
+	SS_V(io, R.AF.W); SS_V(io, R.HL.W); SS_V(io, R.SP.W); SS_V(io, R.DE.W); SS_V(io, R.BC.W);
+	SS_V(io, R.MemPtr.W); SS_V(io, R.IX.W); SS_V(io, R.IY.W);
+	SS_V(io, R.altHL.W); SS_V(io, R.altDE.W); SS_V(io, R.altBC.W); SS_V(io, R.altAF.W);
+	SS_V(io, R.I); SS_V(io, R.R); SS_V(io, R.IFF1); SS_V(io, R.IFF2); SS_V(io, R.RBit7);
+	SS_V(io, R.IM); SS_V(io, R.TempByte); SS_V(io, R.InterruptVectorBase); SS_V(io, R.Flags);
+	SS_V(io, Z80_HaltHit);
+}
+#endif

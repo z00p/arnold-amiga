@@ -195,3 +195,16 @@ void	FDD_SetMotorState(int Drive, int MotorState)
 		drive->Flags &=~FDD_FLAGS_DRIVE_READY;
 }
 
+
+#ifndef NO_SAVESTATE
+/* Amiga port (save states, 28 Oct 2026): the two drives for cpc/savestate.c */
+#include "savestate.h"
+void SS_Fdd(SS_IO *io)
+{
+	int i;
+	for (i = 0; i < 2; i++) {
+		SS_V(io, drive[i].Flags); SS_V(io, drive[i].CurrentTrack);
+		SS_V(io, drive[i].NumberOfTracks); SS_V(io, drive[i].CurrentIDIndex);
+	}
+}
+#endif

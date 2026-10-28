@@ -7,7 +7,8 @@ set -e
 R=$(cd "$(dirname "$0")/../.." && pwd)
 PKG="$R/tools/package"
 WT=$R/build/upstream-wt
-cd $R
+B13=d9af72a   # main after 1.3: the core of 1.3 (the steps below that once took HEAD take this, so 1.4 changes stay out of them)
+cd ${SERIES_TREE:-$R}   # HEAD of this tree is what the series is made from (a release worktree: SERIES_TREE=<its path>)
 TRAILER="Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>"
 
 pre()  { git archive "$1" "${@:2}" | tar -x -C $WT; }
@@ -108,7 +109,7 @@ commit "Diagnostics for hardware tracing (off by default)" \
 frame (used with the headless host's TRACE_AT); PAL_COUNT: palette entries in
 use. Both compile to nothing unless defined."
 
-post HEAD arnold/src/cpc/diskimage/iextdsk.c arnold/src/cpc/fdc.c
+post $B13 arnold/src/cpc/diskimage/iextdsk.c arnold/src/cpc/fdc.c
 commit "Disk images: fix the DSK and EDSK loaders" "EDSK: the loader stepped and copied each sector by the larger of its stored
 length and its ID's size (N), so a short sector, such as the common N=6
 protection holding 6144 bytes, read past the image buffer (AddressSanitizer)
@@ -343,7 +344,7 @@ write was lost, or the disk file deleted. Two new host hooks, Host_SameFile
 let DskWrite_SaveFile refuse before anything is removed or renamed; the
 changes stay in the drive and the host is told why."
 
-post HEAD arnold/src/cpc/cassette.c arnold/src/cpc/cassette.h
+post $B13 arnold/src/cpc/cassette.c arnold/src/cpc/cassette.h
 commit "Tape: the loading sound, for a host to mix in" "The tape signal as sound, as CPCEC does it. While a host sets TapeAudio_On,
 Cassette_Read notes each change of the level it hands the Z80 with its NOP
 time, and TapeAudio_Mix adds the frame's level to the host's finished 16-bit
@@ -354,7 +355,7 @@ Off (the default), nothing is recorded or mixed and the machine runs exactly
 as before; sound never changes the emulation."
 
 # 1.2 (26 Oct 2026): the hires changed-line fix
-post HEAD arnold/src/cpc/render5.c
+post $B13 arnold/src/cpc/render5.c
 commit "render: the changed-line hook names the surface row in scanline mode" "With ScanLines set (RENDERING_ACCURACY_HIGH, a host's hires picture) CPC line i
 is copied to surface row Render_ScreenYOffset + 2i, with the rows between left
 black, but Render_LineChangedHook was called with Render_ScreenYOffset + i, so
@@ -362,6 +363,34 @@ a host converting only the changed rows redrew the wrong ones and kept stale
 lines on screen (BASIC MODE 2 scrolling: 33000 of 36000 changed rows missed).
 The hook now gets the row the line was written to. Without ScanLines (the
 normal picture) nothing changes, and the pixels drawn are the same either way."
+
+# 1.4 (28 Oct 2026): speed14, then save states
+post 466ce0a arnold/src/cpc/arnold.c arnold/src/cpc/asic.c arnold/src/cpc/crtc.c
+commit "Speed-ups: no sprite line mask on undrawn lines; I/O lead tested first" "Two exact speed-ups. (1) Only drawing reads the Plus sprites active on a line,
+so while a frame is not drawn (frame skip) the mask is no longer worked out at
+each line's end; it is marked stale and CRTC_SetRenderState works it out when
+drawing comes back on (mid-line, in the lead-in lines a drawn frame redraws).
+NO_SKIPSPR restores the per-line rebuild. (2) The I/O lead carried between
+instructions (CPC_IOAhead) is rarely there, so it is tested before it is taken
+instead of stored after every instruction. NO_IOTAKE_TEST. Pixel-exact
+(headless checksums, frame skip on and off, whole-run frame checksums)."
+
+post HEAD arnold/src/cpc arnold/src/objects.mak
+commit "Save states: save and load the whole machine exactly" "cpc/savestate.c: SaveState_Save / SaveState_Load / SaveState_Check for a host,
+between two CPCEmulation_Run calls. The file is a standard SNA v3 (upstream's
+writer: RAM and registers for other emulators) with an extra ARNS chunk: a
+versioned, CRC-checked block of sections, one per core file (Z80, CPC, Gate
+Array, PAL, ASIC, CRTC, AY, sound events, FDC, drives, disc interface, printer,
+tape, renderer, main loop) plus the host's own bytes, all big-endian and of
+fixed width, so a state saved on a little-endian PC loads on a 68k Amiga and
+back. Every inserted disk is stored whole. Each core file gets an SS_ function
+that saves or restores its state (pointers as offsets or indices); caches and
+tables are worked out again. A load is checked first (structure, CRC, format,
+machine, cartridge, tape) and applied whole: if anything fails part way, the
+running machine, kept in memory, is put back. A plain .sna still loads through
+Snapshot_Insert, after a bounds check of its chunks. Resumed runs give the same
+frames and sound as uninterrupted ones (headless tests: carts, disks, tapes,
+frame skip). NO_SAVESTATE builds the core without it."
 
 post HEAD arnold/src/cpc
 commit "Core: remaining changes" "Small changes made after the fixes above."

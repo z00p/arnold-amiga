@@ -1,7 +1,7 @@
-From 2cbec7a568691bd8fb304df8b4756432c52a904d Mon Sep 17 00:00:00 2001
+From 381dab03ad8335790ae5dd105dffd4a2c3877746 Mon Sep 17 00:00:00 2001
 From: John Stringer <jcec_1@yahoo.co.uk>
-Date: Tue, 27 Oct 2026 07:56:53 +0000
-Subject: [PATCH 22/39] CRTC: defer quiet cycles and draw them in one run
+Date: Wed, 28 Oct 2026 15:19:55 +0000
+Subject: [PATCH 22/41] CRTC: defer quiet cycles and draw them in one run
 
 The CRTC was stepped after every Z80 instruction, for 1-6 cycles, and setting
 up those tiny runs cost more than drawing them. Cycles that don't reach the

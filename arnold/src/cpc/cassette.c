@@ -162,3 +162,23 @@ void	TapeAudio_Mix(unsigned short *s16, int samples)
 	}
 	ta_level = level; ta_prev = now; ta_n = 0;
 }
+
+#ifndef NO_SAVESTATE
+/* Amiga port (save states, 28 Oct 2026): the cassette type and the tape sound's
+ * state for cpc/savestate.c (TapeAudio_On is the host's switch). */
+#include "savestate.h"
+int SS_TapeSampleInUse(void) { return CPC_CassetteType == CASSETTE_TYPE_SAMPLE; }
+void SS_TapeAudio(SS_IO *io)
+{
+	long n = ta_n;
+	SS_V(io, CPC_CassetteType); SS_V(io, TapeAudio_Changes); SS_V(io, ta_last); SS_V(io, ta_level);
+	SS_V(io, ta_lp); SS_V(io, ta_was); SS_V(io, ta_prev);
+	n = SS_Long(io, n);
+	if (n < 0 || n > TAPEAUDIO_MAXEV) { SS_Fail(io, "The state is damaged (tape sound)"); return; }
+	if (io->load) ta_n = (int)n;
+	{
+		int i;
+		for (i = 0; i < n; i++) { SS_V(io, ta_t[i]); SS_V(io, ta_b[i]); }
+	}
+}
+#endif

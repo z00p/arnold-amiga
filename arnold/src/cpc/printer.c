@@ -153,3 +153,13 @@ void	Printer_Finish(void)
 
 */
 
+
+#ifndef NO_SAVESTATE
+/* Amiga port (save states, 28 Oct 2026): for cpc/savestate.c */
+#include "savestate.h"
+void SS_Printer(SS_IO *io)
+{
+	SS_V(io, printer.CurrentBit7State); SS_V(io, printer.PreviousBit7State);
+	SS_V(io, printer.CurrentDataByte); SS_V(io, printer.PreviousDataByte);
+}
+#endif

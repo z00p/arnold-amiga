@@ -1146,3 +1146,65 @@ void	AudioEvent_ConvertToOutputFormat_8BitStereo(char *pSrcBuffer, char *pDestBu
 	}
 }
 
+
+#ifndef NO_SAVESTATE
+/* Amiga port (save states, 28 Oct 2026): for cpc/savestate.c. The sample rate set-up
+ * (the float and fixed-point steps, the buffers) is the host's; what is kept is
+ * the event buffer (empty after each frame while sound is on; it fills up and
+ * stays full while sound is off), the fraction carried between frames and the
+ * Digiblaster's position (its block is only used by 8-bit output). Each event is
+ * stored as its NOP time, type and the two values (PSG register and data). */
+#include "savestate.h"
+void SS_Audio(SS_IO *io)
+{
+	long n = NoOfEventsInBuffer, dig = 0, max = pEventBuffer ? (long)(EventBufferLength / sizeof(AUDIO_EVENT)) : 0;
+	unsigned char *ev = NULL;
+	int i;
+	if (!io->load && Digiblaster_Buffer) dig = (long)(pDigiblaster_Data - Digiblaster_Buffer);
+	SS_V(io, NopCount.FixedPoint.L); SS_V(io, EventBufferNopCount); SS_V(io, AudioEvent_PreviousFraction);
+	SS_V(io, Digiblaster_PreviousData); SS_V(io, Digiblaster_CPCNopCountOfLastWrite); SS_V(io, Digiblaster_PreviousFraction);
+	SS_V(io, Digiblaster_Volume); SS_V(io, Tape_Volume); SS_V(io, Vol); SS_V(io, DAC_AudioActive);
+	SS_V(io, SamplesToGenerate);   /* NO_SNDLUT_FIX: still 0 for the first block after start-up */
+	dig = SS_Long(io, dig);
+	if (dig > 0 && !io->err) {
+		if (!Digiblaster_Buffer || dig > AudioBufSize) SS_Fail(io, "The state's Digiblaster data does not fit");
+		else SS_Raw(io, Digiblaster_Buffer, dig);
+	}
+	n = SS_Long(io, n);
+	if (io->err) return;
+	if (n < 0 || n > max) { SS_Fail(io, "The state's sound events do not fit"); return; }
+	if (n) {
+		ev = (unsigned char *)malloc(n * 11);
+		if (!ev) { SS_Fail(io, "Not enough memory for the sound events"); return; }
+		if (!io->load)
+			for (i = 0; i < n; i++) {
+				AUDIO_EVENT *e = (AUDIO_EVENT *)pEventBuffer + i;
+				unsigned long long t = e->NopCount;
+				unsigned char *p = ev + i * 11;
+				int k;
+				if (e->Type > 255 || e->AudioEvent.PSG_Event.PSG_Register > 255 || e->AudioEvent.PSG_Event.PSG_RegisterData > 255) SS_Fail(io, "Save state: a sound event out of range");
+				for (k = 7; k >= 0; k--) { p[k] = (unsigned char)t; t >>= 8; }
+				p[8] = (unsigned char)e->Type; p[9] = (unsigned char)e->AudioEvent.PSG_Event.PSG_Register;
+				p[10] = (unsigned char)e->AudioEvent.PSG_Event.PSG_RegisterData;
+			}
+		SS_Pack(io, ev, (unsigned long)n * 11);
+		if (io->load && !io->err)
+			for (i = 0; i < n; i++) {
+				AUDIO_EVENT *e = (AUDIO_EVENT *)pEventBuffer + i;
+				unsigned long long t = 0;
+				unsigned char *p = ev + i * 11;
+				int k;
+				for (k = 0; k < 8; k++) t = (t << 8) | p[k];
+				memset(e, 0, sizeof *e);
+				e->NopCount = (unsigned long)t; e->Type = p[8];
+				e->AudioEvent.PSG_Event.PSG_Register = p[9]; e->AudioEvent.PSG_Event.PSG_RegisterData = p[10];
+			}
+		free(ev);
+	}
+	if (io->load && !io->err) {
+		NoOfEventsInBuffer = (int)n;
+		pEventBufferPtr = pEventBuffer + n * sizeof(AUDIO_EVENT);
+		if (Digiblaster_Buffer) pDigiblaster_Data = Digiblaster_Buffer + (dig > 0 ? dig : 0);
+	}
+}
+#endif

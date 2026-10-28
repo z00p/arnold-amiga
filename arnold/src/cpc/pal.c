@@ -38,3 +38,13 @@ void	PAL_WriteConfig(int Function)
 		GateArray_RethinkMemory();
 	}
 }
+
+#ifndef NO_SAVESTATE
+/* Amiga port (save states, 28 Oct 2026): for cpc/savestate.c */
+#include "savestate.h"
+void SS_Pal(SS_IO *io)
+{
+	SS_V(io, PAL.RamConfig);
+	if (io->load) PAL.pChosenRamConfig = &RamConfigurationTable[(PAL.RamConfig & 0x03f) << 2];
+}
+#endif

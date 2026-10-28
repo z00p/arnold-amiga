@@ -182,3 +182,12 @@ int		PSG_GetRegisterData(int RegisterIndex)
 
 	return ay.PSG_Registers[RegisterIndex];
 }
+
+#ifndef NO_SAVESTATE
+/* Amiga port (save states, 28 Oct 2026): for cpc/savestate.c */
+#include "savestate.h"
+void SS_Psg(SS_IO *io)
+{
+	SS_V(io, ay.PSG_SelectedRegister); SS_A(io, ay.PSG_Registers); SS_A(io, ay.io_mask);
+}
+#endif

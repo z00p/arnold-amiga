@@ -1,0 +1,10 @@
+; Arnold prefs
+sound=1
+hires=0
+skip=3
+refresh=1
+joykeys=0
+cart=PROGDIR:roms/system.cpr
+diska=
+diskb=
+rtg=1

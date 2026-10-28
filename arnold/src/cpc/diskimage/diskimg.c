@@ -232,3 +232,68 @@ BOOL	DiskImage_GetUnitPointer(int DriveID, DISKIMAGE_UNIT **ppUnit)
 	*ppUnit = &Drives[DriveID];
 	return TRUE;
 }
+
+#ifndef NO_SAVESTATE
+/* Amiga port (save states, 28 Oct 2026): a drive's whole disk for cpc/savestate.c,
+ * in the core's own form: for each of the 170 track slots its sector IDs (with
+ * the stored length) and the bytes the controller can read (the ID's size).
+ * The same bytes give the CRC-32 that identifies a disk in a state. On load a
+ * new image is built first and only then swapped in. */
+#include "../savestate.h"
+void SS_DiskImage(SS_IO *io, int drive)
+{
+	DISKIMAGE_UNIT *u = &Drives[drive];
+	EXTDSK_INTERNAL *x = io->load ? ExtDskInternal_New() : (EXTDSK_INTERNAL *)u->pDiskImage;
+	int t, s;
+	if (io->load && (!x || !x->pTrackList)) { SS_Fail(io, "Not enough memory for the state's disk"); return; }
+	for (t = 0; t < 85 * 2 && !io->err; t++) {
+		EXTDSK_INTERNAL_TRACK *tr = (x && x->pTrackList) ? x->pTrackList[t] : NULL;
+		long n;
+		if (!SS_Long(io, tr != NULL)) continue;
+		if (io->load) {
+			ExtDskInternal_AddTrack(x, t);
+			tr = x->pTrackList[t];
+			if (!tr) { SS_Fail(io, "Not enough memory for the state's disk"); break; }
+		}
+		SS_V(io, tr->ModifiedFlag);
+		n = SS_Long(io, tr->NoOfSectors);
+		if (n < 0 || n > 64) { SS_Fail(io, "The state is damaged (disk track)"); break; }
+		for (s = 0; s < n && !io->err; s++) {
+			EXTDSKCHRN c;
+			long data, size;
+			if (!io->load) c = tr->SectorIDs[s];
+			SS_Raw(io, &c, sizeof c);
+			data = SS_Long(io, io->load ? 0 : tr->pSectorData[s] != NULL);
+			size = (c.SectorSizeLow & 0x0ff) | ((c.SectorSizeHigh & 0x0ff) << 8);
+			if (io->err) break;
+			if (io->load) {
+				if (data) {
+					int before = tr->NoOfSectors;
+					ExtDskInternal_AddSectorToTrack(x, t, &c, 0, size > 0 ? size : 1);
+					if (tr->NoOfSectors != before + 1) { SS_Fail(io, "The state's disk could not be built"); break; }
+				} else {
+					if (tr->NoOfSectors >= 64) { SS_Fail(io, "The state is damaged (disk track)"); break; }
+					tr->pSectorData[tr->NoOfSectors++] = NULL;
+				}
+				tr->SectorIDs[s] = c;
+			}
+			if (data && size > 0) SS_Pack(io, tr->pSectorData[s], size);
+		}
+	}
+	if (io->load) {
+		DISKIMAGE_UNIT tmp;
+		tmp.pDiskImage = (unsigned char *)x;
+		if (io->err) { ExtDskInternal_Free(&tmp); return; }
+		ExtDskInternal_Free(u);
+		u->pDiskImage = (unsigned char *)x;
+	}
+}
+/* the unit's flags (inserted, dirty) and image type: read, or set when set != 0 */
+int SS_DiskImageFlags(int drive, int *type, int set, int flags, int ntype)
+{
+	DISKIMAGE_UNIT *u = &Drives[drive];
+	if (set) { u->Flags = flags; u->nImageType = ntype; if (!(flags & DISKIMAGE_DISK_INSERTED)) DiskImage_RemoveDisk(drive); }
+	if (type) *type = u->nImageType;
+	return u->Flags;
+}
+#endif
