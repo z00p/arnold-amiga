@@ -1,7 +1,7 @@
-From ecbb5e0c034478af5341cf13582cb1a290b1ffb9 Mon Sep 17 00:00:00 2001
+From 148d3b15a1446909418478295937ed60bc7ec2fd Mon Sep 17 00:00:00 2001
 From: John Stringer <jcec_1@yahoo.co.uk>
-Date: Wed, 28 Oct 2026 15:19:47 +0000
-Subject: [PATCH 03/41] Speed-ups A-D for slow hosts (pixel-exact)
+Date: Thu, 29 Oct 2026 20:01:01 +0000
+Subject: [PATCH 03/42] Speed-ups A-D for slow hosts (pixel-exact)
 
 A: skip cells outside the visible area.  B: cache the pixel longs a cell
 draws.  C: per-column sprite mask so columns with no sprite skip the sprite

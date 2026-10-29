@@ -1,7 +1,7 @@
-From ab674a665291494992505e11cb4fdc3a56446150 Mon Sep 17 00:00:00 2001
+From bf883a3e40f53420ca3d0c04e96d14740c71e3df Mon Sep 17 00:00:00 2001
 From: John Stringer <jcec_1@yahoo.co.uk>
-Date: Wed, 28 Oct 2026 15:19:48 +0000
-Subject: [PATCH 05/41] Speed-up F: HALT fast-forward
+Date: Thu, 29 Oct 2026 20:01:02 +0000
+Subject: [PATCH 05/42] Speed-up F: HALT fast-forward
 
 While the Z80 is halted, its cycles are batched up to the next CRTC event that
 can raise an interrupt instead of being stepped one NOP at a time.

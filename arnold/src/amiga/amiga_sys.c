@@ -27,7 +27,7 @@
 #include <stdarg.h>
 
 unsigned long __stack = 256 * 1024;   /* libnix: enlarge the stack at start */
-static const char ver[] __attribute__((used)) = "$VER: Arnold 1.4 (28.10.2026) Amiga port, GPL-2.0";
+static const char ver[] __attribute__((used)) = "$VER: Arnold 1.5 (29.10.2026) Amiga port, GPL-2.0";
 
 /* ---- diagnostic log ---- */
 static FILE *logf;
@@ -1049,7 +1049,7 @@ static void collect_disp(void)
 #define OSD_W 320
 #define OSD_H 16
 static char osd_text[40];
-static unsigned long osd_start;
+static unsigned long osd_start; static int osd_hold;   /* 1.5: Sys_OsdHold (fast-forward ">>") shows until released */
 static int osd_w, osd_h;
 static unsigned char osd_mask[OSD_H][OSD_W];
 static unsigned char *osd_copy;
@@ -1063,6 +1063,18 @@ void Sys_OsdMessage(const char *text)
 	memcpy(osd_text, text, n); osd_text[n] = 0;
 	memset(osd_mask, 0, sizeof osd_mask);
 	osd_w = osd_h = 0;
+	if (!strcmp(osd_text, ">>")) {
+		/* fast-forward: a tape deck's fast-forward symbol, two solid triangles
+		 * (29 Oct 2026, John), easier to spot than the two characters */
+		osd_h = 15; osd_w = 2 * 13 + 2;
+		for (y = 0; y < osd_h; y++) {
+			int len = 1 + 12 * (7 - (y < 7 ? 7 - y : y - 7)) / 7;   /* 1..13..1 pixels wide, point at row 7 */
+			for (x = 0; x < len; x++) osd_mask[y][x] = osd_mask[y][15 + x] = 1;
+		}
+		osd_start = Sys_Micros();
+		Sys_Log("osd: %s", osd_text);
+		return;
+	}
 	bm = AllocBitMap(OSD_W, OSD_H, 1, BMF_CLEAR, NULL);
 	if (!bm) { osd_text[0] = 0; return; }
 	InitRastPort(&rp);
@@ -1089,7 +1101,7 @@ static const unsigned char *osd_compose(const unsigned char *chunky, int pitch)
 	x0 = (Sys_RtgActive ? (int)rtg_o.vis_x : XOFF) + 8;
 	y0 = (Sys_RtgActive ? (int)rtg_o.vis_y : YOFF) + 6;
 	for (y = y0 - 2; y < y0 + osd_h + 2; y++) Sys_MarkLineDirty(y);
-	if (Sys_Micros() - osd_start >= 2000000UL) { osd_text[0] = 0; return chunky; }   /* ended: the rows from the clean frame */
+	if (!osd_hold && Sys_Micros() - osd_start >= 2000000UL) { osd_text[0] = 0; return chunky; }   /* ended: the rows from the clean frame */
 	if (osd_copy_len < need) {
 		if (osd_copy) FreeVec(osd_copy);
 		osd_copy = AllocVec(need, MEMF_ANY);
@@ -1111,7 +1123,7 @@ static const unsigned char *osd_compose(const unsigned char *chunky, int pitch)
 void Sys_CloseDisplay(void)
 {
 	int i;
-	osd_text[0] = 0;   /* a save state message ends with the display */
+	osd_text[0] = 0; osd_hold = 0;   /* a save state message ends with the display */
 	if (osd_copy) { FreeVec(osd_copy); osd_copy = NULL; osd_copy_len = 0; }
 	hb_dump(); bpu_reset(); if (Sys_RtgActive) { rtg_close_display(); return; }
 	while (safe_out > 0) { WaitPort(safeport); collect_safe(); }
@@ -1295,7 +1307,7 @@ void Sys_ShowFrame(const unsigned char *chunky, int pitch)
 #ifndef NO_SHADOW
 		for (y = 0; y < 12 && y < SH; y++) line_lvl[next][wr + y] = 0;   /* the label is not in the shadow */
 #else
-		for (y = 0; y < 12 && y < SH; y++) line_lvl[next][y] = 8;   /* the label's pen is 255 */
+		for (y = 0; y < 12 && y < SH; y++) line_lvl[next][y] = 8;   /* the label's pen (SYS_OSD_PEN) is above 63: all planes */
 #endif
 	}
 	t1 = Sys_Micros(); Sys_Perf.c2p_us += t1 - t0; t0 = t1;
@@ -1348,7 +1360,7 @@ void Sys_ShowFrame(const unsigned char *chunky, int pitch)
 static int pace_timer;
 static unsigned long pace_us = 20000;
 static struct MsgPort *delayport;
-static struct timerequest *delayreq;
+static struct timerequest *delayreq; static int pace_restart;   /* 1.5: Sys_PacingRestart (after fast-forward / fast tape) */
 
 void Sys_SetPacing(int timer, unsigned long frame_us)
 {
@@ -1392,7 +1404,7 @@ long Sys_WaitFrame(void)
 	static unsigned long due;
 	static int was_timer;
 	long behind = 0;
-	unsigned long t0 = Sys_Micros();
+	unsigned long t0 = Sys_Micros(); if (pace_restart) { due = 0; pace_restart = 0; }   /* 1.5: the schedule from now (no catch-up burst) */
 	collect_disp();
 	if (pace_timer) {
 		long d;
@@ -2162,4 +2174,26 @@ void Sys_AudioDcState(long *v, int set)
 #else
 	if (!set) v[0] = v[1] = v[2] = v[3] = v[4] = 0;
 #endif
+}
+
+/* Fast-forward (1.5, 28 Oct 2026; host_amiga.c). Sys_OsdHold shows a message
+ * like Sys_OsdMessage but until Sys_OsdRelease with the same text (">>" while
+ * the key is held). Sys_PacingRestart: the next Sys_WaitFrame starts the 50 Hz
+ * schedule from now, so the frames run unpaced do not count as owed (no burst
+ * of skipped frames or catch-up afterwards). Sys_AudioSkip: a block that is not
+ * played still goes through the DC filter, so the sound after fast-forward is
+ * the same to the sample as in a run without it. */
+void Sys_OsdHold(const char *text) { Sys_OsdMessage(text); osd_hold = osd_text[0] != 0; }
+void Sys_OsdRelease(const char *text)
+{
+	if (!osd_hold || strcmp(osd_text, text)) return;
+	osd_hold = 0;
+	osd_start = Sys_Micros() - 2000000UL;   /* ends at the next frame shown, rows redrawn from the clean frame */
+}
+void Sys_PacingRestart(void) { pace_restart = 1; }
+void Sys_AudioSkip(const unsigned char *s16, int samples)
+{
+	static signed char l[1024], r[1024];
+	if (samples > 1024) samples = 1024;
+	Audio_SplitTo8((const unsigned short *)s16, l, r, samples);
 }

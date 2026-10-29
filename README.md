@@ -52,10 +52,22 @@ emulators can read the RAM and registers). Every inserted disk is kept in the st
 never needs a disk; a state for another cartridge or model is refused with a message and nothing
 changes. The hotkeys show a short message ("Saved 1", "Loaded 1" or why not) for about 2 s.
 
-Tapes: .cdt (TZX) images load on every model (`RUN"` on a 464, `|TAPE` first on the others),
-with fast tape loading (`FASTTAPE`) that leaves the machine exactly as at real speed, and an
-optional tape loading sound at real speed (`TAPESOUND`, off by default). Saving to tape is not
-supported. Known issues are listed in the drawer's README.txt
+Tapes: .cdt (TZX) images load on every model, with fast tape loading (`FASTTAPE`) that leaves
+the machine exactly as at real speed, and an optional tape loading sound at real speed
+(`TAPESOUND`, off by default). Auto-start tapes (1.5; Options menu, `AUTOTAPE=0|1`, on by
+default): after Power ON Arnold types the load command (`RUN"` on a 464, `|TAPE` and `RUN"` on
+a 664 or 6128, f1 first on the Plus) and presses a key at "Press PLAY then any key". Saving to
+tape is not supported, and only .cdt images load (no .wav, .voc or .csw samples).
+
+Fast-forward (1.5): hold the ` key (left of 1) and the CPC runs as fast as the Amiga allows: no
+50 Hz wait, about 10 pictures a second, no sound, and a ">>" symbol at the top left. The emulation
+is exactly the same as at normal speed (only what is shown and heard changes), and on release it
+goes straight back to real time with no catch-up.
+
+Black (1.5): an Amiga's colour 0 also fills the screen surround in the border colour, so black
+pens no longer share palette entry 0 (black parts of a picture vanished on a non-black border:
+R-Type's Easter Egg logo). The on-screen messages use a pen below 128, so they show on 8-bit RTG
+screens with scanlines too. Known issues are listed in the drawer's README.txt
 (NTSC cropping of edge-drawn games).
 
 Speed (1.4): lines that are not drawn (frame skip) no longer work out their Plus sprites, and the

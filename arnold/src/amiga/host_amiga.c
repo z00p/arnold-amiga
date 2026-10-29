@@ -19,6 +19,7 @@
 #include "keymaplogic.h"
 #include "gamedb.h"
 #include "../cpc/savestate.h"
+#include "tapeauto.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -38,6 +39,8 @@ static struct SysMenu menu;
 static int global_diskwrite = 1;      /* Write disks back: prefs diskwrite=, DISKWRITE=; a game's own prefs can turn it off */
 static int global_fasttape = 1;       /* Fast tape: prefs fasttape=, FASTTAPE=; a game's own prefs can turn it off */
 static int global_tapesound;   /* Tape sound (25 Oct 2026): prefs tapesound=, TAPESOUND=; per game too */
+static int global_autotape = 1;   /* Auto-start tapes (1.5): prefs autotape=, AUTOTAPE=; per game too */
+static int autotape_arg = -1;     /* AUTOTAPE= given (a key script run auto-starts only with AUTOTAPE=1) */
 static int global_scan;        /* RTG scanlines (1.2): prefs scanlines=, SCANLINES=; per game too */
 /* Tapes (24 Oct 2026). The core plays a .cdt (cpc/tzxold.c) while the motor
  * runs: port B bit 7 follows the pulses, timed by the Z80's cycles. Fast tape:
@@ -54,6 +57,18 @@ static int tape_fast_active(void)
 {
 	return menu.fasttape && tape_in[0] && CPC_GetTapeMotor() && TapeImage_IsPlayable();
 }
+/* Fast-forward (1.5, 28 Oct 2026): while the ` key (rawkey 0x00, top left, left
+ * of 1) is held the emulation runs as fast as the machine allows: no 50 Hz wait,
+ * a frame drawn only every FFWD_SHOW_US of real time, the sound not played (the
+ * blocks still go through the DC filter, Sys_AudioSkip) and ">>" over the
+ * picture. The CPC itself runs exactly as at real speed (only pacing, drawing and
+ * sound output change). Releasing it restarts the 50 Hz schedule from now
+ * (Sys_PacingRestart), so there is no catch-up burst, and the next sound block
+ * starts Paula afresh (nothing queued during the fast stretch). */
+#define RAW_FFWD 0x00
+#define FFWD_SHOW_US 100000UL
+static int ffwd_key, ffwd_on;
+static unsigned long ffwd_drawn, ffwd_frames, ffwd_t0;
 static int display_open, audio_open;
 static int aud_period, aud_int;       /* how the open audio was set up (reopened when the timing changes) */
 unsigned char hostpal[256][3];
@@ -302,6 +317,7 @@ void Host_UnLockAudioBuffer(void)
 {
 	if (tape_mute) memset(audio_tmp, 0, audio_tmp_len);   /* fast tape: silence (the queue drops what can't be played) */
 	if (menu.tapesound) TapeAudio_Mix((unsigned short *)audio_tmp, audio_tmp_len / 4);   /* tape sound: the tape level into this block (cpc/cassette.c) */
+	if (ffwd_on) { Sys_AudioSkip(audio_tmp, audio_tmp_len / 4); return; }   /* fast-forward: not played */
 	Sys_AudioQueue(audio_tmp, audio_tmp_len / 4);
 }
 
@@ -317,7 +333,22 @@ void Host_Throttle(void)
 		else Sys_Log("tape: fast off after %lu frames in %lu ms", tape_fast_frames, (Sys_Micros() - t0) / 1000);
 		tape_fast_frames = 0;
 	}
+	if (tape_mute && !fast) Sys_PacingRestart();   /* 1.5: no catch-up after fast tape either */
 	tape_mute = fast;
+	if (ffwd_key != ffwd_on) {   /* fast-forward starts or ends (only here, between two frames) */
+		ffwd_on = ffwd_key;
+		if (ffwd_on) {
+			Sys_AudioPause();   /* silence now; nothing is queued until the key is let go */
+			Sys_OsdHold(">>");
+			ffwd_t0 = Sys_Micros(); ffwd_frames = 0; ffwd_drawn = ffwd_t0;
+			Sys_Log("fast-forward: on");
+		} else {
+			Sys_OsdRelease(">>");
+			Sys_PacingRestart();
+			Sys_Log("fast-forward: off after %lu frames in %lu ms", ffwd_frames, (Sys_Micros() - ffwd_t0) / 1000);
+		}
+	}
+	if (ffwd_on) fast = 1;
 	{	/* tape sound: only at real speed */
 		static int ts_was;
 		static unsigned long ts_frames;
@@ -330,7 +361,7 @@ void Host_Throttle(void)
 		if (TapeAudio_On && !(++ts_frames % 500)) Sys_Log("tape sound: %lu frames mixed, %lu level changes", ts_frames, TapeAudio_Changes);
 	}
 	if (audio_open) CPC_UpdateAudio();
-	if (fast) { behind_us = 0; tape_fast_frames++; return; }   /* fast tape: no 50 Hz wait */
+	if (fast) { behind_us = 0; if (ffwd_on) ffwd_frames++; else tape_fast_frames++; return; }   /* fast tape / fast-forward: no 50 Hz wait */
 	behind_us = turbo ? 0 : Sys_WaitFrame();   /* TURBO: run flat out */
 }
 
@@ -338,6 +369,13 @@ static int skip_hook(void)
 {
 	int fixed = refresh > 1 && (refresh_count++ % refresh) != 0;
 	if (script_on && KeyScript_SnapAt(script_frame + 1)) { skip_run = 0; return 0; }
+	if (ffwd_key) {   /* fast-forward: a frame now and then (about 10 a second of real time) */
+		unsigned long t = Sys_Micros();
+		skip_run = 0;
+		if (t - ffwd_drawn < FFWD_SHOW_US) { Sys_Perf.skipped_frames++; return 1; }
+		ffwd_drawn = t;
+		return 0;
+	}
 	if (tape_in[0] && tape_fast_active()) { skip_run = 0; return (tape_fast_count++ % TAPE_SHOW) != 0; }
 	tape_fast_count = 0;
 	if (fixed) { Sys_Perf.skipped_frames++; return 1; }
@@ -397,6 +435,7 @@ static int amiga_key_code(const char *s)
 {
 	int i, id;
 	if ((i = KeyMap_AmigaNameCode(s)) >= 0) return i;
+	if (!strcmp(s, "FFWD")) return RAW_FFWD;   /* key scripts: A:FFWD holds the fast-forward key (` ) */
 	if (s[0] == 'F' && s[1] >= '1' && s[1] <= '9') { i = atoi(s + 1); if (i >= 1 && i <= 10) return 0x50 + i - 1; }
 	if (strlen(s) == 1 && ((s[0] >= 'A' && s[0] <= 'Z') || (s[0] >= '0' && s[0] <= '9'))) {
 		id = KeyScript_KeyId(s);   /* a letter or digit: where the Amiga has that CPC key */
@@ -451,6 +490,7 @@ static void host_key(int code, int down, int qual)
 	if (keylog) { fprintf(keylog, "%02x %s q=%04x\n", code, down ? "down" : "up", qual); fflush(keylog); }
 	if (code == RAW_HELP) { if (down) Sys_RequestQuit(); return; }
 	if (code >= 128) return;
+	if (code == RAW_FFWD) { ffwd_key = down; return; }   /* fast-forward while held (never a CPC key) */
 	if (code == 0x66 || code == 0x67) amiga_held[code - 0x66] = down;
 	if (code >= 0x50 && code <= 0x53) {
 		int l = (qual & QUAL_LCOMMAND) || amiga_held[0], r = (qual & QUAL_RCOMMAND) || amiga_held[1];
@@ -500,6 +540,7 @@ BOOL Host_ProcessSystemEvents(void)
 		if (gx_autostart == 6) CPC_SetKey(CPC_KEY_F2);
 		if (gx_autostart == 0) CPC_ClearKey(CPC_KEY_F2);
 	}
+	TapeAuto_Frame(script_setkey);   /* auto-start tapes: the load command, key by key (1.5) */
 	if (help_after > 0 && --help_after == 0) { Sys_RequestQuit(); help_after = help_every; }
 	if (Sys_Poll()) return TRUE;
 	while (Sys_GetKey(&code, &down, &qual)) host_key(code, down, qual);
@@ -594,6 +635,7 @@ static void prefs_load(void)
 		else if (!strcmp(line, "diskwrite")) menu.diskwrite = atoi(v) ? 1 : 0;
 		else if (!strcmp(line, "fasttape")) menu.fasttape = atoi(v) ? 1 : 0;
 		else if (!strcmp(line, "tapesound")) menu.tapesound = atoi(v) ? 1 : 0;
+		else if (!strcmp(line, "autotape")) menu.autotape = atoi(v) ? 1 : 0;
 		else if (!strcmp(line, "rtg")) menu.rtg = atoi(v) ? 1 : 0;
 		else if (!strcmp(line, "scanlines")) { int k = Sys_ParseScan(v); if (k >= 0) menu.scan = k; }
 		else if (!strcmp(line, "tape")) strncpy(menu.tape, v, SYS_PATH - 1);
@@ -615,6 +657,7 @@ static void prefs_save(void)
 	fprintf(f, "diskwrite=%d\n", global_diskwrite);
 	fprintf(f, "fasttape=%d\ntape=%s\n", global_fasttape, menu.tape);
 	fprintf(f, "tapesound=%d\n", global_tapesound);
+	fprintf(f, "autotape=%d\n", global_autotape);
 	fprintf(f, "scanlines=%s\n", Sys_ScanWords[global_scan > 0 && global_scan < SYS_SCANS ? global_scan : 0]);
 	if (global_remap[0]) fprintf(f, "remap=%s\n", global_remap);
 	fclose(f);
@@ -656,6 +699,7 @@ static void game_setting(const char *key, const char *v)
 	else if (!strcmp(key, "diskwrite")) menu.diskwrite = atoi(v) ? 1 : 0;
 	else if (!strcmp(key, "fasttape")) menu.fasttape = atoi(v) ? 1 : 0;
 	else if (!strcmp(key, "tapesound")) menu.tapesound = atoi(v) ? 1 : 0;
+	else if (!strcmp(key, "autotape")) menu.autotape = atoi(v) ? 1 : 0;
 }
 static void db_setting(const char *key, const char *v, void *u) { (void)u; game_setting(key, v); }
 
@@ -668,7 +712,7 @@ static void game_prefs_apply(void)
 	char name[SYS_PATH + 8], title[64];
 	menu.sound = global_sound; menu.hires = global_hires; menu.game_prefs = 0; menu.tall = global_tall; menu.wide = global_wide; menu.rtg = global_rtg;
 	menu.diskwrite = global_diskwrite;
-	menu.fasttape = global_fasttape; menu.tapesound = global_tapesound; menu.scan = global_scan;
+	menu.fasttape = global_fasttape; menu.tapesound = global_tapesound; menu.scan = global_scan; menu.autotape = global_autotape;
 	joykeys = global_joykeys;
 	if (strcmp(remap_str, global_remap)) remap_parse(global_remap);
 	game_prefs_name(name);
@@ -690,6 +734,7 @@ static void game_prefs_save(void)
 	if (menu.diskwrite != global_diskwrite) fprintf(f, "diskwrite=%d\n", menu.diskwrite);
 	if (menu.fasttape != global_fasttape) fprintf(f, "fasttape=%d\n", menu.fasttape);
 	if (menu.tapesound != global_tapesound) fprintf(f, "tapesound=%d\n", menu.tapesound);
+	if (menu.autotape != global_autotape) fprintf(f, "autotape=%d\n", menu.autotape);
 	if (menu.scan != global_scan) fprintf(f, "scanlines=%s\n", Sys_ScanWords[menu.scan > 0 && menu.scan < SYS_SCANS ? menu.scan : 0]);
 	fclose(f);
 	menu.game_prefs = 1;
@@ -703,7 +748,7 @@ static void game_prefs_forget(void)
 	menu.game_prefs = 0;
 	menu.sound = global_sound; menu.hires = global_hires; joykeys = global_joykeys; menu.tall = global_tall; menu.wide = global_wide; menu.rtg = global_rtg;
 	menu.diskwrite = global_diskwrite;
-	menu.fasttape = global_fasttape; menu.tapesound = global_tapesound; menu.scan = global_scan;
+	menu.fasttape = global_fasttape; menu.tapesound = global_tapesound; menu.scan = global_scan; menu.autotape = global_autotape;
 	remap_parse(global_remap);
 }
 
@@ -803,7 +848,7 @@ static void apply_tape(int force)
 		return;
 	}
 	menu.tape_rewind = 0;
-	if (tape_in[0]) { TapeImage_Remove(); CPC_SetCassetteType(CASSETTE_TYPE_NONE); tape_in[0] = 0; }
+	if (tape_in[0]) { TapeImage_Remove(); CPC_SetCassetteType(CASSETTE_TYPE_NONE); tape_in[0] = 0; TapeAuto_Stop(); }   /* an auto-start in progress was for that tape */
 	if (!name[0]) { Sys_Log("tape: ejected"); return; }
 	if (!load_media("tape", name, &data, &len)) return;
 	if (TapeImage_Insert(data, len) != ARNOLD_STATUS_OK) {
@@ -815,6 +860,25 @@ static void apply_tape(int force)
 		Sys_Log("tape: '%s', %lu bytes, %d blocks", name, len, TapeImage_GetNumBlocks());
 	}
 	free(data);   /* the core keeps its own copy */
+}
+
+/* Auto-start tapes (1.5, tapeauto.c): after Power ON, or a Reset with the tape at
+ * its start, a tape game (a tape in the deck and no disk in drive A, or a 464; on
+ * the Plus only with the system cartridge, never on the GX4000) gets its load
+ * command typed: RUN" on the 464, |TAPE then RUN" on the 664, 6128 and Plus (f1
+ * first for the Plus's BASIC), then Space at "Press PLAY then any key". A key
+ * script run (tests) types its own keys, so it auto-starts only with AUTOTAPE=1. */
+static void tape_autostart(const char *why)
+{
+	int model = menu.running_model, kind;
+	const char *c = menu.cart, *e = c + strlen(c);
+	TapeAuto_Stop();
+	if (!menu.autotape || !tape_in[0] || (script_on && autotape_arg != 1)) return;
+	if (model == SYS_MODEL_GX4000 || (disk_in[0][0] && model != SYS_MODEL_464)) return;
+	if (model == SYS_MODEL_PLUS && !(e - c >= 10 && !kwcmp(e - 10, "SYSTEM.CPR"))) return;   /* a game cartridge starts itself */
+	kind = model == SYS_MODEL_464 ? TAPEAUTO_464 : model == SYS_MODEL_PLUS ? TAPEAUTO_PLUS : TAPEAUTO_DISC;
+	TapeAuto_Start(kind);
+	Sys_Log("tape: auto-start on %s: %s", why, kind == TAPEAUTO_464 ? "RUN\"" : kind == TAPEAUTO_PLUS ? "f1, |TAPE, RUN\"" : "|TAPE, RUN\"");
 }
 
 /* System ROMs of the plain CPCs (19 Oct 2026), from the drawer like
@@ -897,8 +961,9 @@ static void state_labels(void)
 }
 /* host data in a state, as the headless host writes it too (8-byte big-endian values):
  * "ARNH", the key script's frame, the sound's DC filter (x l/r, y l/r, on), the host
- * (1 headless, 2 Amiga), then here the GX4000 auto-start count */
-#define STATE_HOSTN 9
+ * (1 headless, 2 Amiga), then here the GX4000 auto-start count and (1.5) the tape auto-start */
+#define STATE_HOSTN 11   /* 1.5: + the tape auto-start (kind, frame); 1.4 states have 9 */
+#define STATE_HOSTN14 9
 #define STATE_HOSTMAGIC 0x41524E48L
 static void state_put8(unsigned char *p, long v) { int i; unsigned long u = (unsigned long)v; for (i = 7; i >= 4; i--) { p[i] = (unsigned char)u; u >>= 8; } for (i = 3; i >= 0; i--) p[i] = v < 0 ? 0xff : 0; }
 static long state_get8(const unsigned char *p) { return (long)(((unsigned long)p[4] << 24) | ((unsigned long)p[5] << 16) | ((unsigned long)p[6] << 8) | p[7]); }
@@ -915,6 +980,7 @@ static int save_state(int slot)
 	v[0] = STATE_HOSTMAGIC; v[1] = script_frame;
 	Sys_AudioDcState(v + 2, 0);
 	v[7] = 2; v[8] = gx_autostart;
+	TapeAuto_GetState(v + 9);
 	for (i = 0; i < STATE_HOSTN; i++) state_put8(blob + 8 * i, v[i]);
 	info.host = blob; info.hostlen = sizeof blob;
 	if (!SaveState_Save(&d, &l, &info, msg, sizeof msg)) {
@@ -975,6 +1041,7 @@ static int load_state(int slot)
 	int r, d;
 	r = SaveState_Load(state_buf, state_len, msg, sizeof msg, &ld);
 	if (r != SAVESTATE_EXACT) {
+		if (r == SAVESTATE_PLAIN) TapeAuto_Stop();   /* another machine now: nothing to type for */
 		if (r == SAVESTATE_PLAIN) snprintf(state_note, sizeof state_note, "Slot %d: a plain snapshot, loaded the lossy way", slot);
 		else snprintf(state_note, sizeof state_note, "State %d not loaded: %s", slot, msg);
 		Sys_Log("state: %s", state_note);
@@ -985,7 +1052,8 @@ static int load_state(int slot)
 		for (i = 0; i < STATE_HOSTN && i < n; i++) v[i] = state_get8(ld.host + 8 * i);
 		script_frame = v[1];
 		Sys_AudioDcState(v + 2, 1);
-		gx_autostart = (v[7] == 2 && n >= STATE_HOSTN) ? (int)v[8] : 0;
+		gx_autostart = (v[7] == 2 && n >= STATE_HOSTN14) ? (int)v[8] : 0;
+		if (v[7] == 2 && n >= STATE_HOSTN) TapeAuto_SetState(v + 9); else TapeAuto_Stop();
 		if (script_on) KeyScript_Seek(script_frame);
 	}
 	/* the drives and the deck as the state has them */
@@ -1070,6 +1138,7 @@ static int power_on(void)
 	drop_image(0); drop_image(1);
 	apply_disks();
 	apply_tape(1);   /* the tape from the start */
+	tape_autostart("power on");
 	return 1;
 }
 
@@ -1131,6 +1200,7 @@ static int open_emulation(void)
 	/* an Amiga key let go in the menu never reached host_key: not held any more (else F1
 	 * would be taken as a save state hotkey) */
 	amiga_held[0] = amiga_held[1] = 0; hk_request = 0;
+	ffwd_key = 0;   /* fast-forward ends with the menu (the key-up went to the menu); Host_Throttle sees the change */
 	Sys_Log("emulation: screen open%s, sound %s", Sys_RtgActive ? " (RTG)" : "", audio_open ? "on" : "off");
 	return 1;
 }
@@ -1148,7 +1218,7 @@ int main(int argc, char **argv)
 	strcpy(menu.prefs, "PROGDIR:Arnold.prefs");
 	menu.sound = 1;
 	menu.diskwrite = 1;
-	menu.fasttape = 1; menu.tapesound = 0;
+	menu.fasttape = 1; menu.tapesound = 0; menu.autotape = 1;
 	menu.model = SYS_MODEL_PLUS; menu.running_model = -1;
 	Sys_LogOpen();
 	Sys_LogStart(argc);
@@ -1171,6 +1241,7 @@ int main(int argc, char **argv)
 		if (st.diskwrite >= 0) menu.diskwrite = st.diskwrite;
 		if (st.fasttape >= 0) menu.fasttape = st.fasttape;
 		if (st.tapesound >= 0) menu.tapesound = st.tapesound;
+		if (st.autotape >= 0) menu.autotape = autotape_arg = st.autotape;
 		if (st.scan >= 0) scan = st.scan;
 		if (st.rtg >= 0) rtg = st.rtg;
 		if (st.tape[0]) strncpy(menu.tape, st.tape, SYS_PATH - 1);
@@ -1207,6 +1278,8 @@ int main(int argc, char **argv)
 			else if (!kwncmp(argv[i], "FASTTAPE=", 9)) menu.fasttape = atoi(argv[i] + 9) ? 1 : 0;
 			else if (!kwncmp(argv[i], "TAPESOUND=", 10)) menu.tapesound = atoi(argv[i] + 10) ? 1 : 0;
 			else if (!kwcmp(argv[i], "TAPESOUND")) menu.tapesound = 1;
+			else if (!kwncmp(argv[i], "AUTOTAPE=", 9)) menu.autotape = autotape_arg = atoi(argv[i] + 9) ? 1 : 0;   /* auto-start tapes (1.5) */
+			else if (!kwcmp(argv[i], "AUTOTAPE")) menu.autotape = autotape_arg = 1;
 			else if (!kwcmp(argv[i], "RTG")) rtg = 1;                       /* RTG screen (pilot, 26 Oct 2026) */
 			else if (!kwncmp(argv[i], "RTG=", 4)) rtg = atoi(argv[i] + 4) ? 1 : 0;
 			else if (!kwcmp(argv[i], "RTGBLIT")) Sys_RtgBlit = 1;           /* diagnostic: off-screen bitmap + blit */
@@ -1253,7 +1326,7 @@ int main(int argc, char **argv)
 	if (scan >= 0) menu.scan = scan;
 	global_sound = menu.sound; global_hires = menu.hires; global_joykeys = joykeys;
 	global_tall = menu.tall; global_wide = menu.wide; global_rtg = menu.rtg; strcpy(global_remap, remap_str); global_diskwrite = menu.diskwrite;
-	global_fasttape = menu.fasttape; global_tapesound = menu.tapesound; global_scan = menu.scan;
+	global_fasttape = menu.fasttape; global_tapesound = menu.tapesound; global_scan = menu.scan; global_autotape = menu.autotape;
 	if (!CPCEmulation_CheckEndianness()) { Sys_MenuError("Endianness check failed"); return 10; }
 	CPC_Initialise();
 	/* the test-mode label's colour: an entry the core leaves alone */
@@ -1273,6 +1346,7 @@ int main(int argc, char **argv)
 		if (state_buf) free(state_buf);
 		state_buf = data; state_len = len;
 		r = SaveState_Load(state_buf, state_len, msg, sizeof msg, NULL);
+		if (r != SAVESTATE_REFUSED) TapeAuto_Stop();   /* the snapshot is the machine now (its own host data is not applied here) */
 		Sys_Log("snapshot '%s': %s", sna, r == SAVESTATE_EXACT ? "Arnold save state, exact" : r == SAVESTATE_PLAIN ? "plain, loaded the upstream way" : msg);
 		if (r == SAVESTATE_REFUSED) { char e[360]; sprintf(e, "Snapshot not loaded:\n%.300s", msg); Sys_MenuError(e); }
 	}
@@ -1301,7 +1375,7 @@ int main(int argc, char **argv)
 			if (action != SYS_MENU_POWER && action != SYS_MENU_RESET && action != SYS_MENU_CONTINUE && action != SYS_MENU_LOADSTATE
 			 && !(Sys_MenuOnRtg() && (action == SYS_MENU_SAVE || action == SYS_MENU_SAVEGAME || action == SYS_MENU_FORGETGAME || action == SYS_MENU_SHOT || action == SYS_MENU_SAVESTATE))) Sys_MenuClose();
 			if (action == SYS_MENU_QUIT) break;
-			if (!menu.game_prefs) { strcpy(global_remap, remap_str); global_sound = menu.sound; global_hires = menu.hires; global_joykeys = joykeys; global_tall = menu.tall; global_wide = menu.wide; global_rtg = menu.rtg; global_diskwrite = menu.diskwrite; global_fasttape = menu.fasttape; global_tapesound = menu.tapesound; global_scan = menu.scan; }
+			if (!menu.game_prefs) { strcpy(global_remap, remap_str); global_sound = menu.sound; global_hires = menu.hires; global_joykeys = joykeys; global_tall = menu.tall; global_wide = menu.wide; global_rtg = menu.rtg; global_diskwrite = menu.diskwrite; global_fasttape = menu.fasttape; global_tapesound = menu.tapesound; global_scan = menu.scan; global_autotape = menu.autotape; }
 			if (action == SYS_MENU_SAVE) { int gs = menu.sound, gh = menu.hires, gt = menu.tall, gw = menu.wide, gr = menu.rtg; if (menu.game_prefs) { menu.sound = global_sound; menu.hires = global_hires; menu.tall = global_tall; menu.wide = global_wide; menu.rtg = global_rtg; } else global_joykeys = joykeys; prefs_save(); menu.sound = gs; menu.hires = gh; menu.tall = gt; menu.wide = gw; menu.rtg = gr; continue; }
 			if (action == SYS_MENU_SAVEGAME) { game_prefs_save(); continue; }
 			if (action == SYS_MENU_FORGETGAME) { game_prefs_forget(); continue; }
@@ -1322,6 +1396,7 @@ int main(int argc, char **argv)
 			if (action == SYS_MENU_POWER && !power_on()) continue;
 			if (action == SYS_MENU_RESET) { if (!menu.can_continue && !power_on()) continue; CPC_Reset(); }
 			if (action == SYS_MENU_CONTINUE || action == SYS_MENU_RESET) { apply_disks(); apply_tape(0); }   /* disk swap, tape change or rewind */
+			if (action == SYS_MENU_RESET) { if (tape_in[0] && TapeImage_GetCurrentBlock() == 0) tape_autostart("reset"); else TapeAuto_Stop(); }   /* a tape at its start loads again */
 		}
 		{ int ok = open_emulation(); Sys_MenuClose(); if (!ok) { want_menu = 1; pending_load = 0; continue; } }
 		if (pending_load) {

@@ -1,0 +1,48 @@
+From da9cd67c0d4e4a2da2e720f8054a6f04bdb17624 Mon Sep 17 00:00:00 2001
+From: John Stringer <jcec_1@yahoo.co.uk>
+Date: Thu, 29 Oct 2026 20:01:23 +0000
+Subject: [PATCH 39/42] Paletted renderer: black pens get an entry of their own
+
+Palette_MatchColour no longer matches a pen to entry 0. Entry 0 is kept
+black for blanking (Render_PaletteIndexBlack), but a host may show it as
+something else: on an Amiga colour 0 also fills the screen surround, and
+Arnold for Amiga sets it to the border colour. A black pen matched to entry 0
+was then drawn in the border colour, so black pixels vanished on a non-black
+border (R-Type's Easter Egg logo lost its outline and letter shadows). Black
+pens now take an entry of their own. Palette numbering changes only: RGB
+output identical (headless checksums of the test set). NO_BLACK0_FIX restores
+the old match (and, as before, drops the entry-0 reservation).
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ src/cpc/render5.c | 9 +++++++++
+ 1 file changed, 9 insertions(+)
+
+diff --git a/src/cpc/render5.c b/src/cpc/render5.c
+index bd4863e..c19e1ac 100644
+--- a/src/cpc/render5.c
++++ b/src/cpc/render5.c
+@@ -247,11 +247,20 @@ int Render_PaletteIndexBorder = 0;  /* border fix: palette index of pen 16 (see
+ 
+ 
+ /* find a colour match */
++/* Amiga port (29 Oct 2026): entry 0 is never matched. Amiga colour 0 shows
++ * the border colour (host_amiga.c), so a black pen sharing entry 0 drew in the
++ * border colour: black pixels vanished on a grey border (R-Type's Easter Egg
++ * logo). Pens that are black get an entry of their own.
++ * NO_BLACK0_FIX: entry 0 is matched, as before. */
+ int     Palette_MatchColour(int Red, int Green, int Blue)
+ {
+         int i;
+ 
++#ifndef NO_BLACK0_FIX
++        for (i=1; i<256; i++)
++#else
+         for (i=0; i<256; i++)
++#endif
+         {
+                 if (CPCPalette[i].Flags & PALETTE_ENTRY_USED)
+                 {
+-- 
+2.50.0.windows.2
+

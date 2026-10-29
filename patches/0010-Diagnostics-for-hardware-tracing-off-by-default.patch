@@ -1,7 +1,7 @@
-From 776895f95dfb29a60f9b8f7457665f34ab41aa3c Mon Sep 17 00:00:00 2001
+From ca61b4477ab8fb687f8d5da7baddba375e6b0628 Mon Sep 17 00:00:00 2001
 From: John Stringer <jcec_1@yahoo.co.uk>
-Date: Wed, 28 Oct 2026 15:19:50 +0000
-Subject: [PATCH 10/41] Diagnostics for hardware tracing (off by default)
+Date: Thu, 29 Oct 2026 20:01:05 +0000
+Subject: [PATCH 10/42] Diagnostics for hardware tracing (off by default)
 
 TRACE_HW: per-line trace of CRTC, Gate Array and ASIC writes for a chosen
 frame (used with the headless host's TRACE_AT); PAL_COUNT: palette entries in

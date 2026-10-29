@@ -9,7 +9,7 @@
  *                        tape image, then the title as a comment. Several headers in
  *                        a row share the settings lines that follow them.
  *   key=value            the settings of a game's .prefs file (sound, hires, joykeys,
- *                        tall, wide, remap, diskwrite, fasttape, tapesound), applied
+ *                        tall, wide, remap, diskwrite, fasttape, tapesound, autotape), applied
  *                        to the headers just above them. Unknown keys are passed on
  *                        too; the caller ignores what it does not know. */
 #include <stdio.h>

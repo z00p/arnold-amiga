@@ -54,6 +54,8 @@ static int read_tooltypes(STRPTR name, struct SysStart *st)
 	if (tt) st->fasttape = atoi(tt) ? 1 : 0;   /* FASTTAPE=0|1: fast tape loading (24 Oct 2026) */
 	tt = (char *)FindToolType((STRPTR *)dobj->do_ToolTypes, (STRPTR)"TAPESOUND");
 	if (tt) st->tapesound = (!*tt || atoi(tt)) ? 1 : 0;   /* TAPESOUND=0|1 (25 Oct 2026; a bare TAPESOUND means on) */
+	tt = (char *)FindToolType((STRPTR *)dobj->do_ToolTypes, (STRPTR)"AUTOTAPE");
+	if (tt) st->autotape = (!*tt || atoi(tt)) ? 1 : 0;   /* AUTOTAPE=0|1: auto-start tapes (1.5; a bare AUTOTAPE means on) */
 	tt = (char *)FindToolType((STRPTR *)dobj->do_ToolTypes, (STRPTR)"RTG");
 	if (tt) st->rtg = (!*tt || atoi(tt)) ? 1 : 0;   /* RTG=0|1, a bare RTG means on: the RTG screen (pilot, 26 Oct 2026) */
 	tt = (char *)FindToolType((STRPTR *)dobj->do_ToolTypes, (STRPTR)"RTGVBL");
@@ -139,7 +141,7 @@ int Sys_WBStart(int argc, char **argv, struct SysStart *st)
 	struct WBArg *wa;
 	memset(st, 0, sizeof *st);
 	st->skip = -1;
-	st->joykeys = -1; st->pad = -1; st->speed = -1; st->video = -1; st->model = -1; st->diskwrite = -1; st->fasttape = -1; st->tapesound = -1; st->rtg = -1; st->scan = -1;
+	st->joykeys = -1; st->pad = -1; st->speed = -1; st->video = -1; st->model = -1; st->diskwrite = -1; st->fasttape = -1; st->tapesound = -1; st->rtg = -1; st->scan = -1; st->autotape = -1;
 	if (argc != 0) return 0;
 	wbs = (struct WBStartup *)argv;
 	if (!wbs || wbs->sm_NumArgs < 1) return 0;
@@ -157,7 +159,7 @@ int Sys_WBStart(int argc, char **argv, struct SysStart *st)
 		memset(&pre, 0, sizeof pre);
 		pre.skip = -1;
 		pre.joykeys = -1; pre.pad = -1; pre.speed = -1; pre.video = -1; pre.model = -1; pre.diskwrite = -1;
-		pre.fasttape = -1; pre.tapesound = -1; pre.rtg = -1; pre.scan = -1;
+		pre.fasttape = -1; pre.tapesound = -1; pre.rtg = -1; pre.scan = -1; pre.autotape = -1;
 		if (IconBase && read_tooltypes(wa[1].wa_Name, &pre) && pre.prefs[0]) {
 			char dir[SYS_PATH];
 			if (strchr(pre.prefs, ':') == NULL && NameFromLock(wa[1].wa_Lock, (STRPTR)dir, SYS_PATH)) {
@@ -181,6 +183,7 @@ int Sys_WBStart(int argc, char **argv, struct SysStart *st)
 			if (pre.diskwrite >= 0) st->diskwrite = pre.diskwrite;
 			if (pre.fasttape >= 0) st->fasttape = pre.fasttape;
 			if (pre.tapesound >= 0) st->tapesound = pre.tapesound;
+			if (pre.autotape >= 0) st->autotape = pre.autotape;
 			if (pre.rtg >= 0) st->rtg = pre.rtg;
 			if (pre.scan >= 0) st->scan = pre.scan;
 			if (pre.tape[0]) strcpy(st->tape, pre.tape);

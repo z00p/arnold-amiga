@@ -1,7 +1,7 @@
-From f375a01fc6943e0a1eba5e4b8a24534f1666ea44 Mon Sep 17 00:00:00 2001
+From 4697fb70955980d1fa474fef704d62c9f8cc34bd Mon Sep 17 00:00:00 2001
 From: John Stringer <jcec_1@yahoo.co.uk>
-Date: Wed, 28 Oct 2026 15:19:54 +0000
-Subject: [PATCH 18/41] Z80: NO_Z80V_FIX builds again
+Date: Thu, 29 Oct 2026 20:01:10 +0000
+Subject: [PATCH 18/42] Z80: NO_Z80V_FIX builds again
 
 The switch's macro needs the operand passed in.
 

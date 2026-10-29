@@ -74,6 +74,7 @@ struct SysMenu {
 	int scan;                /* Scanlines on the RTG screen (SYS_SCAN_*, 1.2) */
 	int state_slot;          /* save states (1.4): the slot (1-4) of SYS_MENU_SAVESTATE / SYS_MENU_LOADSTATE */
 	char state_label[4][40]; /* the host's labels for the slots ("Slot 1 (empty)"), shown in the Project menu */
+	int autotape;            /* Auto-start tapes (1.5): Power ON / Reset types the load command and presses a key at "Press PLAY" */
 };
 #define SYS_STATE_SLOTS 4
 enum { SYS_MODEL_464 = 0, SYS_MODEL_664, SYS_MODEL_6128, SYS_MODEL_PLUS, SYS_MODEL_GX4000, SYS_MODELS };
@@ -90,7 +91,7 @@ void Sys_ShowPicture(void *screen, const char *name);   /* amiga_iff.c: modal IF
 
 /* Workbench start (amiga_wb.c): fills st from the icon's ToolTypes and a
  * project icon; returns 1 when started from Workbench. */
-struct SysStart { char prefs[SYS_PATH], media[SYS_PATH], remap[128]; int menu, hires, tall, wide, nosound, skip, refresh, joykeys, pad, speed, video, model, diskwrite, fasttape, tapesound, rtg, scan; char tape[SYS_PATH]; };   /* skip -1, refresh 0, others -1: not given */
+struct SysStart { char prefs[SYS_PATH], media[SYS_PATH], remap[128]; int menu, hires, tall, wide, nosound, skip, refresh, joykeys, pad, speed, video, model, diskwrite, fasttape, tapesound, rtg, scan; char tape[SYS_PATH]; int autotape; };   /* skip -1, refresh 0, others -1: not given */
 int Sys_ParseModel(const char *v);   /* "464" "664" "6128" "PLUS" "GX4000" (any case) -> SYS_MODEL_*, -1 if not one */
 int Sys_ParseVideo(const char *v);   /* "AUTO" "PAL" "NTSC" or 0-2 -> 0-2, -1 if not one */
 int Sys_ParseSpeed(const char *v);   /* "50" or 0 -> 0, "DISPLAY" or 1 -> 1, -1 if not one */
@@ -154,9 +155,16 @@ extern int Sys_PalAll;              /* PALALL: reload the whole palette every fr
 extern int Sys_AllLines;            /* ALLLINES: convert every line every frame (no dirty-line tracking) */
 extern int Sys_SafeFlip;            /* SAFEFLIP: wait for the previous flip's messages before the next */
 extern int Sys_Osd, Sys_OsdSkip;     /* OSD: test-mode label in the picture's corner; skip value it shows */
-#define SYS_OSD_PEN 255             /* palette entry the host keeps for the label (yellow) */
+/* palette entry the host keeps for the label and messages (yellow). 127, not 255 (29 Oct 2026):
+ * on an 8-bit RTG screen with scanlines, entries 128-255 are the dimmed copies of 0-127, so 255
+ * showed as entry 127 dimmed (the fast-forward and save state messages were black on RTG). */
+#define SYS_OSD_PEN 127
 void Sys_MakeDir(const char *path);   /* create a drawer if it is missing (SNAPDIR) */
 void Sys_OsdMessage(const char *text);   /* save states: a short message over the picture for about 2 s (not in the chunky buffer) */
+void Sys_OsdHold(const char *text);      /* 1.5 fast-forward: the same, shown until Sys_OsdRelease(text) */
+void Sys_OsdRelease(const char *text);
+void Sys_PacingRestart(void);             /* 1.5: the next Sys_WaitFrame restarts the schedule from now */
+void Sys_AudioSkip(const unsigned char *s16stereo, int samples);   /* 1.5: a block not played, through the DC filter only */
 void Sys_AudioDcState(long *v, int set);   /* save states: the sound DC filter (5 values: x l/r, y l/r, on) */
 void Sys_LogStart(int argc);        /* the first line: machine, memory, start mode */
 void Sys_Log(const char *fmt, ...);

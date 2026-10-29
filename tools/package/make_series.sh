@@ -8,6 +8,7 @@ R=$(cd "$(dirname "$0")/../.." && pwd)
 PKG="$R/tools/package"
 WT=$R/build/upstream-wt
 B13=d9af72a   # main after 1.3: the core of 1.3 (the steps below that once took HEAD take this, so 1.4 changes stay out of them)
+B14=10d2714   # main after 1.4: the core of 1.4 (the save state step takes this, so 1.5 changes stay out of it)
 cd ${SERIES_TREE:-$R}   # HEAD of this tree is what the series is made from (a release worktree: SERIES_TREE=<its path>)
 TRAILER="Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>"
 
@@ -375,7 +376,7 @@ instructions (CPC_IOAhead) is rarely there, so it is tested before it is taken
 instead of stored after every instruction. NO_IOTAKE_TEST. Pixel-exact
 (headless checksums, frame skip on and off, whole-run frame checksums)."
 
-post HEAD arnold/src/cpc arnold/src/objects.mak
+post $B14 arnold/src/cpc arnold/src/objects.mak
 commit "Save states: save and load the whole machine exactly" "cpc/savestate.c: SaveState_Save / SaveState_Load / SaveState_Check for a host,
 between two CPCEmulation_Run calls. The file is a standard SNA v3 (upstream's
 writer: RAM and registers for other emulators) with an extra ARNS chunk: a
@@ -391,6 +392,18 @@ running machine, kept in memory, is put back. A plain .sna still loads through
 Snapshot_Insert, after a bounds check of its chunks. Resumed runs give the same
 frames and sound as uninterrupted ones (headless tests: carts, disks, tapes,
 frame skip). NO_SAVESTATE builds the core without it."
+
+# 1.5 (29 Oct 2026): black pens off entry 0
+post HEAD arnold/src/cpc/render5.c
+commit "Paletted renderer: black pens get an entry of their own" "Palette_MatchColour no longer matches a pen to entry 0. Entry 0 is kept
+black for blanking (Render_PaletteIndexBlack), but a host may show it as
+something else: on an Amiga colour 0 also fills the screen surround, and
+Arnold for Amiga sets it to the border colour. A black pen matched to entry 0
+was then drawn in the border colour, so black pixels vanished on a non-black
+border (R-Type's Easter Egg logo lost its outline and letter shadows). Black
+pens now take an entry of their own. Palette numbering changes only: RGB
+output identical (headless checksums of the test set). NO_BLACK0_FIX restores
+the old match (and, as before, drops the entry-0 reservation)."
 
 post HEAD arnold/src/cpc
 commit "Core: remaining changes" "Small changes made after the fixes above."

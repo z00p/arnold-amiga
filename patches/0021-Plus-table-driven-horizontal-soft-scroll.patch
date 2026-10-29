@@ -1,7 +1,7 @@
-From 5cd7f212b65517ad38919a3a15dc2d6d119721c3 Mon Sep 17 00:00:00 2001
+From c8db51fe0a1619627278fc03dd3ab6403f7335b6 Mon Sep 17 00:00:00 2001
 From: John Stringer <jcec_1@yahoo.co.uk>
-Date: Wed, 28 Oct 2026 15:19:55 +0000
-Subject: [PATCH 21/41] Plus: table-driven horizontal soft scroll
+Date: Thu, 29 Oct 2026 20:01:12 +0000
+Subject: [PATCH 21/42] Plus: table-driven horizontal soft scroll
 
 The per-pixel shift in Render_ScrollGraphicsData moves each input bit to a
 fixed place, so its result is the OR of what each input byte gives alone.

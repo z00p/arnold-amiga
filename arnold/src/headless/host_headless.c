@@ -171,6 +171,24 @@ static void insert_tape(const char *var)
 #ifdef TRACE_HW
 extern int Trace_On;
 #endif
+/* Auto-start tapes (1.5): AUTOTAPE=1 with TAPE= types the load command as the
+ * Amiga host does (amiga/tapeauto.c, included here so the build lists need no
+ * change; absent in an older tree, then AUTOTAPE does nothing) */
+#if defined(__has_include)
+#if __has_include("../amiga/tapeauto.c")
+#include "../amiga/tapeauto.c"
+#define HAVE_TAPEAUTO
+#endif
+#endif
+#ifdef HAVE_TAPEAUTO
+#define TA_GET(v) TapeAuto_GetState(v)
+#define TA_SET(v) TapeAuto_SetState(v)
+#define TA_STOP() TapeAuto_Stop()
+#else
+#define TA_GET(v) ((v)[0] = (v)[1] = 0)
+#define TA_SET(v) ((void)0)
+#define TA_STOP() ((void)0)
+#endif
 /* Save states (28 Oct 2026, cpc/savestate.c). Environment:
  *   SS_SAVE=n1,n2,...  SS_FILE=<prefix>: after frame n (counted frame ends), the
  *       state goes to <prefix>.<n>.sna (the run stops at that frame end and goes on)
@@ -202,7 +220,9 @@ static long ss_get8(const unsigned char *p) { int i; unsigned long long u = 0; f
  * Amiga goes on here and one from here goes on on the Amiga: "ARNH", the key
  * script's frame, the sound DC filter (x l/r, y l/r, on), the host (1 headless,
  * 2 Amiga), then that host's own: here the frame counters and the tape's. */
-#define SS_HOSTN 15
+/* 1.5: two more, the tape auto-start (kind, frame); a 1.4 state has 15 */
+#define SS_HOSTN 17
+#define SS_HOSTN14 15
 #define SS_HOSTMAGIC 0x41524E48L
 static void ss_hostblob(unsigned char *b, unsigned long len, int get)
 {
@@ -217,6 +237,7 @@ static void ss_hostblob(unsigned char *b, unsigned long len, int get)
 #endif
 		v[7] = 1;
 		v[8] = frames; v[9] = emu_frames; v[10] = (long)lcg; v[11] = tape_frame; v[12] = tape_motor; v[13] = tape_fast_count; v[14] = ss_fe;
+		TA_GET(v + 15);
 		for (i = 0; i < SS_HOSTN; i++) ss_put8(b + 8 * i, v[i]);
 		return;
 	}
@@ -226,7 +247,8 @@ static void ss_hostblob(unsigned char *b, unsigned long len, int get)
 #if !defined(NO_SNDLUT_FIX) && !defined(NO_SNDUNIPOLAR)
 	Audio_DcX[0] = v[2]; Audio_DcX[1] = v[3]; Audio_DcY[0] = v[4]; Audio_DcY[1] = v[5]; Audio_DcOn = (int)v[6];
 #endif
-	if (v[7] == 1 && n >= SS_HOSTN) {
+	if (v[7] == 1 && n >= SS_HOSTN) TA_SET(v + 15); else TA_STOP();
+	if (v[7] == 1 && n >= SS_HOSTN14) {
 		frames = (int)v[8]; emu_frames = v[9]; lcg = (unsigned long)v[10]; tape_frame = v[11];
 		tape_motor = (int)v[12]; tape_fast_count = (int)v[13]; ss_fe = v[14];
 	} else {
@@ -267,6 +289,31 @@ static int ss_due_at(long fe)
 	for (i = 0; i < ss_npoints; i++) if (ss_points[i] == fe) return 1;
 	return 0;
 }
+/* Fast-forward (1.5): FFWD=a-b runs frame ends a to b as the Amiga host's held
+ * fast-forward key does (only 1 frame in 8 drawn; a frame the script will SNAP is
+ * drawn), to show the emulation is unchanged: the snaps, the final frame and the
+ * WAV must equal a run without FFWD. Other skip hooks (TAPEFAST, argv[6] -1) run
+ * outside the range. */
+static long ffwd_a = -1, ffwd_b = -1;
+static int (*ffwd_prev)(void);
+static long ffwd_skipped;
+static int ffwd_hook(void)
+{
+	if (ss_fe >= ffwd_a && ss_fe <= ffwd_b) {
+		if (script_on && KeyScript_SnapAt(script_frame + 1)) return 0;
+		if (ss_fe % 8) { ffwd_skipped++; return 1; }
+		return 0;
+	}
+	return ffwd_prev ? ffwd_prev() : 0;
+}
+static void ffwd_setup(void)
+{
+	const char *f = getenv("FFWD"), *d;
+	if (!f || !&CPC_SkipNextFrameHook) return;
+	ffwd_a = atol(f); d = strchr(f, '-'); ffwd_b = d ? atol(d + 1) : ffwd_a;
+	ffwd_prev = CPC_SkipNextFrameHook; CPC_SkipNextFrameHook = ffwd_hook;
+	printf("ffwd: frame ends %ld-%ld\n", ffwd_a, ffwd_b);
+}
 BOOL Host_ProcessSystemEvents(void)
 {
 	int ss_quit = 0;
@@ -290,6 +337,9 @@ BOOL Host_ProcessSystemEvents(void)
 		script_frame++;
 		if (ks & KS_QUIT) ss_quit = 1;
 	}
+#ifdef HAVE_TAPEAUTO
+	TapeAuto_Frame(script_setkey);
+#endif
 	if (!ss_quit) ss_quit = hook_mode ? ++emu_frames >= maxframes : frames >= maxframes;
 	if (ss_due_at(ss_fe)) { ss_due = 1; ss_done = ss_quit; return TRUE; }   /* save states: stop here, save, go on */
 	return ss_quit;
@@ -324,6 +374,9 @@ static unsigned long dump_to(const char *name)
 	for (i = 0; i < W*H; i++) {
 		if (depth == 8) {
 			unsigned char c = chunky[i];
+			/* AMIGACOL0=1: index 0 shows the border colour, as Amiga colour 0 does */
+			{ extern int Render_PaletteIndexBorder; static int a0 = -1; if (a0 < 0) a0 = getenv("AMIGACOL0") != NULL;
+			  if (a0 && c == 0) c = (unsigned char)Render_PaletteIndexBorder; }
 			fwrite(pal[c], 1, 3, f);
 			/* RGB, not the palette index (20 Oct 2026): index numbers may change
 			 * (palette freeing, PALGC_TOP) while the picture stays the same */
@@ -506,6 +559,15 @@ int main(int argc, char **argv)
 	insert_disk(0, "DISKA");
 	insert_disk(1, "DISKB");
 	insert_tape("TAPE");
+#ifdef HAVE_TAPEAUTO
+	if (tape_in && getenv("AUTOTAPE") && atoi(getenv("AUTOTAPE"))) {
+		const char *hw = getenv("HW");
+		int k = !hw || !strcmp(hw, "PLUS") ? TAPEAUTO_PLUS : !strcmp(hw, "464") ? TAPEAUTO_464 : !strcmp(hw, "GX4000") ? TAPEAUTO_OFF : TAPEAUTO_DISC;
+		TapeAuto_Start(k);
+		printf("tape: auto-start (%s)\n", k ==TAPEAUTO_PLUS ? "f1, |TAPE, RUN\"" : k == TAPEAUTO_464 ? "RUN\"" : k ? "|TAPE, RUN\"" : "off");
+	}
+#endif
+	ffwd_setup();
 	ts_env = getenv("TAPESOUND") && atoi(getenv("TAPESOUND"));
 	dump_disk(0, "DISKDUMP");
 	Render_SetDisplayWindowed();
@@ -560,6 +622,7 @@ int main(int argc, char **argv)
 	  fprintf(stderr, "per frame: calls %lu prepare %lu invalidated-by-hook %lu runs %lu run-cycles %lu events %lu\n", StatsE_Calls/frames, StatsE_Prepare/frames, StatsE_Invalidate/frames, StatsE_Runs/frames, StatsE_RunCycles/frames, StatsE_Events/frames); }
 #endif
 	if (tape_in) printf("tape: end frame %ld motor %s block %d/%d\n", tape_frame, &CPC_GetTapeMotor && CPC_GetTapeMotor() ? "on" : "off", TapeImage_GetCurrentBlock(), TapeImage_GetNumBlocks());
+	if (ffwd_a >= 0) printf("ffwd: %ld frames not drawn\n", ffwd_skipped);
 	dump();
 	save_disk(0, "DISKOUT");
 	save_disk(1, "DISKOUTB");

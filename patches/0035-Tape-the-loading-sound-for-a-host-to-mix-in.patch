@@ -1,7 +1,7 @@
-From d57b70d3f953ef38997e34cb6b97e23be8924f2e Mon Sep 17 00:00:00 2001
+From b956806dd71658397fe772a9040a994cf1867598 Mon Sep 17 00:00:00 2001
 From: John Stringer <jcec_1@yahoo.co.uk>
-Date: Wed, 28 Oct 2026 15:20:00 +0000
-Subject: [PATCH 35/41] Tape: the loading sound, for a host to mix in
+Date: Thu, 29 Oct 2026 20:01:21 +0000
+Subject: [PATCH 35/42] Tape: the loading sound, for a host to mix in
 
 The tape signal as sound, as CPCEC does it. While a host sets TapeAudio_On,
 Cassette_Read notes each change of the level it hands the Z80 with its NOP

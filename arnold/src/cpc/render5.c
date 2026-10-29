@@ -247,11 +247,20 @@ int Render_PaletteIndexBorder = 0;  /* border fix: palette index of pen 16 (see 
 
 
 /* find a colour match */
+/* Amiga port (29 Oct 2026): entry 0 is never matched. Amiga colour 0 shows
+ * the border colour (host_amiga.c), so a black pen sharing entry 0 drew in the
+ * border colour: black pixels vanished on a grey border (R-Type's Easter Egg
+ * logo). Pens that are black get an entry of their own.
+ * NO_BLACK0_FIX: entry 0 is matched, as before. */
 int     Palette_MatchColour(int Red, int Green, int Blue)
 {
         int i;
 
+#ifndef NO_BLACK0_FIX
+        for (i=1; i<256; i++)
+#else
         for (i=0; i<256; i++)
+#endif
         {
                 if (CPCPalette[i].Flags & PALETTE_ENTRY_USED)
                 {

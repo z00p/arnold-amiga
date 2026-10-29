@@ -1,7 +1,7 @@
-From a4f45ae163ea1778b9476aee9005162d27973cc7 Mon Sep 17 00:00:00 2001
+From 7f1a1240f31ae029dd0cdb7575b7b3a8d7db4444 Mon Sep 17 00:00:00 2001
 From: John Stringer <jcec_1@yahoo.co.uk>
-Date: Wed, 28 Oct 2026 15:20:02 +0000
-Subject: [PATCH 39/41] RTG display framework (rtgfw) for the AmigaOS host, MIT
+Date: Thu, 29 Oct 2026 20:01:25 +0000
+Subject: [PATCH 40/42] RTG display framework (rtgfw) for the AmigaOS host, MIT
  licence
 
 src/amiga/rtgfw: rtgfw, a small RTG (Picasso96 / CyberGraphX) display layer
