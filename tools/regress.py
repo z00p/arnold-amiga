@@ -72,8 +72,8 @@ def set_startup(line):
     open(SEQ, "w", encoding="latin-1", newline="\n").write(s)
 
 
-def kill_uae():
-    subprocess.run(["taskkill", "/F", "/IM", "arnold-uae64.exe"], capture_output=True)
+def kill_uae(p=None):
+    if p is not None: p.kill()   # ours only: other sessions may be running arnold-uae64.exe
 
 
 SOUND = False            # --sound drops NOSOUND
@@ -117,7 +117,7 @@ def run_batch(rows, config, timeout, turbo):
             break                       # the batch is stuck on this title: the rest won't run
         start = time.time()
     time.sleep(1)
-    kill_uae()
+    kill_uae(p)
     p.wait(timeout=10)
     print(f"  batch total {round(time.time() - t0, 1)}s")
     for r in rows:
@@ -135,7 +135,7 @@ def run_title(r, config, timeout, turbo):
         time.sleep(1)
     ok = os.path.exists(done)
     time.sleep(1)
-    kill_uae()
+    kill_uae(p)
     p.wait(timeout=10)
     return ok, round(time.time() - t0, 1)
 

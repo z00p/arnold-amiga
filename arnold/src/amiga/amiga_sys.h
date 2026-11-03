@@ -41,6 +41,8 @@ unsigned long Sys_JoyRaw(int port); /* last lowlevel.library ReadJoyPort value (
 int  Sys_AudioOpen(int period, int samples, int audint);   /* audint: fed by Paula's own interrupt, not the VBlank */
 unsigned long Sys_ChipClock(void);   /* Paula clock, Hz (PAL 3546895, NTSC 3579545) */
 void Sys_AudioClose(void);
+extern int Sys_AudioAhi;             /* before Sys_AudioOpen: HDMI sound through AHI wanted */
+int  Sys_AudioAhiOn(void);           /* 1: this open went to AHI, 0: Paula */
 void Sys_AudioQueue(const unsigned char *s16stereo, int samples);
 
 void Sys_AudioPause(void);           /* DMA off; the next Sys_AudioQueue restarts it */
@@ -71,7 +73,9 @@ struct SysMenu {
 	int tape_rewind;         /* set by the menu: rewind the tape on Continue / Reset */
 	char tapepos[32];        /* "Tape 3/5  " for the status line (host fills it) */
 	int rtg;                 /* RTG screen (experimental, 26 Oct 2026): the emulation (and the menu) on an RTG board's 8-bit screen */
-	int scan;                /* Scanlines on the RTG screen (SYS_SCAN_*, 1.2) */
+	int hdmisound;           /* HDMI sound (Nov 2026): on the RTG screen, sound through AHI and emu68hdmi.audio; a setting of the machine, not per game */
+	int hdmifail;            /* host: HDMI sound was asked for but the driver wouldn't open, Paula plays (cleared by a sound change in the menu) */
+	int scan;               /* Scanlines on the RTG screen (SYS_SCAN_*, 1.2) */
 	int state_slot;          /* save states (1.4): the slot (1-4) of SYS_MENU_SAVESTATE / SYS_MENU_LOADSTATE */
 	char state_label[4][40]; /* the host's labels for the slots ("Slot 1 (empty)"), shown in the Project menu */
 	int autotape;            /* Auto-start tapes (1.5): Power ON / Reset types the load command and presses a key at "Press PLAY" */
@@ -91,7 +95,7 @@ void Sys_ShowPicture(void *screen, const char *name);   /* amiga_iff.c: modal IF
 
 /* Workbench start (amiga_wb.c): fills st from the icon's ToolTypes and a
  * project icon; returns 1 when started from Workbench. */
-struct SysStart { char prefs[SYS_PATH], media[SYS_PATH], remap[128]; int menu, hires, tall, wide, nosound, skip, refresh, joykeys, pad, speed, video, model, diskwrite, fasttape, tapesound, rtg, scan; char tape[SYS_PATH]; int autotape; };   /* skip -1, refresh 0, others -1: not given */
+struct SysStart { char prefs[SYS_PATH], media[SYS_PATH], remap[128]; int menu, hires, tall, wide, nosound, skip, refresh, joykeys, pad, speed, video, model, diskwrite, fasttape, tapesound, rtg, scan; char tape[SYS_PATH]; int autotape, hdmisound; };   /* skip -1, refresh 0, others -1: not given */
 int Sys_ParseModel(const char *v);   /* "464" "664" "6128" "PLUS" "GX4000" (any case) -> SYS_MODEL_*, -1 if not one */
 int Sys_ParseVideo(const char *v);   /* "AUTO" "PAL" "NTSC" or 0-2 -> 0-2, -1 if not one */
 int Sys_ParseSpeed(const char *v);   /* "50" or 0 -> 0, "DISPLAY" or 1 -> 1, -1 if not one */

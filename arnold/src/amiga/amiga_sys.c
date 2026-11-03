@@ -1,4 +1,4 @@
-/* Arnold on AmigaOS: screen, c2p, palette, keyboard and joystick.
+/* Arnold on AmigaOS: screen, c2p, palette and keyboard (joystick: amiga_joy.c, sound: amiga_audio.c).
  * AmigaOS 3.x, AGA. Built with bebbo's m68k-amigaos-gcc, -noixemul. */
 #include <exec/types.h>
 #include <exec/memory.h>
@@ -24,10 +24,11 @@
 #include <stdlib.h>
 #include <string.h>
 #include "amiga_sys.h"
+#include "amiga_sys_priv.h"
 #include <stdarg.h>
 
 unsigned long __stack = 256 * 1024;   /* libnix: enlarge the stack at start */
-static const char ver[] __attribute__((used)) = "$VER: Arnold 1.5 (29.10.2026) Amiga port, GPL-2.0";
+static const char ver[] __attribute__((used)) = "$VER: Arnold 1.6 (3.11.2026) Amiga port, GPL-2.0";
 
 /* ---- diagnostic log ---- */
 static FILE *logf;
@@ -1477,332 +1478,6 @@ int Sys_GetKey(int *rawcode, int *down, int *qualifier)
 	return 1;
 }
 
-/* Joystick: the hardware port 2 (joy1dat, CIA-A fire, POTINP fire 2) as
- * AmiMSX reads it, OR'd with lowlevel.library's view of ports 0-3 (14 Oct
- * 2026: a USB pad under Poseidon only shows up through lowlevel.library's
- * joystick-port emulation, not in the hardware registers). Port 0 is skipped
- * while it holds the mouse. Red = fire 1, blue (or any other button) = fire 2. */
-#include <libraries/lowlevel.h>
-#include <proto/lowlevel.h>
-struct Library *LowLevelBase;
-static int lowlevel_tried;
-
-static ULONG joy_last_raw[4];
-ULONG Sys_JoyRaw(int port) { return port >= 0 && port < 4 ? joy_last_raw[port] : 0; }
-
-/* CD32 pad on port 2, read by us (15 Oct 2026). On the A1200 PiStorm,
- * lowlevel.library saw John's KTRL CD32 pad as a game controller but only
- * ever reported the red button: on a CPU that fast its shift-register reads
- * outrun the pad. This is the usual routine games use (cf. Codetapper's
- * CD32 pad notes): pin 5 low selects CD32 mode, pin 6 (fire) becomes the
- * clock, and the 7 buttons come out one by one on pin 9 (POTINP bit 14,
- * low = pressed). Each step waits on CIA reads, which run at real Amiga
- * speed whatever the CPU. Order: blue, red, yellow, green, forward, reverse,
- * play. Returns the 7 button bits (bit set = pressed). */
-static unsigned read_cd32_buttons(void)
-{
-	/* Returns 9 bits, set = low on pin 9: the 7 buttons, then the pad's ID
-	 * bits (a CD32 pad gives 8th = 0, 9th = 1 here). As AmiMSX does it
-	 * (John's decision, 17 Oct 2026): pin 6 is driven HIGH as an output
-	 * before pin 5 falls, otherwise a held red button gives a spurious clock;
-	 * the edges are timed with CIA reads, which run at real Amiga speed
-	 * whatever the CPU. Order: blue, red, yellow, green, forward, reverse,
-	 * play. */
-	volatile UBYTE *pra = &ciaa.ciapra, *ddra = &ciaa.ciaddra;
-	unsigned bits = 0;
-	int i, d;
-	UBYTE dummy;
-	Disable();
-	*pra |= 0x80;                  /* clock high first... */
-	*ddra |= 0x80;                 /* ...then port 2 fire line as an output */
-	for (d = 0; d < 4; d++) dummy = *pra;
-	custom.potgo = 0x6f00;         /* port 2: pin 5 output low (CD32 mode), pin 9 input */
-	for (d = 0; d < 25; d++) dummy = *pra;
-	for (i = 0; i < 9; i++) {
-		for (d = 0; d < 10; d++) dummy = *pra;
-		if (!(custom.potinp & 0x4000)) bits |= 1u << i;
-		*pra &= ~0x80;             /* clock pulse: next bit */
-		for (d = 0; d < 4; d++) dummy = *pra;
-		*pra |= 0x80;
-	}
-	*ddra &= ~0x80;                /* fire line back to input */
-	custom.potgo = 0xff00;         /* pin 5 high again: 2-button mode */
-	Enable();
-	(void)dummy;
-	return bits;
-}
-
-/* Joystick port 2 (lowlevel.library port 1). No auto-detection (John's
- * decision, 17 Oct 2026, after AmiMSX: lowlevel.library's CD32 detection was
- * wrong for his adapters and even for a plain joystick, and a plain joystick
- * read as a CD32 pad has its fire line driven as a clock, so nothing works).
- * - Sys_PadType 0, standard: the hardware registers as AmiMSX reads them
- *   (joy1dat, CIA-A fire, POTINP fire 2 on pin 9 or pin 5). Pin 6 is never
- *   driven, so a plain joystick sees no probe at all.
- * - Sys_PadType 1, CD32 pad: directions from joy1dat, the buttons from
- *   read_cd32_buttons(), no ID check. Red = fire 1; blue, green, yellow = fire 2.
- * Game controllers lowlevel.library reports on ports 2-3 (USB pads under
- * Poseidon) are OR'd in either way. */
-int Sys_PadType;                    /* 0 standard, 1 CD32 pad (menu / PAD= / prefs pad=) */
-int Sys_NoCD32;                     /* NOCD32: kept for old scripts, same as PAD=0 */
-static int pad_logged = -1;
-unsigned Sys_ReadJoystick(void)
-{
-	unsigned m = 0;
-	int port;
-	UWORD j = custom.joy1dat;
-	if (!lowlevel_tried) {
-		lowlevel_tried = 1;
-		LowLevelBase = OpenLibrary((STRPTR)"lowlevel.library", 39);
-		Sys_Log("joystick: lowlevel.library %s", LowLevelBase ? "open (USB pads on ports 2-3)" : "not available");
-	}
-	if (Sys_NoCD32) Sys_PadType = 0;
-	if (pad_logged != Sys_PadType) {
-		pad_logged = Sys_PadType;
-		Sys_Log("joystick: port 2 read as %s", Sys_PadType ? "a CD32 pad" : "a standard 2-button joystick");
-	}
-	if (j & 0x0002) m |= SYS_JOY_RIGHT;
-	if (j & 0x0200) m |= SYS_JOY_LEFT;
-	if (((j >> 1) ^ j) & 0x0001) m |= SYS_JOY_DOWN;
-	if (((j >> 9) ^ (j >> 8)) & 0x0001) m |= SYS_JOY_UP;
-	if (Sys_PadType) {
-		unsigned b = read_cd32_buttons();
-		joy_last_raw[1] = b;
-		if (b & 0x02) m |= SYS_JOY_FIRE1;                    /* red */
-		if (b & (0x01 | 0x04 | 0x08)) m |= SYS_JOY_FIRE2;   /* blue, yellow, green */
-	} else {
-		if (!(ciaa.ciapra & 0x80)) m |= SYS_JOY_FIRE1;
-		custom.potgo = 0xff00;
-		/* fire 2 on pin 9 (Amiga standard) or pin 5 (as AmiMSX reads it; some 2-button pads) */
-		if (!(custom.potinp & 0x4000) || !(custom.potinp & 0x1000)) m |= SYS_JOY_FIRE2;
-	}
-	if (LowLevelBase) {
-		for (port = 2; port < 4; port++) {
-			ULONG v = ReadJoyPort(port);
-			ULONG type = v & JP_TYPE_MASK;
-			if (v != joy_last_raw[port]) joy_last_raw[port] = v;
-			if (type != JP_TYPE_GAMECTLR && type != JP_TYPE_JOYSTK) continue;
-			if (v & JPF_JOY_UP) m |= SYS_JOY_UP;
-			if (v & JPF_JOY_DOWN) m |= SYS_JOY_DOWN;
-			if (v & JPF_JOY_LEFT) m |= SYS_JOY_LEFT;
-			if (v & JPF_JOY_RIGHT) m |= SYS_JOY_RIGHT;
-			if (v & JPF_BUTTON_RED) m |= SYS_JOY_FIRE1;
-			if (v & (JPF_BUTTON_BLUE | JPF_BUTTON_GREEN | JPF_BUTTON_YELLOW)) m |= SYS_JOY_FIRE2;
-		}
-	}
-	return m;
-}
-
-/* ---- sound ---- */
-/* Paula, channels 0 (left) and 1 (right), 8-bit signed (14 Oct 2026 rewrite).
- * The emulation makes one block a CPC frame (444 samples). A frame of the PAL
- * display is 313 x 227 = 71051 colour clocks; at period 160 a block lasts
- * 71040, so one block per VBlank keeps Paula fed at the display's pace. Blocks
- * go into a small queue; a VBlank interrupt server hands the oldest one to
- * Paula (it is latched when the playing block ends). No block ready (the
- * emulation is behind): Paula repeats the last one. Queue full (it caught up in
- * a burst): the oldest waiting block is dropped. Both are counted (Sys_Perf). */
-#include <devices/audio.h>
-#include <hardware/dmabits.h>
-#include <hardware/intbits.h>
-#include <exec/interrupts.h>
-#include "audio_conv.h"
-#define ABUFS 4                       /* playing + handed over + up to 2 queued */
-static struct MsgPort *audport;
-static struct IOAudio *audio;
-static int aud_open, aud_n;
-static UBYTE *aud_buf[2][ABUFS];      /* [channel][slot] in chip RAM */
-static UBYTE aud_map[] = { 3 };       /* channels 0 and 1 */
-static volatile int aud_rd, aud_wr, aud_count, aud_run;
-static volatile unsigned long aud_underruns, aud_drops, aud_irqs;
-static struct Interrupt aud_vbint;
-static int aud_vbint_added;
-/* 19 Oct 2026: on a display that isn't 50 Hz the VBlank can't pace Paula, so
- * the blocks are handed over by channel 0's own interrupt instead: Paula
- * raises it when it latches a block (the start of its playback), and the
- * pointer written then is latched when that block ends. The rate is then
- * Paula's own: samples x period colour clocks a block. aud_mode 0 = VBlank
- * server (PAL, as tuned), 1 = audio interrupt. */
-static int aud_mode, aud_first;
-static struct Interrupt aud_int, *aud_oldint;
-
-static void aud_feed(void)
-{
-	if (aud_run) {
-		if (aud_count > 0) {
-			custom.aud[0].ac_ptr = (UWORD *)aud_buf[0][aud_rd];
-			custom.aud[1].ac_ptr = (UWORD *)aud_buf[1][aud_rd];
-			aud_rd = (aud_rd + 1) % ABUFS;
-			aud_count--;
-		} else if (aud_first)
-			aud_first = 0;   /* the start: nothing queued behind the first block yet */
-		else
-			aud_underruns++;
-	}
-}
-
-static LONG aud_vblank(register APTR data __asm("a1"))
-{
-	aud_feed();
-	return 0;
-}
-
-/* exec interrupt handler (SetIntVector): must clear its request itself */
-static void aud_handler(register APTR data __asm("a1"))
-{
-	custom.intreq = INTF_AUD0;
-	aud_irqs++;
-	aud_feed();
-}
-
-unsigned long Sys_AudioIrqs(void) { return aud_irqs; }
-
-int Sys_AudioOpen(int period, int samples, int audint)
-{
-	int c, b;
-	if (aud_open) return 1;
-	aud_mode = audint;
-	if (samples & 1) samples--;
-	aud_n = samples;
-	audport = CreateMsgPort();
-	if (!audport) return 0;
-	audio = (struct IOAudio *)CreateIORequest(audport, sizeof(struct IOAudio));
-	if (!audio) { DeleteMsgPort(audport); audport = NULL; return 0; }
-	audio->ioa_Request.io_Message.mn_Node.ln_Pri = 127;   /* don't let others steal them */
-	audio->ioa_Request.io_Command = ADCMD_ALLOCATE;
-	audio->ioa_Request.io_Flags = ADIOF_NOWAIT;
-	audio->ioa_AllocKey = 0;
-	audio->ioa_Data = aud_map;
-	audio->ioa_Length = sizeof(aud_map);
-	if (OpenDevice("audio.device", 0, (struct IORequest *)audio, 0) != 0) {
-		Sys_Log("audio: audio.device channels 0+1 not free");
-		DeleteIORequest((struct IORequest *)audio); audio = NULL;
-		DeleteMsgPort(audport); audport = NULL;
-		return 0;
-	}
-	aud_open = 1;
-	for (c = 0; c < 2; c++) for (b = 0; b < ABUFS; b++) {
-		aud_buf[c][b] = AllocMem(aud_n, MEMF_CHIP | MEMF_CLEAR);
-		if (!aud_buf[c][b]) { Sys_Log("audio: no chip RAM for buffers"); Sys_AudioClose(); return 0; }
-	}
-	custom.aud[0].ac_per = period; custom.aud[1].ac_per = period;
-	custom.aud[0].ac_vol = 64;     custom.aud[1].ac_vol = 64;
-	custom.aud[0].ac_len = aud_n >> 1; custom.aud[1].ac_len = aud_n >> 1;
-	aud_rd = aud_wr = aud_count = 0; aud_run = 0;
-	if (aud_mode) {
-		aud_int.is_Node.ln_Type = NT_INTERRUPT;
-		aud_int.is_Node.ln_Pri = 0;
-		aud_int.is_Node.ln_Name = (char *)"Arnold audio";
-		aud_int.is_Data = NULL;
-		aud_int.is_Code = (VOID (*)())aud_handler;
-		custom.intena = INTF_AUD0;
-		custom.intreq = INTF_AUD0;
-		aud_oldint = SetIntVector(INTB_AUD0, &aud_int);
-		custom.intena = INTF_SETCLR | INTF_AUD0;
-	} else {
-		aud_vbint.is_Node.ln_Type = NT_INTERRUPT;
-		aud_vbint.is_Node.ln_Pri = 0;
-		aud_vbint.is_Node.ln_Name = (char *)"Arnold audio";
-		aud_vbint.is_Data = NULL;
-		aud_vbint.is_Code = (VOID (*)())aud_vblank;
-		AddIntServer(INTB_VERTB, &aud_vbint);
-		aud_vbint_added = 1;
-	}
-	Sys_Log("audio: open, period %d, %d samples a block, fed by %s, chip clock %lu Hz", period, samples,
-		aud_mode ? "the audio interrupt" : "the VBlank", Sys_ChipClock());
-	return 1;
-}
-
-void Sys_AudioClose(void)
-{
-	int c, b;
-	if (!aud_open) return;
-	aud_run = 0;
-	if (aud_vbint_added) { RemIntServer(INTB_VERTB, &aud_vbint); aud_vbint_added = 0; }
-	custom.dmacon = DMAF_AUD0 | DMAF_AUD1;   /* clear */
-	if (aud_mode) {
-		custom.intena = INTF_AUD0;
-		SetIntVector(INTB_AUD0, aud_oldint);
-		custom.intreq = INTF_AUD0;
-		aud_oldint = NULL; aud_mode = 0;
-	}
-	custom.aud[0].ac_vol = 0; custom.aud[1].ac_vol = 0;
-	for (c = 0; c < 2; c++) for (b = 0; b < ABUFS; b++)
-		if (aud_buf[c][b]) { FreeMem(aud_buf[c][b], aud_n); aud_buf[c][b] = NULL; }
-	if (audio) { CloseDevice((struct IORequest *)audio); DeleteIORequest((struct IORequest *)audio); audio = NULL; }
-	if (audport) { DeleteMsgPort(audport); audport = NULL; }
-	aud_open = 0;
-}
-
-void Sys_AudioQueue(const unsigned char *s16, int samples)
-{
-	int slot;
-	if (!aud_open) return;
-	if (samples > aud_n) samples = aud_n;
-	Disable();
-	if (aud_count >= ABUFS - 2) {             /* full: drop the oldest waiting block */
-		aud_rd = (aud_rd + 1) % ABUFS;
-		aud_count--;
-		aud_drops++;
-	}
-	slot = aud_wr;
-	Enable();
-	/* Slots in use: the block playing, the one handed over at the last VBlank
-	 * (latched when the playing one ends) and the queue; with the queue kept
-	 * below ABUFS - 2 the slot at aud_wr is none of them. */
-	Audio_SplitTo8((const unsigned short *)s16, (signed char *)aud_buf[0][slot], (signed char *)aud_buf[1][slot], samples);
-	if (samples < aud_n) {                    /* short block: hold the last level */
-		memset(aud_buf[0][slot] + samples, samples ? aud_buf[0][slot][samples - 1] : 0, aud_n - samples);
-		memset(aud_buf[1][slot] + samples, samples ? aud_buf[1][slot][samples - 1] : 0, aud_n - samples);
-	}
-#ifdef SOUNDQ_DUMP
-	/* soundq verification builds only: every block as Paula gets it (left then
-	   right, 8-bit signed) to PROGDIR:audio.raw, to compare with the headless WAV */
-	{ static BPTR fh; static int tried;
-	  if (!tried) { tried = 1; fh = Open((STRPTR)"PROGDIR:audio.raw", MODE_NEWFILE); }
-	  if (fh) { Write(fh, aud_buf[0][slot], samples); Write(fh, aud_buf[1][slot], samples); Flush(fh); }
-	  { static BPTR f16; static int tried16;   /* and the core's 16-bit block (big-endian) */
-	    if (!tried16) { tried16 = 1; f16 = Open((STRPTR)"PROGDIR:audio16.raw", MODE_NEWFILE); }
-	    if (f16) { Write(f16, (APTR)s16, samples * 4); Flush(f16); } } }
-#endif
-	Disable();
-	aud_wr = (aud_wr + 1) % ABUFS;
-	aud_count++;
-	if (!aud_run) {
-		/* start: this block plays at once, the server feeds the rest */
-		custom.aud[0].ac_ptr = (UWORD *)aud_buf[0][slot];
-		custom.aud[1].ac_ptr = (UWORD *)aud_buf[1][slot];
-		aud_rd = aud_wr; aud_count = 0;
-		aud_first = 1;
-		if (aud_mode) custom.intreq = INTF_AUD0;
-		custom.dmacon = DMAF_SETCLR | DMAF_MASTER | DMAF_AUD0 | DMAF_AUD1;
-		if (aud_mode) custom.intena = INTF_SETCLR | INTF_AUD0;   /* off while paused, see Sys_AudioPause */
-		aud_run = 1;
-	}
-	Enable();
-	Sys_Perf.aud_underruns = aud_underruns;
-	Sys_Perf.aud_drops = aud_drops;
-}
-
-void Sys_AudioPause(void)
-{
-	if (!aud_open) return;
-	Disable();
-	aud_run = 0;
-	aud_rd = aud_wr = aud_count = 0;
-	/* 19 Oct 2026 (NTSC menu shear on John's A1200): with the audio DMA off,
-	 * an enabled AUD0 interrupt doesn't stop. Paula drops to manual mode and
-	 * asks for a new word every sample period once the handler clears the
-	 * request: about 22000 level-4 interrupts a second for as long as the
-	 * menu was up (70000 counted in one WinUAE menu visit). They hold off the
-	 * level-3 VBlank work of graphics and Intuition. So the interrupt is
-	 * switched off here, and Sys_AudioQueue switches it on again with the DMA. */
-	if (aud_mode) custom.intena = INTF_AUD0;
-	custom.dmacon = DMAF_AUD0 | DMAF_AUD1;
-	if (aud_mode) custom.intreq = INTF_AUD0;
-	Enable();
-}
-
 unsigned long Sys_Millis(void) { return frames * 20; }
 void Sys_TimerClose(void)
 {
@@ -1944,7 +1619,7 @@ void Sys_Heartbeat(long frame, long behind_us)
 {
 	hb_log("hb frame %ld late %lu skipped %lu behind_us %ld safe_waits %lu reuse_waits %lu refused %lu safe_out %d disp_out %d shown %d aud_q %d under %lu drops %lu",
 		frame, Sys_Perf.late_frames, Sys_Perf.skipped_frames, behind_us, hb_safe_waits, hb_reuse_waits, hb_refused,
-		safe_out, disp_out, shown, aud_count, aud_underruns, aud_drops);
+		safe_out, disp_out, shown, Sys_AudioCount, Sys_AudioUnderruns, Sys_AudioDrops);
 	hb_log_waits = 1;   /* from now on, log each wait too (rare) */
 }
 
@@ -2163,24 +1838,11 @@ static void bpu_audit(void)
 #endif
 }
 
-/* Save states (1.4, 28 Oct 2026; host_amiga.c): the DC filter of the sound
- * (audio_conv.h, above) is part of a state so the sound after a load is the same
- * to the sample. */
-void Sys_AudioDcState(long *v, int set)
-{
-#if !defined(NO_SNDLUT_FIX) && !defined(NO_SNDUNIPOLAR)
-	if (set) { Audio_DcX[0] = v[0]; Audio_DcX[1] = v[1]; Audio_DcY[0] = v[2]; Audio_DcY[1] = v[3]; Audio_DcOn = (int)v[4]; }
-	else { v[0] = Audio_DcX[0]; v[1] = Audio_DcX[1]; v[2] = Audio_DcY[0]; v[3] = Audio_DcY[1]; v[4] = Audio_DcOn; }
-#else
-	if (!set) v[0] = v[1] = v[2] = v[3] = v[4] = 0;
-#endif
-}
-
 /* Fast-forward (1.5, 28 Oct 2026; host_amiga.c). Sys_OsdHold shows a message
  * like Sys_OsdMessage but until Sys_OsdRelease with the same text (">>" while
  * the key is held). Sys_PacingRestart: the next Sys_WaitFrame starts the 50 Hz
  * schedule from now, so the frames run unpaced do not count as owed (no burst
- * of skipped frames or catch-up afterwards). Sys_AudioSkip: a block that is not
+ * of skipped frames or catch-up afterwards). Sys_AudioSkip (amiga_audio.c): a block that is not
  * played still goes through the DC filter, so the sound after fast-forward is
  * the same to the sample as in a run without it. */
 void Sys_OsdHold(const char *text) { Sys_OsdMessage(text); osd_hold = osd_text[0] != 0; }
@@ -2191,9 +1853,3 @@ void Sys_OsdRelease(const char *text)
 	osd_start = Sys_Micros() - 2000000UL;   /* ends at the next frame shown, rows redrawn from the clean frame */
 }
 void Sys_PacingRestart(void) { pace_restart = 1; }
-void Sys_AudioSkip(const unsigned char *s16, int samples)
-{
-	static signed char l[1024], r[1024];
-	if (samples > 1024) samples = 1024;
-	Audio_SplitTo8((const unsigned short *)s16, l, r, samples);
-}

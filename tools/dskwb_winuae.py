@@ -58,9 +58,9 @@ def main():
     results = []
     def check(name, ok, info=''):
         print('  %-36s %s %s' % (name, 'PASS' if ok else 'FAIL', info)); results.append(ok)
+    p = None
     try:
         regress.set_startup('Run >NIL: Execute Arnold:Keys/batch')
-        regress.kill_uae()
         p = subprocess.Popen([regress.UAE, '-f', os.path.join(BASE, 'winuae', a.config)], cwd=os.path.dirname(regress.UAE))
         t0 = time.time()
         for (rid, *_), done in zip(runs, dones):
@@ -72,7 +72,7 @@ def main():
         while time.time() - t0 < a.timeout and not os.path.exists(last): time.sleep(0.5)
         time.sleep(2)
     finally:
-        regress.kill_uae()
+        regress.kill_uae(p)
         open(regress.SEQ, 'wb').write(seq_backup)
         if log_backup is not None: open(log_path, 'wb').write(log_backup)
     D = lambda n: os.path.join(W, n)

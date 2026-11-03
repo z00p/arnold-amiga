@@ -1,6 +1,6 @@
-From 7be54a48a808e9c35e0b50f8bfc894a10c42f811 Mon Sep 17 00:00:00 2001
+From c0167448409c8919f39fec8e130d15fb8437d629 Mon Sep 17 00:00:00 2001
 From: John Stringer <jcec_1@yahoo.co.uk>
-Date: Thu, 29 Oct 2026 20:01:03 +0000
+Date: Tue, 3 Nov 2026 09:58:16 +0000
 Subject: [PATCH 07/42] Frame skip: decide one frame ahead so drawn frames
  start cleanly
 

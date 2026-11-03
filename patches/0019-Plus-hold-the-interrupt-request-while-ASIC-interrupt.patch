@@ -1,6 +1,6 @@
-From 6275fbb0e8d9f6d38af6a8824fcd7c4d6f65a431 Mon Sep 17 00:00:00 2001
+From a004d83a0c065ad00ccc390940e308d27752c39b Mon Sep 17 00:00:00 2001
 From: John Stringer <jcec_1@yahoo.co.uk>
-Date: Thu, 29 Oct 2026 20:01:10 +0000
+Date: Tue, 3 Nov 2026 09:58:22 +0000
 Subject: [PATCH 19/42] Plus: hold the interrupt request while ASIC interrupts
  are pending; stagger DMA INTs
 

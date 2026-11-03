@@ -1,6 +1,6 @@
-Arnold for Amiga 1.5 - patch set and Amiga build
+Arnold for Amiga 1.6 - patch set and Amiga build
 =================================================
-29 October 2026.  Arnold (c) Kevin Thacker, GPL-2.0.  Amiga port by John Stringer.
+3 November 2026.  Arnold (c) Kevin Thacker, GPL-2.0.  Amiga port by John Stringer.
 
 This package holds the changes made to Arnold while porting it to 68k AmigaOS 3.x (AGA),
 as patches against the upstream source, plus a ready-to-run Amiga build.
@@ -245,9 +245,12 @@ Amiga build
 See amiga/Arnold/README.txt. In short: CPC 6128 Plus / GX4000 cartridges (.cpr), disks
 (.dsk, with the system cartridge's BASIC and AMSDOS) and snapshots (.sna). It needs an
 AGA Amiga with a 68040 or better (PiStorm/Emu68, 68060, BigMig), with sound through Paula.
-Help opens the menu. New in 1.5: fast-forward (hold ` , the key left of 1), auto-start tapes
-(the load command typed after Power ON), black pens off palette entry 0 (Amiga colour 0 shows
-the border colour) and on-screen messages that show on RTG screens with scanlines. 1.4 brought
+Help opens the menu. New in 1.6: HDMI sound on the RTG screen of a PiStorm with a Pi 4 or CM4
+(16-bit stereo through AHI and the separately installed emu68hdmi.audio driver), and save states
+that load again in the -O3 builds. The core is unchanged from 1.5. 1.5 brought fast-forward
+(hold ` , the key left of 1), auto-start tapes (the load command typed after Power ON), black
+pens off palette entry 0 (Amiga colour 0 shows the border colour) and on-screen messages that
+show on RTG screens with scanlines. 1.4 brought
 exact save states (four slots per game, Left/Right Amiga + F1-F4), tear-free RTG writes timed
 to the vertical blank, the BigMig preset on the RTG screen and a small speed gain. 1.3 brought a smoother AGA display (only the bitplanes in use are
 shown, and the log is no longer written to disk every second). 1.2 added an optional RTG screen

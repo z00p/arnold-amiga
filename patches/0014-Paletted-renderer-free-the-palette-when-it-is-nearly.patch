@@ -1,6 +1,6 @@
-From 8444182cb8d60db91c6bd56cb50dbaf26de0b0cd Mon Sep 17 00:00:00 2001
+From b5673844f2f90cdd1796f0b68a6aaaabf506ae64 Mon Sep 17 00:00:00 2001
 From: John Stringer <jcec_1@yahoo.co.uk>
-Date: Thu, 29 Oct 2026 20:01:08 +0000
+Date: Tue, 3 Nov 2026 09:58:20 +0000
 Subject: [PATCH 14/42] Paletted renderer: free the palette when it is nearly
  full
 

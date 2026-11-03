@@ -59,6 +59,14 @@ default): after Power ON Arnold types the load command (`RUN"` on a 464, `|TAPE`
 a 664 or 6128, f1 first on the Plus) and presses a key at "Press PLAY then any key". Saving to
 tape is not supported, and only .cdt images load (no .wav, .voc or .csw samples).
 
+HDMI sound (1.6): on a PiStorm with a Raspberry Pi 4 or CM4, the RTG screen can play its sound over
+HDMI instead of Paula, as 16-bit stereo, through AHI and the emu68hdmi.audio driver (installed
+separately; it is not part of Arnold). Options menu "HDMI sound (RTG screen)", `HDMISOUND=0|1`, off by
+default. On the AGA screen, or if another program has the driver, the sound stays on Paula and the
+menu says so; Arnold tries HDMI again on each Continue. On our A1200 and TV the HDMI sound landed
+nearer the picture than Paula's. Also in 1.6: save states load again in the -040-Max and -060-Max
+builds (1.5's refused them on a PiStorm A1200).
+
 Fast-forward (1.5): hold the ` key (left of 1) and the CPC runs as fast as the Amiga allows: no
 50 Hz wait, about 10 pictures a second, no sound, and a ">>" symbol at the top left. The emulation
 is exactly the same as at normal speed (only what is shown and heard changes), and on release it

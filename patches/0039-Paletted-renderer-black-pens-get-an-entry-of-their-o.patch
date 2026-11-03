@@ -1,6 +1,6 @@
-From da9cd67c0d4e4a2da2e720f8054a6f04bdb17624 Mon Sep 17 00:00:00 2001
+From a3a1f2853d0e3c9863571f3988f744b31ff1c730 Mon Sep 17 00:00:00 2001
 From: John Stringer <jcec_1@yahoo.co.uk>
-Date: Thu, 29 Oct 2026 20:01:23 +0000
+Date: Tue, 3 Nov 2026 09:58:31 +0000
 Subject: [PATCH 39/42] Paletted renderer: black pens get an entry of their own
 
 Palette_MatchColour no longer matches a pen to entry 0. Entry 0 is kept

@@ -1,6 +1,6 @@
-From 5e839de8f2ef1bb1f1ebbc660ea73d78b9a4428d Mon Sep 17 00:00:00 2001
+From 6a057e0826d4894ccfbcb0be96c18fa14fcc22a1 Mon Sep 17 00:00:00 2001
 From: John Stringer <jcec_1@yahoo.co.uk>
-Date: Thu, 29 Oct 2026 20:01:28 +0000
+Date: Tue, 3 Nov 2026 09:58:33 +0000
 Subject: [PATCH 42/42] Headless test host
 
 src/headless: runs the core without a display (renders N frames to a buffer,

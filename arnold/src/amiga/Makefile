@@ -16,7 +16,7 @@ LIBS = -lm
 # objects.mak may have CRLF line endings (Windows checkout): strip \r first.
 CORE := $(addprefix ../,$(shell tr -d '\r' < ../objects.mak | sed -n '/^CPC_O=/,/^$$/p' | tr -d '\\' | sed 's/CPC_O=//;s/\.o/.c/g'))
 OBJDIR ?= obj-$(CPU)
-OBJS := $(patsubst ../%.c,$(OBJDIR)/%.o,$(CORE)) $(OBJDIR)/host_amiga.o $(OBJDIR)/amiga_sys.o $(OBJDIR)/amiga_menu.o $(OBJDIR)/amiga_wb.o $(OBJDIR)/amiga_iff.o $(OBJDIR)/amiga_logo.o $(OBJDIR)/screenshot.o $(OBJDIR)/keyscript.o $(OBJDIR)/keymaplogic.o $(OBJDIR)/amiga_keymap.o $(OBJDIR)/gamedb.o \
+OBJS := $(patsubst ../%.c,$(OBJDIR)/%.o,$(CORE)) $(OBJDIR)/host_amiga.o $(OBJDIR)/host_file.o $(OBJDIR)/amiga_sys.o $(OBJDIR)/amiga_audio.o $(OBJDIR)/amiga_joy.o $(OBJDIR)/amiga_menu.o $(OBJDIR)/amiga_wb.o $(OBJDIR)/amiga_iff.o $(OBJDIR)/amiga_logo.o $(OBJDIR)/screenshot.o $(OBJDIR)/keyscript.o $(OBJDIR)/keymaplogic.o $(OBJDIR)/amiga_keymap.o $(OBJDIR)/gamedb.o \
 	$(OBJDIR)/rtgfw.o $(OBJDIR)/rtg_conv.o $(OBJDIR)/tapeauto.o
 TARGET ?= $(if $(filter 68040,$(CPU)),Arnold,Arnold-$(subst 680,0,$(CPU)))
 
@@ -29,13 +29,18 @@ $(OBJDIR)/%.o: ../%.c
 	@mkdir -p $(dir $@)
 	$(CC) $(CFLAGS) -c -o $@ $<
 
+# Save states (1.6, 3 Nov 2026): the -O3 builds (-040-Max, -060-Max) refused every state they had
+# just saved on the A1200 ("expansion RAM is another size"); with savestate.c alone at -O2 they load.
+# The stream code itself passes at -O3 on its own, so the cause is not found. Not hot code: last -O wins.
+$(OBJDIR)/cpc/savestate.o: CFLAGS += -O2
+
 # rtgfw (RTG pilot, 26 Oct 2026): the vendored MIT framework (rtgfw/SOURCE.txt), last in
 # the link so it doesn't move the hot code; gnu99 as in its own build
 $(OBJDIR)/%.o: rtgfw/src/%.c rtgfw/src/rtgfw.h rtgfw/src/rtg_conv.h
 	@mkdir -p $(dir $@)
 	$(CC) $(CFLAGS) -std=gnu99 -Irtgfw/src -c -o $@ $<
 
-$(OBJDIR)/%.o: %.c amiga_sys.h
+$(OBJDIR)/%.o: %.c amiga_sys.h amiga_sys_priv.h
 	@mkdir -p $(dir $@)
 	$(CC) $(CFLAGS) -c -o $@ $<
 

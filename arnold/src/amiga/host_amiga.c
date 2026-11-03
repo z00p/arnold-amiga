@@ -27,6 +27,7 @@
 unsigned char *chunky;          /* W x H, one byte a pixel: 384 x 272 lores, 768 x 272 hires */
 int W, H;
 extern void Palette_Set(void);
+BOOL Host_LoadFile(const char *n, unsigned char **pp, unsigned long *pl);   /* host_file.c (not in host.h) */
 
 static GRAPHICS_BUFFER_INFO bi;
 static GRAPHICS_BUFFER_COLOUR_FORMAT cf;
@@ -553,30 +554,6 @@ BOOL Host_ProcessSystemEvents(void)
 	return Sys_Poll() || hk_request;
 }
 
-/* ---- files ---- */
-HOST_FILE_HANDLE Host_OpenFile(const char *n, int Access) { return (HOST_FILE_HANDLE)fopen(n, Access == HOST_FILE_ACCESS_READ ? "rb" : "wb"); }
-void Host_CloseFile(HOST_FILE_HANDLE h) { if (h) fclose((FILE *)h); }
-int Host_GetFileSize(HOST_FILE_HANDLE h) { FILE *f = (FILE *)h; long p = ftell(f), s; fseek(f, 0, SEEK_END); s = ftell(f); fseek(f, p, SEEK_SET); return (int)s; }
-void Host_WriteData(HOST_FILE_HANDLE h, unsigned char *d, unsigned long l) { fwrite(d, 1, l, (FILE *)h); }
-void Host_ReadData(HOST_FILE_HANDLE h, unsigned char *d, unsigned long l) { fread(d, 1, l, (FILE *)h); }
-
-BOOL Host_LoadFile(const char *n, unsigned char **pp, unsigned long *pl)
-{
-	FILE *f = fopen(n, "rb"); long s; unsigned char *p;
-	*pp = NULL; *pl = 0;
-	if (!f) return FALSE;
-	fseek(f, 0, SEEK_END); s = ftell(f); fseek(f, 0, SEEK_SET);
-	p = malloc(s);
-	if (!p || fread(p, 1, s, f) != (size_t)s) { fclose(f); free(p); return FALSE; }
-	fclose(f); *pp = p; *pl = s; return TRUE;
-}
-BOOL Host_SaveFile(const char *n, unsigned char *p, unsigned long l)
-{
-	FILE *f = fopen(n, "wb"); if (!f) return FALSE;
-	fwrite(p, 1, l, f); fclose(f); return TRUE;
-}
-BOOL LoadFile(const char *n, unsigned char **pp, unsigned long *pl) { return Host_LoadFile(n, pp, pl); }
-
 /* Argument keywords ignore case, as AmigaDOS does (13 Oct 2026: "Arnold bench"
  * typed in lower case started the emulator instead). Return 0 on a match. */
 static int kwncmp(const char *a, const char *kw, int n)
@@ -637,6 +614,7 @@ static void prefs_load(void)
 		else if (!strcmp(line, "tapesound")) menu.tapesound = atoi(v) ? 1 : 0;
 		else if (!strcmp(line, "autotape")) menu.autotape = atoi(v) ? 1 : 0;
 		else if (!strcmp(line, "rtg")) menu.rtg = atoi(v) ? 1 : 0;
+		else if (!strcmp(line, "hdmisound")) menu.hdmisound = atoi(v) ? 1 : 0;
 		else if (!strcmp(line, "scanlines")) { int k = Sys_ParseScan(v); if (k >= 0) menu.scan = k; }
 		else if (!strcmp(line, "tape")) strncpy(menu.tape, v, SYS_PATH - 1);
 	}
@@ -658,6 +636,7 @@ static void prefs_save(void)
 	fprintf(f, "fasttape=%d\ntape=%s\n", global_fasttape, menu.tape);
 	fprintf(f, "tapesound=%d\n", global_tapesound);
 	fprintf(f, "autotape=%d\n", global_autotape);
+	fprintf(f, "hdmisound=%d\n", menu.hdmisound);
 	fprintf(f, "scanlines=%s\n", Sys_ScanWords[global_scan > 0 && global_scan < SYS_SCANS ? global_scan : 0]);
 	if (global_remap[0]) fprintf(f, "remap=%s\n", global_remap);
 	fclose(f);
@@ -1173,7 +1152,7 @@ static int open_emulation(void)
 	 *   with the period shortened so the blocks keep up. */
 	{
 		unsigned long clk = Sys_ChipClock(), fus, target;
-		int period, audint, timer, speed = menu.speed;
+		int period, audint, timer, ahi, speed = menu.speed;
 		/* RTG screen: there is no RTG VBlank to follow (rtgfw never waits for the board's
 		 * refresh), so "Follow display" means the CPC's 50 Hz there (DESIGN.md 7) */
 		if (Sys_RtgActive && speed) { speed = 0; Sys_Log("pacing: RTG screen: Follow display has no meaning, the CPC's 50 Hz"); }
@@ -1186,10 +1165,16 @@ static int open_emulation(void)
 			fus = speed ? Sys_DisplayFrameUs : (unsigned long)(444ULL * period * 1000000ULL / clk);
 		}
 		Sys_SetPacing(timer, fus);
-		if (audio_open && (period != aud_period || audint != aud_int)) { Sys_AudioClose(); audio_open = 0; }
-		aud_period = period; aud_int = audint;
+		ahi = menu.hdmisound && Sys_RtgActive;
+		/* HDMI wanted but Paula plays (another program had the driver): try again on each Continue */
+		if (audio_open && (period != aud_period || audint != aud_int || ahi != Sys_AudioAhi || (ahi && !Sys_AudioAhiOn()))) { Sys_AudioClose(); audio_open = 0; }
+		aud_period = period; aud_int = audint; Sys_AudioAhi = ahi;
 	}
-	if (menu.sound && !audio_open && Sys_AudioOpen(aud_period, AUD_SAMPLES, aud_int)) { audio_open = 1; CPC_SetAudioActive(TRUE); }
+	if (menu.sound && !audio_open && Sys_AudioOpen(aud_period, AUD_SAMPLES, aud_int)) {
+		audio_open = 1; CPC_SetAudioActive(TRUE);
+		menu.hdmifail = Sys_AudioAhi && !Sys_AudioAhiOn();
+		if (menu.hdmifail) strcpy(menu.status, "HDMI sound not available: playing on Paula");
+	}
 	if (!menu.sound && audio_open) { Sys_AudioClose(); audio_open = 0; CPC_SetAudioActive(FALSE); }
 	CPC_ClearKeyboard();
 	/* and the joystick state with it: a joy key held when Help was pressed is
@@ -1242,6 +1227,7 @@ int main(int argc, char **argv)
 		if (st.fasttape >= 0) menu.fasttape = st.fasttape;
 		if (st.tapesound >= 0) menu.tapesound = st.tapesound;
 		if (st.autotape >= 0) menu.autotape = autotape_arg = st.autotape;
+		if (st.hdmisound >= 0) menu.hdmisound = st.hdmisound;
 		if (st.scan >= 0) scan = st.scan;
 		if (st.rtg >= 0) rtg = st.rtg;
 		if (st.tape[0]) strncpy(menu.tape, st.tape, SYS_PATH - 1);
@@ -1280,6 +1266,8 @@ int main(int argc, char **argv)
 			else if (!kwcmp(argv[i], "TAPESOUND")) menu.tapesound = 1;
 			else if (!kwncmp(argv[i], "AUTOTAPE=", 9)) menu.autotape = autotape_arg = atoi(argv[i] + 9) ? 1 : 0;   /* auto-start tapes (1.5) */
 			else if (!kwcmp(argv[i], "AUTOTAPE")) menu.autotape = autotape_arg = 1;
+			else if (!kwncmp(argv[i], "HDMISOUND=", 10)) menu.hdmisound = atoi(argv[i] + 10) ? 1 : 0;
+			else if (!kwcmp(argv[i], "HDMISOUND")) menu.hdmisound = 1;
 			else if (!kwcmp(argv[i], "RTG")) rtg = 1;                       /* RTG screen (pilot, 26 Oct 2026) */
 			else if (!kwncmp(argv[i], "RTG=", 4)) rtg = atoi(argv[i] + 4) ? 1 : 0;
 			else if (!kwcmp(argv[i], "RTGBLIT")) Sys_RtgBlit = 1;           /* diagnostic: off-screen bitmap + blit */

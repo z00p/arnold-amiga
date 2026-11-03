@@ -422,7 +422,8 @@ post HEAD arnold/src
 rm -rf $WT/src/headless
 commit "AmigaOS host (68k AGA): Arnold for Amiga" \
 "src/amiga: the AmigaOS 3.x host (AGA screen with chunky-to-planar and triple
-buffering, an optional RTG screen through rtgfw, Paula sound, rawkey keyboard
+buffering, an optional RTG screen through rtgfw, Paula sound and AHI sound for
+HDMI on the RTG screen, rawkey keyboard
 matrix, joystick/CD32 pads and keys as joystick, GadTools menu, prefs,
 per-game settings and a game settings database (Games.db), Workbench icons
 and presets, screenshots, key scripts for test runs). Built with bebbo's

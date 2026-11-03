@@ -1,10 +1,11 @@
-From 653967a036cf12a5a682245d0aed7a76312181d6 Mon Sep 17 00:00:00 2001
+From 7ab9d8cd1342fba3fe3bf2c417f8aeb55a0de1c9 Mon Sep 17 00:00:00 2001
 From: John Stringer <jcec_1@yahoo.co.uk>
-Date: Thu, 29 Oct 2026 20:01:27 +0000
+Date: Tue, 3 Nov 2026 09:58:33 +0000
 Subject: [PATCH 41/42] AmigaOS host (68k AGA): Arnold for Amiga
 
 src/amiga: the AmigaOS 3.x host (AGA screen with chunky-to-planar and triple
-buffering, an optional RTG screen through rtgfw, Paula sound, rawkey keyboard
+buffering, an optional RTG screen through rtgfw, Paula sound and AHI sound for
+HDMI on the RTG screen, rawkey keyboard
 matrix, joystick/CD32 pads and keys as joystick, GadTools menu, prefs,
 per-game settings and a game settings database (Games.db), Workbench icons
 and presets, screenshots, key scripts for test runs). Built with bebbo's
@@ -12,44 +13,52 @@ amiga-gcc (-noixemul): see src/amiga/Makefile.
 
 Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
 ---
- src/amiga/Makefile       |   45 +
- src/amiga/amiga_iff.c    |  103 ++
- src/amiga/amiga_keymap.c |  239 +++++
- src/amiga/amiga_logo.c   |  153 +++
- src/amiga/amiga_logo.h   |    6 +
- src/amiga/amiga_menu.c   |  811 ++++++++++++++
- src/amiga/amiga_sys.c    | 2199 ++++++++++++++++++++++++++++++++++++++
- src/amiga/amiga_sys.h    |  173 +++
- src/amiga/amiga_wb.c     |  241 +++++
- src/amiga/audio_conv.h   |   46 +
- src/amiga/c2p_sh.h       |   48 +
- src/amiga/gamedb.c       |  157 +++
- src/amiga/gamedb.h       |   42 +
- src/amiga/host_amiga.c   | 1456 +++++++++++++++++++++++++
- src/amiga/keymaplogic.c  |  135 +++
- src/amiga/keymaplogic.h  |   34 +
- src/amiga/keyscript.c    |  151 +++
- src/amiga/keyscript.h    |   13 +
- src/amiga/padtest.c      |  125 +++
- src/amiga/screenshot.c   |  116 ++
- src/amiga/screenshot.h   |    7 +
- src/amiga/tapeauto.c     |   82 ++
- src/amiga/tapeauto.h     |   18 +
- 23 files changed, 6400 insertions(+)
+ src/amiga/Makefile         |   50 +
+ src/amiga/amiga_audio.c    |  437 +++++++++
+ src/amiga/amiga_iff.c      |  103 ++
+ src/amiga/amiga_joy.c      |  127 +++
+ src/amiga/amiga_keymap.c   |  239 +++++
+ src/amiga/amiga_logo.c     |  153 +++
+ src/amiga/amiga_logo.h     |    6 +
+ src/amiga/amiga_menu.c     |  818 ++++++++++++++++
+ src/amiga/amiga_sys.c      | 1855 ++++++++++++++++++++++++++++++++++++
+ src/amiga/amiga_sys.h      |  177 ++++
+ src/amiga/amiga_sys_priv.h |   11 +
+ src/amiga/amiga_wb.c       |  244 +++++
+ src/amiga/audio_conv.h     |   46 +
+ src/amiga/c2p_sh.h         |   48 +
+ src/amiga/gamedb.c         |  157 +++
+ src/amiga/gamedb.h         |   42 +
+ src/amiga/host_amiga.c     | 1444 ++++++++++++++++++++++++++++
+ src/amiga/host_file.c      |   29 +
+ src/amiga/keymaplogic.c    |  135 +++
+ src/amiga/keymaplogic.h    |   34 +
+ src/amiga/keyscript.c      |  151 +++
+ src/amiga/keyscript.h      |   13 +
+ src/amiga/padtest.c        |  125 +++
+ src/amiga/screenshot.c     |  116 +++
+ src/amiga/screenshot.h     |    7 +
+ src/amiga/tapeauto.c       |   82 ++
+ src/amiga/tapeauto.h       |   18 +
+ 27 files changed, 6667 insertions(+)
  create mode 100644 src/amiga/Makefile
+ create mode 100644 src/amiga/amiga_audio.c
  create mode 100644 src/amiga/amiga_iff.c
+ create mode 100644 src/amiga/amiga_joy.c
  create mode 100644 src/amiga/amiga_keymap.c
  create mode 100644 src/amiga/amiga_logo.c
  create mode 100644 src/amiga/amiga_logo.h
  create mode 100644 src/amiga/amiga_menu.c
  create mode 100644 src/amiga/amiga_sys.c
  create mode 100644 src/amiga/amiga_sys.h
+ create mode 100644 src/amiga/amiga_sys_priv.h
  create mode 100644 src/amiga/amiga_wb.c
  create mode 100644 src/amiga/audio_conv.h
  create mode 100644 src/amiga/c2p_sh.h
  create mode 100644 src/amiga/gamedb.c
  create mode 100644 src/amiga/gamedb.h
  create mode 100644 src/amiga/host_amiga.c
+ create mode 100644 src/amiga/host_file.c
  create mode 100644 src/amiga/keymaplogic.c
  create mode 100644 src/amiga/keymaplogic.h
  create mode 100644 src/amiga/keyscript.c
@@ -62,10 +71,10 @@ Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
 
 diff --git a/src/amiga/Makefile b/src/amiga/Makefile
 new file mode 100644
-index 0000000..a901d8b
+index 0000000..414e6a1
 --- /dev/null
 +++ b/src/amiga/Makefile
-@@ -0,0 +1,45 @@
+@@ -0,0 +1,50 @@
 +# Arnold (Kevin Thacker, GPL-2.0) for AmigaOS (AGA, 68040+ / PiStorm Emu68).
 +# Needs bebbo's m68k-amigaos-gcc on the PATH (WSL: /opt/amiga/bin).
 +#   make            -> Arnold (68040)
@@ -84,7 +93,7 @@ index 0000000..a901d8b
 +# objects.mak may have CRLF line endings (Windows checkout): strip \r first.
 +CORE := $(addprefix ../,$(shell tr -d '\r' < ../objects.mak | sed -n '/^CPC_O=/,/^$$/p' | tr -d '\\' | sed 's/CPC_O=//;s/\.o/.c/g'))
 +OBJDIR ?= obj-$(CPU)
-+OBJS := $(patsubst ../%.c,$(OBJDIR)/%.o,$(CORE)) $(OBJDIR)/host_amiga.o $(OBJDIR)/amiga_sys.o $(OBJDIR)/amiga_menu.o $(OBJDIR)/amiga_wb.o $(OBJDIR)/amiga_iff.o $(OBJDIR)/amiga_logo.o $(OBJDIR)/screenshot.o $(OBJDIR)/keyscript.o $(OBJDIR)/keymaplogic.o $(OBJDIR)/amiga_keymap.o $(OBJDIR)/gamedb.o \
++OBJS := $(patsubst ../%.c,$(OBJDIR)/%.o,$(CORE)) $(OBJDIR)/host_amiga.o $(OBJDIR)/host_file.o $(OBJDIR)/amiga_sys.o $(OBJDIR)/amiga_audio.o $(OBJDIR)/amiga_joy.o $(OBJDIR)/amiga_menu.o $(OBJDIR)/amiga_wb.o $(OBJDIR)/amiga_iff.o $(OBJDIR)/amiga_logo.o $(OBJDIR)/screenshot.o $(OBJDIR)/keyscript.o $(OBJDIR)/keymaplogic.o $(OBJDIR)/amiga_keymap.o $(OBJDIR)/gamedb.o \
 +	$(OBJDIR)/rtgfw.o $(OBJDIR)/rtg_conv.o $(OBJDIR)/tapeauto.o
 +TARGET ?= $(if $(filter 68040,$(CPU)),Arnold,Arnold-$(subst 680,0,$(CPU)))
 +
@@ -97,13 +106,18 @@ index 0000000..a901d8b
 +	@mkdir -p $(dir $@)
 +	$(CC) $(CFLAGS) -c -o $@ $<
 +
++# Save states (1.6, 3 Nov 2026): the -O3 builds (-040-Max, -060-Max) refused every state they had
++# just saved on the A1200 ("expansion RAM is another size"); with savestate.c alone at -O2 they load.
++# The stream code itself passes at -O3 on its own, so the cause is not found. Not hot code: last -O wins.
++$(OBJDIR)/cpc/savestate.o: CFLAGS += -O2
++
 +# rtgfw (RTG pilot, 26 Oct 2026): the vendored MIT framework (rtgfw/SOURCE.txt), last in
 +# the link so it doesn't move the hot code; gnu99 as in its own build
 +$(OBJDIR)/%.o: rtgfw/src/%.c rtgfw/src/rtgfw.h rtgfw/src/rtg_conv.h
 +	@mkdir -p $(dir $@)
 +	$(CC) $(CFLAGS) -std=gnu99 -Irtgfw/src -c -o $@ $<
 +
-+$(OBJDIR)/%.o: %.c amiga_sys.h
++$(OBJDIR)/%.o: %.c amiga_sys.h amiga_sys_priv.h
 +	@mkdir -p $(dir $@)
 +	$(CC) $(CFLAGS) -c -o $@ $<
 +
@@ -111,6 +125,449 @@ index 0000000..a901d8b
 +	rm -rf $(OBJDIR) $(TARGET)
 +
 +.PHONY: all clean
+diff --git a/src/amiga/amiga_audio.c b/src/amiga/amiga_audio.c
+new file mode 100644
+index 0000000..fc32040
+--- /dev/null
++++ b/src/amiga/amiga_audio.c
+@@ -0,0 +1,437 @@
++/* Arnold on AmigaOS: Paula sound (audio.device channels 0 and 1, the queue of
++ * blocks and the interrupt that feeds them), and the sound's DC filter for save
++ * states and fast-forward. Split off amiga_sys.c (split16, 30 Oct 2026). */
++#include <exec/types.h>
++#include <exec/memory.h>
++#include <hardware/custom.h>
++#include <proto/exec.h>
++#include <proto/dos.h>
++#include <string.h>
++#include "amiga_sys.h"
++#include "amiga_sys_priv.h"
++
++extern struct Custom custom;
++
++/* ---- sound ---- */
++/* Paula, channels 0 (left) and 1 (right), 8-bit signed (14 Oct 2026 rewrite).
++ * The emulation makes one block a CPC frame (444 samples). A frame of the PAL
++ * display is 313 x 227 = 71051 colour clocks; at period 160 a block lasts
++ * 71040, so one block per VBlank keeps Paula fed at the display's pace. Blocks
++ * go into a small queue; a VBlank interrupt server hands the oldest one to
++ * Paula (it is latched when the playing block ends). No block ready (the
++ * emulation is behind): Paula repeats the last one. Queue full (it caught up in
++ * a burst): the oldest waiting block is dropped. Both are counted (Sys_Perf). */
++#include <devices/audio.h>
++#include <hardware/dmabits.h>
++#include <hardware/intbits.h>
++#include <exec/interrupts.h>
++#include "audio_conv.h"
++#define ABUFS 4                       /* playing + handed over + up to 2 queued */
++static struct MsgPort *audport;
++static struct IOAudio *audio;
++static int aud_open, aud_n;
++static UBYTE *aud_buf[2][ABUFS];      /* [channel][slot] in chip RAM */
++static UBYTE aud_map[] = { 3 };       /* channels 0 and 1 */
++static volatile int aud_rd, aud_wr, aud_run;
++static volatile unsigned long aud_irqs;
++volatile int Sys_AudioCount;                      /* amiga_sys_priv.h: Sys_Heartbeat logs the queue */
++volatile unsigned long Sys_AudioUnderruns, Sys_AudioDrops;
++static struct Interrupt aud_vbint;
++static int aud_vbint_added;
++/* 19 Oct 2026: on a display that isn't 50 Hz the VBlank can't pace Paula, so
++ * the blocks are handed over by channel 0's own interrupt instead: Paula
++ * raises it when it latches a block (the start of its playback), and the
++ * pointer written then is latched when that block ends. The rate is then
++ * Paula's own: samples x period colour clocks a block. aud_mode 0 = VBlank
++ * server (PAL, as tuned), 1 = audio interrupt. */
++static int aud_mode, aud_first;
++static struct Interrupt aud_int, *aud_oldint;
++
++/* HDMI sound (Nov 2026, branch hdmiahi): Sys_AudioAhi set (menu, RTG screen only) sends
++ * the sound to AHI, mode 001f0012 = emu68hdmi.audio 16 bit low latency. SetEnv ArnoldAHI
++ * <mode id in hex> tries another mode, on any screen. No AHI or no driver: Paula. */
++int Sys_AudioAhi;
++#if !defined(NO_AHI) && !defined(NO_SNDLUT_FIX) && !defined(NO_SNDUNIPOLAR)
++#define USE_AHI
++static int  Ahi_Open(int period, int samples);
++static void Ahi_Close(void);
++static void Ahi_Queue(const unsigned short *s16, int samples);
++static void Ahi_Pause(void);
++static int ahi_on;
++#endif
++
++static void aud_feed(void)
++{
++	if (aud_run) {
++		if (Sys_AudioCount > 0) {
++			custom.aud[0].ac_ptr = (UWORD *)aud_buf[0][aud_rd];
++			custom.aud[1].ac_ptr = (UWORD *)aud_buf[1][aud_rd];
++			aud_rd = (aud_rd + 1) % ABUFS;
++			Sys_AudioCount--;
++		} else if (aud_first)
++			aud_first = 0;   /* the start: nothing queued behind the first block yet */
++		else
++			Sys_AudioUnderruns++;
++	}
++}
++
++static LONG aud_vblank(register APTR data __asm("a1"))
++{
++	aud_feed();
++	return 0;
++}
++
++/* exec interrupt handler (SetIntVector): must clear its request itself */
++static void aud_handler(register APTR data __asm("a1"))
++{
++	custom.intreq = INTF_AUD0;
++	aud_irqs++;
++	aud_feed();
++}
++
++unsigned long Sys_AudioIrqs(void) { return aud_irqs; }
++int Sys_AudioAhiOn(void)
++{
++#ifdef USE_AHI
++	return ahi_on;
++#else
++	return 0;
++#endif
++}
++
++int Sys_AudioOpen(int period, int samples, int audint)
++{
++	int c, b;
++	if (aud_open) return 1;
++#ifdef USE_AHI
++	if (Ahi_Open(period, samples)) return 1;
++#endif
++	aud_mode = audint;
++	if (samples & 1) samples--;
++	aud_n = samples;
++	audport = CreateMsgPort();
++	if (!audport) return 0;
++	audio = (struct IOAudio *)CreateIORequest(audport, sizeof(struct IOAudio));
++	if (!audio) { DeleteMsgPort(audport); audport = NULL; return 0; }
++	audio->ioa_Request.io_Message.mn_Node.ln_Pri = 127;   /* don't let others steal them */
++	audio->ioa_Request.io_Command = ADCMD_ALLOCATE;
++	audio->ioa_Request.io_Flags = ADIOF_NOWAIT;
++	audio->ioa_AllocKey = 0;
++	audio->ioa_Data = aud_map;
++	audio->ioa_Length = sizeof(aud_map);
++	if (OpenDevice("audio.device", 0, (struct IORequest *)audio, 0) != 0) {
++		Sys_Log("audio: audio.device channels 0+1 not free");
++		DeleteIORequest((struct IORequest *)audio); audio = NULL;
++		DeleteMsgPort(audport); audport = NULL;
++		return 0;
++	}
++	aud_open = 1;
++	for (c = 0; c < 2; c++) for (b = 0; b < ABUFS; b++) {
++		aud_buf[c][b] = AllocMem(aud_n, MEMF_CHIP | MEMF_CLEAR);
++		if (!aud_buf[c][b]) { Sys_Log("audio: no chip RAM for buffers"); Sys_AudioClose(); return 0; }
++	}
++	custom.aud[0].ac_per = period; custom.aud[1].ac_per = period;
++	custom.aud[0].ac_vol = 64;     custom.aud[1].ac_vol = 64;
++	custom.aud[0].ac_len = aud_n >> 1; custom.aud[1].ac_len = aud_n >> 1;
++	aud_rd = aud_wr = Sys_AudioCount = 0; aud_run = 0;
++	if (aud_mode) {
++		aud_int.is_Node.ln_Type = NT_INTERRUPT;
++		aud_int.is_Node.ln_Pri = 0;
++		aud_int.is_Node.ln_Name = (char *)"Arnold audio";
++		aud_int.is_Data = NULL;
++		aud_int.is_Code = (VOID (*)())aud_handler;
++		custom.intena = INTF_AUD0;
++		custom.intreq = INTF_AUD0;
++		aud_oldint = SetIntVector(INTB_AUD0, &aud_int);
++		custom.intena = INTF_SETCLR | INTF_AUD0;
++	} else {
++		aud_vbint.is_Node.ln_Type = NT_INTERRUPT;
++		aud_vbint.is_Node.ln_Pri = 0;
++		aud_vbint.is_Node.ln_Name = (char *)"Arnold audio";
++		aud_vbint.is_Data = NULL;
++		aud_vbint.is_Code = (VOID (*)())aud_vblank;
++		AddIntServer(INTB_VERTB, &aud_vbint);
++		aud_vbint_added = 1;
++	}
++	Sys_Log("audio: open, period %d, %d samples a block, fed by %s, chip clock %lu Hz", period, samples,
++		aud_mode ? "the audio interrupt" : "the VBlank", Sys_ChipClock());
++	return 1;
++}
++
++void Sys_AudioClose(void)
++{
++	int c, b;
++#ifdef USE_AHI
++	if (ahi_on) { Ahi_Close(); return; }
++#endif
++	if (!aud_open) return;
++	aud_run = 0;
++	if (aud_vbint_added) { RemIntServer(INTB_VERTB, &aud_vbint); aud_vbint_added = 0; }
++	custom.dmacon = DMAF_AUD0 | DMAF_AUD1;   /* clear */
++	if (aud_mode) {
++		custom.intena = INTF_AUD0;
++		SetIntVector(INTB_AUD0, aud_oldint);
++		custom.intreq = INTF_AUD0;
++		aud_oldint = NULL; aud_mode = 0;
++	}
++	custom.aud[0].ac_vol = 0; custom.aud[1].ac_vol = 0;
++	for (c = 0; c < 2; c++) for (b = 0; b < ABUFS; b++)
++		if (aud_buf[c][b]) { FreeMem(aud_buf[c][b], aud_n); aud_buf[c][b] = NULL; }
++	if (audio) { CloseDevice((struct IORequest *)audio); DeleteIORequest((struct IORequest *)audio); audio = NULL; }
++	if (audport) { DeleteMsgPort(audport); audport = NULL; }
++	aud_open = 0;
++}
++
++void Sys_AudioQueue(const unsigned char *s16, int samples)
++{
++	int slot;
++#ifdef USE_AHI
++	if (ahi_on) { Ahi_Queue((const unsigned short *)s16, samples); return; }
++#endif
++	if (!aud_open) return;
++	if (samples > aud_n) samples = aud_n;
++	Disable();
++	if (Sys_AudioCount >= ABUFS - 2) {             /* full: drop the oldest waiting block */
++		aud_rd = (aud_rd + 1) % ABUFS;
++		Sys_AudioCount--;
++		Sys_AudioDrops++;
++	}
++	slot = aud_wr;
++	Enable();
++	/* Slots in use: the block playing, the one handed over at the last VBlank
++	 * (latched when the playing one ends) and the queue; with the queue kept
++	 * below ABUFS - 2 the slot at aud_wr is none of them. */
++	Audio_SplitTo8((const unsigned short *)s16, (signed char *)aud_buf[0][slot], (signed char *)aud_buf[1][slot], samples);
++	if (samples < aud_n) {                    /* short block: hold the last level */
++		memset(aud_buf[0][slot] + samples, samples ? aud_buf[0][slot][samples - 1] : 0, aud_n - samples);
++		memset(aud_buf[1][slot] + samples, samples ? aud_buf[1][slot][samples - 1] : 0, aud_n - samples);
++	}
++#ifdef SOUNDQ_DUMP
++	/* soundq verification builds only: every block as Paula gets it (left then
++	   right, 8-bit signed) to PROGDIR:audio.raw, to compare with the headless WAV */
++	{ static BPTR fh; static int tried;
++	  if (!tried) { tried = 1; fh = Open((STRPTR)"PROGDIR:audio.raw", MODE_NEWFILE); }
++	  if (fh) { Write(fh, aud_buf[0][slot], samples); Write(fh, aud_buf[1][slot], samples); Flush(fh); }
++	  { static BPTR f16; static int tried16;   /* and the core's 16-bit block (big-endian) */
++	    if (!tried16) { tried16 = 1; f16 = Open((STRPTR)"PROGDIR:audio16.raw", MODE_NEWFILE); }
++	    if (f16) { Write(f16, (APTR)s16, samples * 4); Flush(f16); } } }
++#endif
++	Disable();
++	aud_wr = (aud_wr + 1) % ABUFS;
++	Sys_AudioCount++;
++	if (!aud_run) {
++		/* start: this block plays at once, the server feeds the rest */
++		custom.aud[0].ac_ptr = (UWORD *)aud_buf[0][slot];
++		custom.aud[1].ac_ptr = (UWORD *)aud_buf[1][slot];
++		aud_rd = aud_wr; Sys_AudioCount = 0;
++		aud_first = 1;
++		if (aud_mode) custom.intreq = INTF_AUD0;
++		custom.dmacon = DMAF_SETCLR | DMAF_MASTER | DMAF_AUD0 | DMAF_AUD1;
++		if (aud_mode) custom.intena = INTF_SETCLR | INTF_AUD0;   /* off while paused, see Sys_AudioPause */
++		aud_run = 1;
++	}
++	Enable();
++	Sys_Perf.aud_underruns = Sys_AudioUnderruns;
++	Sys_Perf.aud_drops = Sys_AudioDrops;
++}
++
++void Sys_AudioPause(void)
++{
++#ifdef USE_AHI
++	if (ahi_on) { Ahi_Pause(); return; }
++#endif
++	if (!aud_open) return;
++	Disable();
++	aud_run = 0;
++	aud_rd = aud_wr = Sys_AudioCount = 0;
++	/* 19 Oct 2026 (NTSC menu shear on John's A1200): with the audio DMA off,
++	 * an enabled AUD0 interrupt doesn't stop. Paula drops to manual mode and
++	 * asks for a new word every sample period once the handler clears the
++	 * request: about 22000 level-4 interrupts a second for as long as the
++	 * menu was up (70000 counted in one WinUAE menu visit). They hold off the
++	 * level-3 VBlank work of graphics and Intuition. So the interrupt is
++	 * switched off here, and Sys_AudioQueue switches it on again with the DMA. */
++	if (aud_mode) custom.intena = INTF_AUD0;
++	custom.dmacon = DMAF_AUD0 | DMAF_AUD1;
++	if (aud_mode) custom.intreq = INTF_AUD0;
++	Enable();
++}
++
++/* Save states (1.4, 28 Oct 2026; host_amiga.c): the DC filter of the sound
++ * (audio_conv.h, above) is part of a state so the sound after a load is the same
++ * to the sample. */
++void Sys_AudioDcState(long *v, int set)
++{
++#if !defined(NO_SNDLUT_FIX) && !defined(NO_SNDUNIPOLAR)
++	if (set) { Audio_DcX[0] = v[0]; Audio_DcX[1] = v[1]; Audio_DcY[0] = v[2]; Audio_DcY[1] = v[3]; Audio_DcOn = (int)v[4]; }
++	else { v[0] = Audio_DcX[0]; v[1] = Audio_DcX[1]; v[2] = Audio_DcY[0]; v[3] = Audio_DcY[1]; v[4] = Audio_DcOn; }
++#else
++	if (!set) v[0] = v[1] = v[2] = v[3] = v[4] = 0;
++#endif
++}
++
++/* Fast-forward (1.5, 28 Oct 2026; host_amiga.c): a block that is not played still
++ * goes through the DC filter, so the sound after fast-forward is the same to the
++ * sample as in a run without it. */
++void Sys_AudioSkip(const unsigned char *s16, int samples)
++{
++	static signed char l[1024], r[1024];
++	if (samples > 1024) samples = 1024;
++	Audio_SplitTo8((const unsigned short *)s16, l, r, samples);
++}
++
++#ifdef USE_AHI
++/* AHI back end: the frame's block in 16 bits, after the same DC filter as Paula's, in a
++ * ring of slots in fast RAM played as one dynamic sound. SoundFunc runs when a slot
++ * starts and queues the next, as Paula latches its pointer: no block ready, the slot
++ * repeats. AHI's clock isn't the frame's, so the rate moves 0.2% to hold the queue. */
++#include <devices/ahi.h>
++#include <dos/var.h>
++#include <proto/ahi.h>
++#define AHI_HDMI_MODE 0x001f0012
++#define AHI_SLOTS 8
++#define AHI_START 2                   /* blocks queued before the sound starts */
++#define AHI_QMAX  4
++struct Library *AHIBase;
++static struct MsgPort *ahi_port;
++static struct AHIRequest *ahi_io;
++static struct AHIAudioCtrl *ahi_ctrl;
++static struct Hook ahi_hook;
++static WORD *ahi_buf;
++static int ahi_n, ahi_dev;
++static volatile int ahi_rd, ahi_wr, ahi_run;
++static ULONG ahi_rate;
++
++static ULONG ahi_sound(register struct Hook *h __asm("a0"), register struct AHIAudioCtrl *c __asm("a2"),
++	register struct AHISoundMessage *m __asm("a1"))
++{
++	if (ahi_run) {
++		if (Sys_AudioCount > 0) {
++			AHI_SetSound(0, 0, ahi_rd * ahi_n, ahi_n, c, AHISF_NONE);
++			ahi_rd = (ahi_rd + 1) % AHI_SLOTS;
++			Sys_AudioCount--;
++		} else
++			Sys_AudioUnderruns++;
++		AHI_SetFreq(0, Sys_AudioCount < 1 ? ahi_rate - ahi_rate / 500 :
++			Sys_AudioCount > 2 ? ahi_rate + ahi_rate / 500 : ahi_rate, c, AHISF_NONE);
++	}
++	return 0;
++}
++
++static int Ahi_Open(int period, int samples)
++{
++	static struct AHISampleInfo si;
++	char v[16], *p;
++	ULONG mode = 0, maxplay = 0;
++	if (GetVar((STRPTR)"ArnoldAHI", (STRPTR)v, sizeof(v), GVF_GLOBAL_ONLY) > 0) {
++		for (p = v; *p >= '0'; p++) mode = (mode << 4) | (*p <= '9' ? *p - '0' : (*p | 32) - 'a' + 10);
++	} else if (Sys_AudioAhi)
++		mode = AHI_HDMI_MODE;
++	else
++		return 0;
++	if (samples & 1) samples--;
++	ahi_n = samples;
++	ahi_rate = Sys_ChipClock() / period;
++	ahi_buf = AllocMem(AHI_SLOTS * ahi_n * 4, MEMF_PUBLIC | MEMF_CLEAR);
++	ahi_port = CreateMsgPort();
++	if (ahi_port) ahi_io = (struct AHIRequest *)CreateIORequest(ahi_port, sizeof(struct AHIRequest));
++	if (!ahi_buf || !ahi_io) goto fail;
++	ahi_io->ahir_Version = 4;
++	if (OpenDevice((STRPTR)AHINAME, AHI_NO_UNIT, (struct IORequest *)ahi_io, 0)) goto fail;
++	ahi_dev = 1;
++	AHIBase = (struct Library *)ahi_io->ahir_Std.io_Device;
++	ahi_hook.h_Entry = (ULONG (*)())ahi_sound;
++	ahi_ctrl = AHI_AllocAudio(AHIA_AudioID, mode, AHIA_MixFreq, 48000, AHIA_Channels, 1, AHIA_Sounds, 1,
++		AHIA_SoundFunc, (ULONG)&ahi_hook, TAG_DONE);
++	if (!ahi_ctrl) goto fail;
++	AHI_GetAudioAttrs(AHI_INVALID_ID, ahi_ctrl, AHIDB_MaxPlaySamples, (ULONG)&maxplay, TAG_DONE);
++	si.ahisi_Type = AHIST_S16S;
++	si.ahisi_Address = ahi_buf;
++	si.ahisi_Length = AHI_SLOTS * ahi_n;
++	if (AHI_LoadSound(0, AHIST_DYNAMICSAMPLE, &si, ahi_ctrl)) goto fail;
++	if (AHI_ControlAudio(ahi_ctrl, AHIC_Play, TRUE, TAG_DONE)) goto fail;
++	AHI_SetVol(0, 0x10000, 0x8000, ahi_ctrl, AHISF_IMM);
++	AHI_SetFreq(0, ahi_rate, ahi_ctrl, AHISF_IMM);
++	ahi_rd = ahi_wr = Sys_AudioCount = 0; ahi_run = 0;
++	ahi_on = 1; aud_open = 1;
++	Sys_Log("audio: AHI mode %08lx, %lu Hz, %d samples a block, max play %lu", mode, ahi_rate, ahi_n, maxplay);
++	return 1;
++fail:
++	Sys_Log("audio: AHI mode %08lx not available, using Paula", mode);
++	Ahi_Close();
++	return 0;
++}
++
++static void Ahi_Close(void)
++{
++	ahi_run = 0;
++	if (ahi_ctrl) {
++		AHI_ControlAudio(ahi_ctrl, AHIC_Play, FALSE, TAG_DONE);
++		AHI_FreeAudio(ahi_ctrl);
++		ahi_ctrl = NULL;
++	}
++	if (ahi_dev) { CloseDevice((struct IORequest *)ahi_io); ahi_dev = 0; }
++	if (ahi_io) { DeleteIORequest((struct IORequest *)ahi_io); ahi_io = NULL; }
++	if (ahi_port) { DeleteMsgPort(ahi_port); ahi_port = NULL; }
++	if (ahi_buf) { FreeMem(ahi_buf, AHI_SLOTS * ahi_n * 4); ahi_buf = NULL; }
++	ahi_on = 0; aud_open = 0;
++}
++
++/* Audio_DcBlock with the sound kept in 16 bits */
++static WORD ahi_dc(int side, long x)
++{
++	long y, o;
++	if (!Audio_DcOn) { Audio_DcOn = 1; Audio_DcX[0] = Audio_DcX[1] = x; Audio_DcY[0] = Audio_DcY[1] = 0; }
++	y = Audio_DcY[side] + ((x - Audio_DcX[side]) << 8) - (Audio_DcY[side] >> 8);
++	Audio_DcX[side] = x; Audio_DcY[side] = y;
++	o = (y + 128) >> 8;
++	if (o > 32767) o = 32767; else if (o < -32768) o = -32768;
++	return (WORD)o;
++}
++
++static void Ahi_Queue(const unsigned short *s16, int samples)
++{
++	int slot, i, first = -1;
++	WORD *d;
++	if (samples > ahi_n) samples = ahi_n;
++	Disable();
++	if (Sys_AudioCount >= AHI_QMAX) {             /* full: drop the oldest waiting block */
++		ahi_rd = (ahi_rd + 1) % AHI_SLOTS;
++		Sys_AudioCount--;
++		Sys_AudioDrops++;
++	}
++	slot = ahi_wr;
++	Enable();
++	d = ahi_buf + slot * ahi_n * 2;
++	for (i = 0; i < samples; i++) {
++		d[2 * i] = ahi_dc(0, (long)s16[2 * i]);
++		d[2 * i + 1] = ahi_dc(1, (long)s16[2 * i + 1]);
++	}
++	for (; i < ahi_n; i++) {                      /* short block: hold the last level */
++		d[2 * i] = i ? d[2 * i - 2] : 0;
++		d[2 * i + 1] = i ? d[2 * i - 1] : 0;
++	}
++	Disable();
++	ahi_wr = (ahi_wr + 1) % AHI_SLOTS;
++	Sys_AudioCount++;
++	if (!ahi_run && Sys_AudioCount >= AHI_START) {
++		first = ahi_rd;
++		ahi_rd = (ahi_rd + 1) % AHI_SLOTS;
++		Sys_AudioCount--;
++		ahi_run = 1;
++	}
++	Enable();
++	if (first >= 0) AHI_SetSound(0, 0, first * ahi_n, ahi_n, ahi_ctrl, AHISF_IMM);
++	Sys_Perf.aud_underruns = Sys_AudioUnderruns;
++	Sys_Perf.aud_drops = Sys_AudioDrops;
++}
++
++static void Ahi_Pause(void)
++{
++	ahi_run = 0;
++	AHI_SetSound(0, AHI_NOSOUND, 0, 0, ahi_ctrl, AHISF_IMM);
++	Disable();
++	ahi_rd = ahi_wr = Sys_AudioCount = 0;
++	Enable();
++}
++#endif
 diff --git a/src/amiga/amiga_iff.c b/src/amiga/amiga_iff.c
 new file mode 100644
 index 0000000..224f1af
@@ -219,6 +676,139 @@ index 0000000..224f1af
 +		CloseWindow(win);
 +	}
 +	FreeBitMap(bm);
++}
+diff --git a/src/amiga/amiga_joy.c b/src/amiga/amiga_joy.c
+new file mode 100644
+index 0000000..b186c20
+--- /dev/null
++++ b/src/amiga/amiga_joy.c
+@@ -0,0 +1,127 @@
++/* Arnold on AmigaOS: the joystick port (hardware registers, a CD32 pad read by
++ * hand) and the pads lowlevel.library reports on ports 2-3. Split off amiga_sys.c
++ * (split16, 30 Oct 2026). */
++#include <exec/types.h>
++#include <hardware/custom.h>
++#include <hardware/cia.h>
++#include <proto/exec.h>
++#include "amiga_sys.h"
++
++extern struct Custom custom;
++extern struct CIA ciaa;
++
++/* Joystick: the hardware port 2 (joy1dat, CIA-A fire, POTINP fire 2) as
++ * AmiMSX reads it, OR'd with lowlevel.library's view of ports 0-3 (14 Oct
++ * 2026: a USB pad under Poseidon only shows up through lowlevel.library's
++ * joystick-port emulation, not in the hardware registers). Port 0 is skipped
++ * while it holds the mouse. Red = fire 1, blue (or any other button) = fire 2. */
++#include <libraries/lowlevel.h>
++#include <proto/lowlevel.h>
++struct Library *LowLevelBase;
++static int lowlevel_tried;
++
++static ULONG joy_last_raw[4];
++ULONG Sys_JoyRaw(int port) { return port >= 0 && port < 4 ? joy_last_raw[port] : 0; }
++
++/* CD32 pad on port 2, read by us (15 Oct 2026). On the A1200 PiStorm,
++ * lowlevel.library saw John's KTRL CD32 pad as a game controller but only
++ * ever reported the red button: on a CPU that fast its shift-register reads
++ * outrun the pad. This is the usual routine games use (cf. Codetapper's
++ * CD32 pad notes): pin 5 low selects CD32 mode, pin 6 (fire) becomes the
++ * clock, and the 7 buttons come out one by one on pin 9 (POTINP bit 14,
++ * low = pressed). Each step waits on CIA reads, which run at real Amiga
++ * speed whatever the CPU. Order: blue, red, yellow, green, forward, reverse,
++ * play. Returns the 7 button bits (bit set = pressed). */
++static unsigned read_cd32_buttons(void)
++{
++	/* Returns 9 bits, set = low on pin 9: the 7 buttons, then the pad's ID
++	 * bits (a CD32 pad gives 8th = 0, 9th = 1 here). As AmiMSX does it
++	 * (John's decision, 17 Oct 2026): pin 6 is driven HIGH as an output
++	 * before pin 5 falls, otherwise a held red button gives a spurious clock;
++	 * the edges are timed with CIA reads, which run at real Amiga speed
++	 * whatever the CPU. Order: blue, red, yellow, green, forward, reverse,
++	 * play. */
++	volatile UBYTE *pra = &ciaa.ciapra, *ddra = &ciaa.ciaddra;
++	unsigned bits = 0;
++	int i, d;
++	UBYTE dummy;
++	Disable();
++	*pra |= 0x80;                  /* clock high first... */
++	*ddra |= 0x80;                 /* ...then port 2 fire line as an output */
++	for (d = 0; d < 4; d++) dummy = *pra;
++	custom.potgo = 0x6f00;         /* port 2: pin 5 output low (CD32 mode), pin 9 input */
++	for (d = 0; d < 25; d++) dummy = *pra;
++	for (i = 0; i < 9; i++) {
++		for (d = 0; d < 10; d++) dummy = *pra;
++		if (!(custom.potinp & 0x4000)) bits |= 1u << i;
++		*pra &= ~0x80;             /* clock pulse: next bit */
++		for (d = 0; d < 4; d++) dummy = *pra;
++		*pra |= 0x80;
++	}
++	*ddra &= ~0x80;                /* fire line back to input */
++	custom.potgo = 0xff00;         /* pin 5 high again: 2-button mode */
++	Enable();
++	(void)dummy;
++	return bits;
++}
++
++/* Joystick port 2 (lowlevel.library port 1). No auto-detection (John's
++ * decision, 17 Oct 2026, after AmiMSX: lowlevel.library's CD32 detection was
++ * wrong for his adapters and even for a plain joystick, and a plain joystick
++ * read as a CD32 pad has its fire line driven as a clock, so nothing works).
++ * - Sys_PadType 0, standard: the hardware registers as AmiMSX reads them
++ *   (joy1dat, CIA-A fire, POTINP fire 2 on pin 9 or pin 5). Pin 6 is never
++ *   driven, so a plain joystick sees no probe at all.
++ * - Sys_PadType 1, CD32 pad: directions from joy1dat, the buttons from
++ *   read_cd32_buttons(), no ID check. Red = fire 1; blue, green, yellow = fire 2.
++ * Game controllers lowlevel.library reports on ports 2-3 (USB pads under
++ * Poseidon) are OR'd in either way. */
++int Sys_PadType;                    /* 0 standard, 1 CD32 pad (menu / PAD= / prefs pad=) */
++int Sys_NoCD32;                     /* NOCD32: kept for old scripts, same as PAD=0 */
++static int pad_logged = -1;
++unsigned Sys_ReadJoystick(void)
++{
++	unsigned m = 0;
++	int port;
++	UWORD j = custom.joy1dat;
++	if (!lowlevel_tried) {
++		lowlevel_tried = 1;
++		LowLevelBase = OpenLibrary((STRPTR)"lowlevel.library", 39);
++		Sys_Log("joystick: lowlevel.library %s", LowLevelBase ? "open (USB pads on ports 2-3)" : "not available");
++	}
++	if (Sys_NoCD32) Sys_PadType = 0;
++	if (pad_logged != Sys_PadType) {
++		pad_logged = Sys_PadType;
++		Sys_Log("joystick: port 2 read as %s", Sys_PadType ? "a CD32 pad" : "a standard 2-button joystick");
++	}
++	if (j & 0x0002) m |= SYS_JOY_RIGHT;
++	if (j & 0x0200) m |= SYS_JOY_LEFT;
++	if (((j >> 1) ^ j) & 0x0001) m |= SYS_JOY_DOWN;
++	if (((j >> 9) ^ (j >> 8)) & 0x0001) m |= SYS_JOY_UP;
++	if (Sys_PadType) {
++		unsigned b = read_cd32_buttons();
++		joy_last_raw[1] = b;
++		if (b & 0x02) m |= SYS_JOY_FIRE1;                    /* red */
++		if (b & (0x01 | 0x04 | 0x08)) m |= SYS_JOY_FIRE2;   /* blue, yellow, green */
++	} else {
++		if (!(ciaa.ciapra & 0x80)) m |= SYS_JOY_FIRE1;
++		custom.potgo = 0xff00;
++		/* fire 2 on pin 9 (Amiga standard) or pin 5 (as AmiMSX reads it; some 2-button pads) */
++		if (!(custom.potinp & 0x4000) || !(custom.potinp & 0x1000)) m |= SYS_JOY_FIRE2;
++	}
++	if (LowLevelBase) {
++		for (port = 2; port < 4; port++) {
++			ULONG v = ReadJoyPort(port);
++			ULONG type = v & JP_TYPE_MASK;
++			if (v != joy_last_raw[port]) joy_last_raw[port] = v;
++			if (type != JP_TYPE_GAMECTLR && type != JP_TYPE_JOYSTK) continue;
++			if (v & JPF_JOY_UP) m |= SYS_JOY_UP;
++			if (v & JPF_JOY_DOWN) m |= SYS_JOY_DOWN;
++			if (v & JPF_JOY_LEFT) m |= SYS_JOY_LEFT;
++			if (v & JPF_JOY_RIGHT) m |= SYS_JOY_RIGHT;
++			if (v & JPF_BUTTON_RED) m |= SYS_JOY_FIRE1;
++			if (v & (JPF_BUTTON_BLUE | JPF_BUTTON_GREEN | JPF_BUTTON_YELLOW)) m |= SYS_JOY_FIRE2;
++		}
++	}
++	return m;
 +}
 diff --git a/src/amiga/amiga_keymap.c b/src/amiga/amiga_keymap.c
 new file mode 100644
@@ -638,10 +1228,10 @@ index 0000000..b22b3c7
 +#endif
 diff --git a/src/amiga/amiga_menu.c b/src/amiga/amiga_menu.c
 new file mode 100644
-index 0000000..e07fcab
+index 0000000..ae7b2c5
 --- /dev/null
 +++ b/src/amiga/amiga_menu.c
-@@ -0,0 +1,811 @@
+@@ -0,0 +1,818 @@
 +/* Arnold on AmigaOS: the menu screen (GadTools), styled after the OS 3.2 prefs
 + * editors. 17 Oct 2026 (John): the settings live in pull-down menus (Options,
 + * Controls, Display) and the window keeps what changes from game to game.
@@ -693,6 +1283,7 @@ index 0000000..e07fcab
 +       M_SCAN0, M_SCAN1, M_SCAN2, M_SCAN3, M_SCAN4, M_SCAN5, M_SCAN6,
 +       M_SSAVE1, M_SSAVE2, M_SSAVE3, M_SSAVE4, M_SLOAD1, M_SLOAD2, M_SLOAD3, M_SLOAD4,   /* save states (1.4) */
 +       M_AUTOTAPE,   /* auto-start tapes (1.5) */
++       M_HDMISOUND,  /* HDMI sound through AHI (RTG screen) */
 +       M_PRESET0 };   /* M_PRESET0 last: the presets follow it */
 +#define MAXPRESETS 12   /* menu entries for KeyMap_Presets (keymaplogic.c) */
 +#define MENU_REOPEN (-2)   /* menu_pick: the video mode changed, open the screen again */
@@ -772,7 +1363,8 @@ index 0000000..e07fcab
 +	{ NM_SUB, (STRPTR)"CPC 6128 Plus", NULL, CHECKIT, X(3), (APTR)M_MODELPLUS },
 +	{ NM_SUB, (STRPTR)"GX4000", NULL, CHECKIT, X(4), (APTR)M_MODELGX },
 +	{ NM_ITEM, NM_BARLABEL, NULL, 0, 0, NULL },
-+	{ NM_ITEM, (STRPTR)"Sound (Paula)", NULL, CHECKIT | MENUTOGGLE, 0, (APTR)M_SOUND },
++	{ NM_ITEM, (STRPTR)"Sound", NULL, CHECKIT | MENUTOGGLE, 0, (APTR)M_SOUND },
++	{ NM_ITEM, (STRPTR)"HDMI sound (RTG screen)", NULL, CHECKIT | MENUTOGGLE, 0, (APTR)M_HDMISOUND },
 +	{ NM_ITEM, (STRPTR)"Hires screen", NULL, CHECKIT | MENUTOGGLE, 0, (APTR)M_HIRES },
 +	{ NM_ITEM, (STRPTR)"Write disks back", NULL, CHECKIT | MENUTOGGLE, 0, (APTR)M_DISKWRITE },
 +	{ NM_ITEM, (STRPTR)"Fast tape loading", NULL, CHECKIT | MENUTOGGLE, 0, (APTR)M_FASTTAPE },
@@ -923,14 +1515,15 @@ index 0000000..e07fcab
 +	int n, jk = m->joykeys >= 0 && m->joykeys <= 3 ? m->joykeys : 0, rf = refresh_index(m->refresh);
 +	static const char *const scan_short[SYS_SCANS] = { "RTG", "RTG+25", "RTG+50", "RTG+75", "RTG+bl-", "RTG+bl", "RTG+bl+" };
 +	const char *scrn = m->rtg ? (m->hires ? "RTG-hi" : scan_short[m->scan > 0 && m->scan < SYS_SCANS ? m->scan : 0]) : (m->hires ? "hires" : "lores");
++	const char *snd = !m->sound ? "off" : (m->hdmisound && m->rtg && !m->hdmifail ? "HDMI" : "Paula");   /* HDMI only on the RTG screen, and if the driver opened */
 +	sprintf(l, "Sound %s  Screen %s  Skip %s  Refresh %s  Joykeys %s  Pad %s",
-+		m->sound ? "on" : "off", scrn, skip_short[skip_index(m->skip)],
++		snd, scrn, skip_short[skip_index(m->skip)],
 +		refresh_short[rf], joykey_short[jk], pad_short[m->pad ? 1 : 0]);
 +	sprintf(mid, "Sound %s  Screen %s  Skip %s  Ref %s  Joy %s  Pad %s",
-+		m->sound ? "on" : "off", scrn, skip_short[skip_index(m->skip)],
++		snd, scrn, skip_short[skip_index(m->skip)],
 +		refresh_short[rf], joykey_short[jk], pad_short[m->pad ? 1 : 0]);
 +	sprintf(comp, "Snd %s Scr %s Skip %s Ref %s Joy %s Pad %s",
-+		m->sound ? "on" : "off", scrn, skip_short[skip_index(m->skip)],
++		snd, scrn, skip_short[skip_index(m->skip)],
 +		refresh_short[rf], joykey_short[jk], pad_short[m->pad ? 1 : 0]);
 +	KeyMap_FitLine(out, 74, l, mid, comp, m->remap);   /* 74 chars: the window ends at 8 px per char from x 20 */   /* adds "Keys: RShift=M" (or "Keys: 3 remapped") */
 +	for (n = strlen(out); n < 74; n++) out[n] = ' ';
@@ -1070,6 +1663,7 @@ index 0000000..e07fcab
 +		if (id == M_FASTTAPE) want = m->fasttape ? 1 : 0;
 +		if (id == M_TAPESOUND) want = m->tapesound ? 1 : 0;
 +		if (id == M_AUTOTAPE) want = m->autotape ? 1 : 0;
++		if (id == M_HDMISOUND) want = m->hdmisound ? 1 : 0;
 +		if (want) nmx[i].nm_Flags |= CHECKED; else nmx[i].nm_Flags &= ~CHECKED;
 +	}
 +}
@@ -1188,7 +1782,7 @@ index 0000000..e07fcab
 +	if (!g) { close_menu(); return 0; }
 +	if (!make_menus(m)) { close_menu(); return 0; }
 +	/* version, credit and build time (date and hh:mm) in the title bar */
-+	sprintf(wintitle, "Arnold v1.5 for Amiga - core: Kevin Thacker - built %.6s %.4s %.5s", __DATE__, __DATE__ + 7, __TIME__);
++	sprintf(wintitle, "Arnold v1.6 for Amiga - core: Kevin Thacker - built %.6s %.4s %.5s", __DATE__, __DATE__ + 7, __TIME__);
 +	mwin = OpenWindowTags(NULL, WA_CustomScreen, (ULONG)mscr, WA_Left, wl, WA_Top, wt,
 +		WA_Width, 640, WA_Height, wh,
 +		WA_Title, (ULONG)wintitle,
@@ -1316,11 +1910,11 @@ index 0000000..e07fcab
 +		status("This cartridge has no game settings.");
 +		break;
 +	case M_QUIT: return SYS_MENU_QUIT;
-+	case M_SOUND: m->sound = checked; break;
++	case M_SOUND: m->sound = checked; m->hdmifail = 0; break;
 +	case M_HIRES: m->hires = checked; break;
 +	case M_TALL: m->tall = checked; break;
 +	case M_WIDE: m->wide = checked; break;
-+	case M_RTG: rtg_set(m, checked);
++	case M_RTG: rtg_set(m, checked); m->hdmifail = 0;
 +		return MENU_REOPEN;
 +	case M_SCAN0: case M_SCAN1: case M_SCAN2: case M_SCAN3: case M_SCAN4: case M_SCAN5: case M_SCAN6:
 +		scan_set(m, id - M_SCAN0);
@@ -1333,6 +1927,9 @@ index 0000000..e07fcab
 +		break;
 +	case M_TAPESOUND: m->tapesound = checked;
 +		status(checked ? "Tape sound: you hear the tape while it loads at real speed." : "Tape sound off.");
++		break;
++	case M_HDMISOUND: m->hdmisound = checked; m->hdmifail = 0;
++		status(checked ? "HDMI sound: on the RTG screen, through AHI and emu68hdmi.audio." : "HDMI sound off: Paula.");
 +		break;
 +	case M_AUTOTAPE: m->autotape = checked;
 +		status(checked ? "Auto-start tapes: Power ON types RUN\" and presses PLAY." : "Auto-start tapes off: type RUN\" yourself.");
@@ -1455,11 +2052,11 @@ index 0000000..e07fcab
 +}
 diff --git a/src/amiga/amiga_sys.c b/src/amiga/amiga_sys.c
 new file mode 100644
-index 0000000..383cd67
+index 0000000..803d8eb
 --- /dev/null
 +++ b/src/amiga/amiga_sys.c
-@@ -0,0 +1,2199 @@
-+/* Arnold on AmigaOS: screen, c2p, palette, keyboard and joystick.
+@@ -0,0 +1,1855 @@
++/* Arnold on AmigaOS: screen, c2p, palette and keyboard (joystick: amiga_joy.c, sound: amiga_audio.c).
 + * AmigaOS 3.x, AGA. Built with bebbo's m68k-amigaos-gcc, -noixemul. */
 +#include <exec/types.h>
 +#include <exec/memory.h>
@@ -1485,10 +2082,11 @@ index 0000000..383cd67
 +#include <stdlib.h>
 +#include <string.h>
 +#include "amiga_sys.h"
++#include "amiga_sys_priv.h"
 +#include <stdarg.h>
 +
 +unsigned long __stack = 256 * 1024;   /* libnix: enlarge the stack at start */
-+static const char ver[] __attribute__((used)) = "$VER: Arnold 1.5 (29.10.2026) Amiga port, GPL-2.0";
++static const char ver[] __attribute__((used)) = "$VER: Arnold 1.6 (3.11.2026) Amiga port, GPL-2.0";
 +
 +/* ---- diagnostic log ---- */
 +static FILE *logf;
@@ -2938,332 +3536,6 @@ index 0000000..383cd67
 +	return 1;
 +}
 +
-+/* Joystick: the hardware port 2 (joy1dat, CIA-A fire, POTINP fire 2) as
-+ * AmiMSX reads it, OR'd with lowlevel.library's view of ports 0-3 (14 Oct
-+ * 2026: a USB pad under Poseidon only shows up through lowlevel.library's
-+ * joystick-port emulation, not in the hardware registers). Port 0 is skipped
-+ * while it holds the mouse. Red = fire 1, blue (or any other button) = fire 2. */
-+#include <libraries/lowlevel.h>
-+#include <proto/lowlevel.h>
-+struct Library *LowLevelBase;
-+static int lowlevel_tried;
-+
-+static ULONG joy_last_raw[4];
-+ULONG Sys_JoyRaw(int port) { return port >= 0 && port < 4 ? joy_last_raw[port] : 0; }
-+
-+/* CD32 pad on port 2, read by us (15 Oct 2026). On the A1200 PiStorm,
-+ * lowlevel.library saw John's KTRL CD32 pad as a game controller but only
-+ * ever reported the red button: on a CPU that fast its shift-register reads
-+ * outrun the pad. This is the usual routine games use (cf. Codetapper's
-+ * CD32 pad notes): pin 5 low selects CD32 mode, pin 6 (fire) becomes the
-+ * clock, and the 7 buttons come out one by one on pin 9 (POTINP bit 14,
-+ * low = pressed). Each step waits on CIA reads, which run at real Amiga
-+ * speed whatever the CPU. Order: blue, red, yellow, green, forward, reverse,
-+ * play. Returns the 7 button bits (bit set = pressed). */
-+static unsigned read_cd32_buttons(void)
-+{
-+	/* Returns 9 bits, set = low on pin 9: the 7 buttons, then the pad's ID
-+	 * bits (a CD32 pad gives 8th = 0, 9th = 1 here). As AmiMSX does it
-+	 * (John's decision, 17 Oct 2026): pin 6 is driven HIGH as an output
-+	 * before pin 5 falls, otherwise a held red button gives a spurious clock;
-+	 * the edges are timed with CIA reads, which run at real Amiga speed
-+	 * whatever the CPU. Order: blue, red, yellow, green, forward, reverse,
-+	 * play. */
-+	volatile UBYTE *pra = &ciaa.ciapra, *ddra = &ciaa.ciaddra;
-+	unsigned bits = 0;
-+	int i, d;
-+	UBYTE dummy;
-+	Disable();
-+	*pra |= 0x80;                  /* clock high first... */
-+	*ddra |= 0x80;                 /* ...then port 2 fire line as an output */
-+	for (d = 0; d < 4; d++) dummy = *pra;
-+	custom.potgo = 0x6f00;         /* port 2: pin 5 output low (CD32 mode), pin 9 input */
-+	for (d = 0; d < 25; d++) dummy = *pra;
-+	for (i = 0; i < 9; i++) {
-+		for (d = 0; d < 10; d++) dummy = *pra;
-+		if (!(custom.potinp & 0x4000)) bits |= 1u << i;
-+		*pra &= ~0x80;             /* clock pulse: next bit */
-+		for (d = 0; d < 4; d++) dummy = *pra;
-+		*pra |= 0x80;
-+	}
-+	*ddra &= ~0x80;                /* fire line back to input */
-+	custom.potgo = 0xff00;         /* pin 5 high again: 2-button mode */
-+	Enable();
-+	(void)dummy;
-+	return bits;
-+}
-+
-+/* Joystick port 2 (lowlevel.library port 1). No auto-detection (John's
-+ * decision, 17 Oct 2026, after AmiMSX: lowlevel.library's CD32 detection was
-+ * wrong for his adapters and even for a plain joystick, and a plain joystick
-+ * read as a CD32 pad has its fire line driven as a clock, so nothing works).
-+ * - Sys_PadType 0, standard: the hardware registers as AmiMSX reads them
-+ *   (joy1dat, CIA-A fire, POTINP fire 2 on pin 9 or pin 5). Pin 6 is never
-+ *   driven, so a plain joystick sees no probe at all.
-+ * - Sys_PadType 1, CD32 pad: directions from joy1dat, the buttons from
-+ *   read_cd32_buttons(), no ID check. Red = fire 1; blue, green, yellow = fire 2.
-+ * Game controllers lowlevel.library reports on ports 2-3 (USB pads under
-+ * Poseidon) are OR'd in either way. */
-+int Sys_PadType;                    /* 0 standard, 1 CD32 pad (menu / PAD= / prefs pad=) */
-+int Sys_NoCD32;                     /* NOCD32: kept for old scripts, same as PAD=0 */
-+static int pad_logged = -1;
-+unsigned Sys_ReadJoystick(void)
-+{
-+	unsigned m = 0;
-+	int port;
-+	UWORD j = custom.joy1dat;
-+	if (!lowlevel_tried) {
-+		lowlevel_tried = 1;
-+		LowLevelBase = OpenLibrary((STRPTR)"lowlevel.library", 39);
-+		Sys_Log("joystick: lowlevel.library %s", LowLevelBase ? "open (USB pads on ports 2-3)" : "not available");
-+	}
-+	if (Sys_NoCD32) Sys_PadType = 0;
-+	if (pad_logged != Sys_PadType) {
-+		pad_logged = Sys_PadType;
-+		Sys_Log("joystick: port 2 read as %s", Sys_PadType ? "a CD32 pad" : "a standard 2-button joystick");
-+	}
-+	if (j & 0x0002) m |= SYS_JOY_RIGHT;
-+	if (j & 0x0200) m |= SYS_JOY_LEFT;
-+	if (((j >> 1) ^ j) & 0x0001) m |= SYS_JOY_DOWN;
-+	if (((j >> 9) ^ (j >> 8)) & 0x0001) m |= SYS_JOY_UP;
-+	if (Sys_PadType) {
-+		unsigned b = read_cd32_buttons();
-+		joy_last_raw[1] = b;
-+		if (b & 0x02) m |= SYS_JOY_FIRE1;                    /* red */
-+		if (b & (0x01 | 0x04 | 0x08)) m |= SYS_JOY_FIRE2;   /* blue, yellow, green */
-+	} else {
-+		if (!(ciaa.ciapra & 0x80)) m |= SYS_JOY_FIRE1;
-+		custom.potgo = 0xff00;
-+		/* fire 2 on pin 9 (Amiga standard) or pin 5 (as AmiMSX reads it; some 2-button pads) */
-+		if (!(custom.potinp & 0x4000) || !(custom.potinp & 0x1000)) m |= SYS_JOY_FIRE2;
-+	}
-+	if (LowLevelBase) {
-+		for (port = 2; port < 4; port++) {
-+			ULONG v = ReadJoyPort(port);
-+			ULONG type = v & JP_TYPE_MASK;
-+			if (v != joy_last_raw[port]) joy_last_raw[port] = v;
-+			if (type != JP_TYPE_GAMECTLR && type != JP_TYPE_JOYSTK) continue;
-+			if (v & JPF_JOY_UP) m |= SYS_JOY_UP;
-+			if (v & JPF_JOY_DOWN) m |= SYS_JOY_DOWN;
-+			if (v & JPF_JOY_LEFT) m |= SYS_JOY_LEFT;
-+			if (v & JPF_JOY_RIGHT) m |= SYS_JOY_RIGHT;
-+			if (v & JPF_BUTTON_RED) m |= SYS_JOY_FIRE1;
-+			if (v & (JPF_BUTTON_BLUE | JPF_BUTTON_GREEN | JPF_BUTTON_YELLOW)) m |= SYS_JOY_FIRE2;
-+		}
-+	}
-+	return m;
-+}
-+
-+/* ---- sound ---- */
-+/* Paula, channels 0 (left) and 1 (right), 8-bit signed (14 Oct 2026 rewrite).
-+ * The emulation makes one block a CPC frame (444 samples). A frame of the PAL
-+ * display is 313 x 227 = 71051 colour clocks; at period 160 a block lasts
-+ * 71040, so one block per VBlank keeps Paula fed at the display's pace. Blocks
-+ * go into a small queue; a VBlank interrupt server hands the oldest one to
-+ * Paula (it is latched when the playing block ends). No block ready (the
-+ * emulation is behind): Paula repeats the last one. Queue full (it caught up in
-+ * a burst): the oldest waiting block is dropped. Both are counted (Sys_Perf). */
-+#include <devices/audio.h>
-+#include <hardware/dmabits.h>
-+#include <hardware/intbits.h>
-+#include <exec/interrupts.h>
-+#include "audio_conv.h"
-+#define ABUFS 4                       /* playing + handed over + up to 2 queued */
-+static struct MsgPort *audport;
-+static struct IOAudio *audio;
-+static int aud_open, aud_n;
-+static UBYTE *aud_buf[2][ABUFS];      /* [channel][slot] in chip RAM */
-+static UBYTE aud_map[] = { 3 };       /* channels 0 and 1 */
-+static volatile int aud_rd, aud_wr, aud_count, aud_run;
-+static volatile unsigned long aud_underruns, aud_drops, aud_irqs;
-+static struct Interrupt aud_vbint;
-+static int aud_vbint_added;
-+/* 19 Oct 2026: on a display that isn't 50 Hz the VBlank can't pace Paula, so
-+ * the blocks are handed over by channel 0's own interrupt instead: Paula
-+ * raises it when it latches a block (the start of its playback), and the
-+ * pointer written then is latched when that block ends. The rate is then
-+ * Paula's own: samples x period colour clocks a block. aud_mode 0 = VBlank
-+ * server (PAL, as tuned), 1 = audio interrupt. */
-+static int aud_mode, aud_first;
-+static struct Interrupt aud_int, *aud_oldint;
-+
-+static void aud_feed(void)
-+{
-+	if (aud_run) {
-+		if (aud_count > 0) {
-+			custom.aud[0].ac_ptr = (UWORD *)aud_buf[0][aud_rd];
-+			custom.aud[1].ac_ptr = (UWORD *)aud_buf[1][aud_rd];
-+			aud_rd = (aud_rd + 1) % ABUFS;
-+			aud_count--;
-+		} else if (aud_first)
-+			aud_first = 0;   /* the start: nothing queued behind the first block yet */
-+		else
-+			aud_underruns++;
-+	}
-+}
-+
-+static LONG aud_vblank(register APTR data __asm("a1"))
-+{
-+	aud_feed();
-+	return 0;
-+}
-+
-+/* exec interrupt handler (SetIntVector): must clear its request itself */
-+static void aud_handler(register APTR data __asm("a1"))
-+{
-+	custom.intreq = INTF_AUD0;
-+	aud_irqs++;
-+	aud_feed();
-+}
-+
-+unsigned long Sys_AudioIrqs(void) { return aud_irqs; }
-+
-+int Sys_AudioOpen(int period, int samples, int audint)
-+{
-+	int c, b;
-+	if (aud_open) return 1;
-+	aud_mode = audint;
-+	if (samples & 1) samples--;
-+	aud_n = samples;
-+	audport = CreateMsgPort();
-+	if (!audport) return 0;
-+	audio = (struct IOAudio *)CreateIORequest(audport, sizeof(struct IOAudio));
-+	if (!audio) { DeleteMsgPort(audport); audport = NULL; return 0; }
-+	audio->ioa_Request.io_Message.mn_Node.ln_Pri = 127;   /* don't let others steal them */
-+	audio->ioa_Request.io_Command = ADCMD_ALLOCATE;
-+	audio->ioa_Request.io_Flags = ADIOF_NOWAIT;
-+	audio->ioa_AllocKey = 0;
-+	audio->ioa_Data = aud_map;
-+	audio->ioa_Length = sizeof(aud_map);
-+	if (OpenDevice("audio.device", 0, (struct IORequest *)audio, 0) != 0) {
-+		Sys_Log("audio: audio.device channels 0+1 not free");
-+		DeleteIORequest((struct IORequest *)audio); audio = NULL;
-+		DeleteMsgPort(audport); audport = NULL;
-+		return 0;
-+	}
-+	aud_open = 1;
-+	for (c = 0; c < 2; c++) for (b = 0; b < ABUFS; b++) {
-+		aud_buf[c][b] = AllocMem(aud_n, MEMF_CHIP | MEMF_CLEAR);
-+		if (!aud_buf[c][b]) { Sys_Log("audio: no chip RAM for buffers"); Sys_AudioClose(); return 0; }
-+	}
-+	custom.aud[0].ac_per = period; custom.aud[1].ac_per = period;
-+	custom.aud[0].ac_vol = 64;     custom.aud[1].ac_vol = 64;
-+	custom.aud[0].ac_len = aud_n >> 1; custom.aud[1].ac_len = aud_n >> 1;
-+	aud_rd = aud_wr = aud_count = 0; aud_run = 0;
-+	if (aud_mode) {
-+		aud_int.is_Node.ln_Type = NT_INTERRUPT;
-+		aud_int.is_Node.ln_Pri = 0;
-+		aud_int.is_Node.ln_Name = (char *)"Arnold audio";
-+		aud_int.is_Data = NULL;
-+		aud_int.is_Code = (VOID (*)())aud_handler;
-+		custom.intena = INTF_AUD0;
-+		custom.intreq = INTF_AUD0;
-+		aud_oldint = SetIntVector(INTB_AUD0, &aud_int);
-+		custom.intena = INTF_SETCLR | INTF_AUD0;
-+	} else {
-+		aud_vbint.is_Node.ln_Type = NT_INTERRUPT;
-+		aud_vbint.is_Node.ln_Pri = 0;
-+		aud_vbint.is_Node.ln_Name = (char *)"Arnold audio";
-+		aud_vbint.is_Data = NULL;
-+		aud_vbint.is_Code = (VOID (*)())aud_vblank;
-+		AddIntServer(INTB_VERTB, &aud_vbint);
-+		aud_vbint_added = 1;
-+	}
-+	Sys_Log("audio: open, period %d, %d samples a block, fed by %s, chip clock %lu Hz", period, samples,
-+		aud_mode ? "the audio interrupt" : "the VBlank", Sys_ChipClock());
-+	return 1;
-+}
-+
-+void Sys_AudioClose(void)
-+{
-+	int c, b;
-+	if (!aud_open) return;
-+	aud_run = 0;
-+	if (aud_vbint_added) { RemIntServer(INTB_VERTB, &aud_vbint); aud_vbint_added = 0; }
-+	custom.dmacon = DMAF_AUD0 | DMAF_AUD1;   /* clear */
-+	if (aud_mode) {
-+		custom.intena = INTF_AUD0;
-+		SetIntVector(INTB_AUD0, aud_oldint);
-+		custom.intreq = INTF_AUD0;
-+		aud_oldint = NULL; aud_mode = 0;
-+	}
-+	custom.aud[0].ac_vol = 0; custom.aud[1].ac_vol = 0;
-+	for (c = 0; c < 2; c++) for (b = 0; b < ABUFS; b++)
-+		if (aud_buf[c][b]) { FreeMem(aud_buf[c][b], aud_n); aud_buf[c][b] = NULL; }
-+	if (audio) { CloseDevice((struct IORequest *)audio); DeleteIORequest((struct IORequest *)audio); audio = NULL; }
-+	if (audport) { DeleteMsgPort(audport); audport = NULL; }
-+	aud_open = 0;
-+}
-+
-+void Sys_AudioQueue(const unsigned char *s16, int samples)
-+{
-+	int slot;
-+	if (!aud_open) return;
-+	if (samples > aud_n) samples = aud_n;
-+	Disable();
-+	if (aud_count >= ABUFS - 2) {             /* full: drop the oldest waiting block */
-+		aud_rd = (aud_rd + 1) % ABUFS;
-+		aud_count--;
-+		aud_drops++;
-+	}
-+	slot = aud_wr;
-+	Enable();
-+	/* Slots in use: the block playing, the one handed over at the last VBlank
-+	 * (latched when the playing one ends) and the queue; with the queue kept
-+	 * below ABUFS - 2 the slot at aud_wr is none of them. */
-+	Audio_SplitTo8((const unsigned short *)s16, (signed char *)aud_buf[0][slot], (signed char *)aud_buf[1][slot], samples);
-+	if (samples < aud_n) {                    /* short block: hold the last level */
-+		memset(aud_buf[0][slot] + samples, samples ? aud_buf[0][slot][samples - 1] : 0, aud_n - samples);
-+		memset(aud_buf[1][slot] + samples, samples ? aud_buf[1][slot][samples - 1] : 0, aud_n - samples);
-+	}
-+#ifdef SOUNDQ_DUMP
-+	/* soundq verification builds only: every block as Paula gets it (left then
-+	   right, 8-bit signed) to PROGDIR:audio.raw, to compare with the headless WAV */
-+	{ static BPTR fh; static int tried;
-+	  if (!tried) { tried = 1; fh = Open((STRPTR)"PROGDIR:audio.raw", MODE_NEWFILE); }
-+	  if (fh) { Write(fh, aud_buf[0][slot], samples); Write(fh, aud_buf[1][slot], samples); Flush(fh); }
-+	  { static BPTR f16; static int tried16;   /* and the core's 16-bit block (big-endian) */
-+	    if (!tried16) { tried16 = 1; f16 = Open((STRPTR)"PROGDIR:audio16.raw", MODE_NEWFILE); }
-+	    if (f16) { Write(f16, (APTR)s16, samples * 4); Flush(f16); } } }
-+#endif
-+	Disable();
-+	aud_wr = (aud_wr + 1) % ABUFS;
-+	aud_count++;
-+	if (!aud_run) {
-+		/* start: this block plays at once, the server feeds the rest */
-+		custom.aud[0].ac_ptr = (UWORD *)aud_buf[0][slot];
-+		custom.aud[1].ac_ptr = (UWORD *)aud_buf[1][slot];
-+		aud_rd = aud_wr; aud_count = 0;
-+		aud_first = 1;
-+		if (aud_mode) custom.intreq = INTF_AUD0;
-+		custom.dmacon = DMAF_SETCLR | DMAF_MASTER | DMAF_AUD0 | DMAF_AUD1;
-+		if (aud_mode) custom.intena = INTF_SETCLR | INTF_AUD0;   /* off while paused, see Sys_AudioPause */
-+		aud_run = 1;
-+	}
-+	Enable();
-+	Sys_Perf.aud_underruns = aud_underruns;
-+	Sys_Perf.aud_drops = aud_drops;
-+}
-+
-+void Sys_AudioPause(void)
-+{
-+	if (!aud_open) return;
-+	Disable();
-+	aud_run = 0;
-+	aud_rd = aud_wr = aud_count = 0;
-+	/* 19 Oct 2026 (NTSC menu shear on John's A1200): with the audio DMA off,
-+	 * an enabled AUD0 interrupt doesn't stop. Paula drops to manual mode and
-+	 * asks for a new word every sample period once the handler clears the
-+	 * request: about 22000 level-4 interrupts a second for as long as the
-+	 * menu was up (70000 counted in one WinUAE menu visit). They hold off the
-+	 * level-3 VBlank work of graphics and Intuition. So the interrupt is
-+	 * switched off here, and Sys_AudioQueue switches it on again with the DMA. */
-+	if (aud_mode) custom.intena = INTF_AUD0;
-+	custom.dmacon = DMAF_AUD0 | DMAF_AUD1;
-+	if (aud_mode) custom.intreq = INTF_AUD0;
-+	Enable();
-+}
-+
 +unsigned long Sys_Millis(void) { return frames * 20; }
 +void Sys_TimerClose(void)
 +{
@@ -3405,7 +3677,7 @@ index 0000000..383cd67
 +{
 +	hb_log("hb frame %ld late %lu skipped %lu behind_us %ld safe_waits %lu reuse_waits %lu refused %lu safe_out %d disp_out %d shown %d aud_q %d under %lu drops %lu",
 +		frame, Sys_Perf.late_frames, Sys_Perf.skipped_frames, behind_us, hb_safe_waits, hb_reuse_waits, hb_refused,
-+		safe_out, disp_out, shown, aud_count, aud_underruns, aud_drops);
++		safe_out, disp_out, shown, Sys_AudioCount, Sys_AudioUnderruns, Sys_AudioDrops);
 +	hb_log_waits = 1;   /* from now on, log each wait too (rare) */
 +}
 +
@@ -3624,24 +3896,11 @@ index 0000000..383cd67
 +#endif
 +}
 +
-+/* Save states (1.4, 28 Oct 2026; host_amiga.c): the DC filter of the sound
-+ * (audio_conv.h, above) is part of a state so the sound after a load is the same
-+ * to the sample. */
-+void Sys_AudioDcState(long *v, int set)
-+{
-+#if !defined(NO_SNDLUT_FIX) && !defined(NO_SNDUNIPOLAR)
-+	if (set) { Audio_DcX[0] = v[0]; Audio_DcX[1] = v[1]; Audio_DcY[0] = v[2]; Audio_DcY[1] = v[3]; Audio_DcOn = (int)v[4]; }
-+	else { v[0] = Audio_DcX[0]; v[1] = Audio_DcX[1]; v[2] = Audio_DcY[0]; v[3] = Audio_DcY[1]; v[4] = Audio_DcOn; }
-+#else
-+	if (!set) v[0] = v[1] = v[2] = v[3] = v[4] = 0;
-+#endif
-+}
-+
 +/* Fast-forward (1.5, 28 Oct 2026; host_amiga.c). Sys_OsdHold shows a message
 + * like Sys_OsdMessage but until Sys_OsdRelease with the same text (">>" while
 + * the key is held). Sys_PacingRestart: the next Sys_WaitFrame starts the 50 Hz
 + * schedule from now, so the frames run unpaced do not count as owed (no burst
-+ * of skipped frames or catch-up afterwards). Sys_AudioSkip: a block that is not
++ * of skipped frames or catch-up afterwards). Sys_AudioSkip (amiga_audio.c): a block that is not
 + * played still goes through the DC filter, so the sound after fast-forward is
 + * the same to the sample as in a run without it. */
 +void Sys_OsdHold(const char *text) { Sys_OsdMessage(text); osd_hold = osd_text[0] != 0; }
@@ -3652,18 +3911,12 @@ index 0000000..383cd67
 +	osd_start = Sys_Micros() - 2000000UL;   /* ends at the next frame shown, rows redrawn from the clean frame */
 +}
 +void Sys_PacingRestart(void) { pace_restart = 1; }
-+void Sys_AudioSkip(const unsigned char *s16, int samples)
-+{
-+	static signed char l[1024], r[1024];
-+	if (samples > 1024) samples = 1024;
-+	Audio_SplitTo8((const unsigned short *)s16, l, r, samples);
-+}
 diff --git a/src/amiga/amiga_sys.h b/src/amiga/amiga_sys.h
 new file mode 100644
-index 0000000..6bd331a
+index 0000000..5fee700
 --- /dev/null
 +++ b/src/amiga/amiga_sys.h
-@@ -0,0 +1,173 @@
+@@ -0,0 +1,177 @@
 +/* Arnold on AmigaOS: the OS-facing half of the host. No Arnold headers here
 + * (cpcglob.h has its own BOOL, which clashes with exec/types.h), so
 + * host_amiga.c talks to the Amiga through this small interface only. */
@@ -3707,6 +3960,8 @@ index 0000000..6bd331a
 +int  Sys_AudioOpen(int period, int samples, int audint);   /* audint: fed by Paula's own interrupt, not the VBlank */
 +unsigned long Sys_ChipClock(void);   /* Paula clock, Hz (PAL 3546895, NTSC 3579545) */
 +void Sys_AudioClose(void);
++extern int Sys_AudioAhi;             /* before Sys_AudioOpen: HDMI sound through AHI wanted */
++int  Sys_AudioAhiOn(void);           /* 1: this open went to AHI, 0: Paula */
 +void Sys_AudioQueue(const unsigned char *s16stereo, int samples);
 +
 +void Sys_AudioPause(void);           /* DMA off; the next Sys_AudioQueue restarts it */
@@ -3737,7 +3992,9 @@ index 0000000..6bd331a
 +	int tape_rewind;         /* set by the menu: rewind the tape on Continue / Reset */
 +	char tapepos[32];        /* "Tape 3/5  " for the status line (host fills it) */
 +	int rtg;                 /* RTG screen (experimental, 26 Oct 2026): the emulation (and the menu) on an RTG board's 8-bit screen */
-+	int scan;                /* Scanlines on the RTG screen (SYS_SCAN_*, 1.2) */
++	int hdmisound;           /* HDMI sound (Nov 2026): on the RTG screen, sound through AHI and emu68hdmi.audio; a setting of the machine, not per game */
++	int hdmifail;            /* host: HDMI sound was asked for but the driver wouldn't open, Paula plays (cleared by a sound change in the menu) */
++	int scan;               /* Scanlines on the RTG screen (SYS_SCAN_*, 1.2) */
 +	int state_slot;          /* save states (1.4): the slot (1-4) of SYS_MENU_SAVESTATE / SYS_MENU_LOADSTATE */
 +	char state_label[4][40]; /* the host's labels for the slots ("Slot 1 (empty)"), shown in the Project menu */
 +	int autotape;            /* Auto-start tapes (1.5): Power ON / Reset types the load command and presses a key at "Press PLAY" */
@@ -3757,7 +4014,7 @@ index 0000000..6bd331a
 +
 +/* Workbench start (amiga_wb.c): fills st from the icon's ToolTypes and a
 + * project icon; returns 1 when started from Workbench. */
-+struct SysStart { char prefs[SYS_PATH], media[SYS_PATH], remap[128]; int menu, hires, tall, wide, nosound, skip, refresh, joykeys, pad, speed, video, model, diskwrite, fasttape, tapesound, rtg, scan; char tape[SYS_PATH]; int autotape; };   /* skip -1, refresh 0, others -1: not given */
++struct SysStart { char prefs[SYS_PATH], media[SYS_PATH], remap[128]; int menu, hires, tall, wide, nosound, skip, refresh, joykeys, pad, speed, video, model, diskwrite, fasttape, tapesound, rtg, scan; char tape[SYS_PATH]; int autotape, hdmisound; };   /* skip -1, refresh 0, others -1: not given */
 +int Sys_ParseModel(const char *v);   /* "464" "664" "6128" "PLUS" "GX4000" (any case) -> SYS_MODEL_*, -1 if not one */
 +int Sys_ParseVideo(const char *v);   /* "AUTO" "PAL" "NTSC" or 0-2 -> 0-2, -1 if not one */
 +int Sys_ParseSpeed(const char *v);   /* "50" or 0 -> 0, "DISPLAY" or 1 -> 1, -1 if not one */
@@ -3837,12 +4094,29 @@ index 0000000..6bd331a
 +void Sys_LogClose(void);
 +
 +#endif
+diff --git a/src/amiga/amiga_sys_priv.h b/src/amiga/amiga_sys_priv.h
+new file mode 100644
+index 0000000..d316dd0
+--- /dev/null
++++ b/src/amiga/amiga_sys_priv.h
+@@ -0,0 +1,11 @@
++/* Arnold on AmigaOS: what amiga_sys.c shares with the files split off it
++ * (split16, 30 Oct 2026): former statics one other file needs. Only for
++ * amiga_sys.c and those files; host_amiga.c uses amiga_sys.h. */
++#ifndef AMIGA_SYS_PRIV_H
++#define AMIGA_SYS_PRIV_H
++
++/* amiga_audio.c: the block queue, for the heartbeat line (Sys_Heartbeat) */
++extern volatile int Sys_AudioCount;
++extern volatile unsigned long Sys_AudioUnderruns, Sys_AudioDrops;
++
++#endif
 diff --git a/src/amiga/amiga_wb.c b/src/amiga/amiga_wb.c
 new file mode 100644
-index 0000000..9667b21
+index 0000000..2f62708
 --- /dev/null
 +++ b/src/amiga/amiga_wb.c
-@@ -0,0 +1,241 @@
+@@ -0,0 +1,244 @@
 +/* Arnold on AmigaOS: Workbench start. With libnix, main() gets argc == 0 and
 + * argv == the WBStartup message. We read the PREFS ToolType from the icon we
 + * were started from (Arnold's own, or a preset project icon) and take a project icon
@@ -3901,6 +4175,8 @@ index 0000000..9667b21
 +	if (tt) st->tapesound = (!*tt || atoi(tt)) ? 1 : 0;   /* TAPESOUND=0|1 (25 Oct 2026; a bare TAPESOUND means on) */
 +	tt = (char *)FindToolType((STRPTR *)dobj->do_ToolTypes, (STRPTR)"AUTOTAPE");
 +	if (tt) st->autotape = (!*tt || atoi(tt)) ? 1 : 0;   /* AUTOTAPE=0|1: auto-start tapes (1.5; a bare AUTOTAPE means on) */
++	tt = (char *)FindToolType((STRPTR *)dobj->do_ToolTypes, (STRPTR)"HDMISOUND");
++	if (tt) st->hdmisound = (!*tt || atoi(tt)) ? 1 : 0;   /* HDMISOUND=0|1: on the RTG screen, sound through AHI */
 +	tt = (char *)FindToolType((STRPTR *)dobj->do_ToolTypes, (STRPTR)"RTG");
 +	if (tt) st->rtg = (!*tt || atoi(tt)) ? 1 : 0;   /* RTG=0|1, a bare RTG means on: the RTG screen (pilot, 26 Oct 2026) */
 +	tt = (char *)FindToolType((STRPTR *)dobj->do_ToolTypes, (STRPTR)"RTGVBL");
@@ -3986,7 +4262,7 @@ index 0000000..9667b21
 +	struct WBArg *wa;
 +	memset(st, 0, sizeof *st);
 +	st->skip = -1;
-+	st->joykeys = -1; st->pad = -1; st->speed = -1; st->video = -1; st->model = -1; st->diskwrite = -1; st->fasttape = -1; st->tapesound = -1; st->rtg = -1; st->scan = -1; st->autotape = -1;
++	st->joykeys = -1; st->pad = -1; st->speed = -1; st->video = -1; st->model = -1; st->diskwrite = -1; st->fasttape = -1; st->tapesound = -1; st->rtg = -1; st->scan = -1; st->autotape = -1; st->hdmisound = -1;
 +	if (argc != 0) return 0;
 +	wbs = (struct WBStartup *)argv;
 +	if (!wbs || wbs->sm_NumArgs < 1) return 0;
@@ -4004,7 +4280,7 @@ index 0000000..9667b21
 +		memset(&pre, 0, sizeof pre);
 +		pre.skip = -1;
 +		pre.joykeys = -1; pre.pad = -1; pre.speed = -1; pre.video = -1; pre.model = -1; pre.diskwrite = -1;
-+		pre.fasttape = -1; pre.tapesound = -1; pre.rtg = -1; pre.scan = -1; pre.autotape = -1;
++		pre.fasttape = -1; pre.tapesound = -1; pre.rtg = -1; pre.scan = -1; pre.autotape = -1; pre.hdmisound = -1;
 +		if (IconBase && read_tooltypes(wa[1].wa_Name, &pre) && pre.prefs[0]) {
 +			char dir[SYS_PATH];
 +			if (strchr(pre.prefs, ':') == NULL && NameFromLock(wa[1].wa_Lock, (STRPTR)dir, SYS_PATH)) {
@@ -4029,6 +4305,7 @@ index 0000000..9667b21
 +			if (pre.fasttape >= 0) st->fasttape = pre.fasttape;
 +			if (pre.tapesound >= 0) st->tapesound = pre.tapesound;
 +			if (pre.autotape >= 0) st->autotape = pre.autotape;
++			if (pre.hdmisound >= 0) st->hdmisound = pre.hdmisound;
 +			if (pre.rtg >= 0) st->rtg = pre.rtg;
 +			if (pre.scan >= 0) st->scan = pre.scan;
 +			if (pre.tape[0]) strcpy(st->tape, pre.tape);
@@ -4403,10 +4680,10 @@ index 0000000..eaaa6ea
 +#endif
 diff --git a/src/amiga/host_amiga.c b/src/amiga/host_amiga.c
 new file mode 100644
-index 0000000..441bd47
+index 0000000..561a46b
 --- /dev/null
 +++ b/src/amiga/host_amiga.c
-@@ -0,0 +1,1456 @@
+@@ -0,0 +1,1444 @@
 +/* Arnold host for AmigaOS: implements src/cpc/host.h on top of amiga_sys.c.
 + * The core renders into an 8-bit chunky buffer (384 x 272, one byte per
 + * pixel, PaletteRemap indices); amiga_sys converts it to AGA bitplanes.
@@ -4436,6 +4713,7 @@ index 0000000..441bd47
 +unsigned char *chunky;          /* W x H, one byte a pixel: 384 x 272 lores, 768 x 272 hires */
 +int W, H;
 +extern void Palette_Set(void);
++BOOL Host_LoadFile(const char *n, unsigned char **pp, unsigned long *pl);   /* host_file.c (not in host.h) */
 +
 +static GRAPHICS_BUFFER_INFO bi;
 +static GRAPHICS_BUFFER_COLOUR_FORMAT cf;
@@ -4962,30 +5240,6 @@ index 0000000..441bd47
 +	return Sys_Poll() || hk_request;
 +}
 +
-+/* ---- files ---- */
-+HOST_FILE_HANDLE Host_OpenFile(const char *n, int Access) { return (HOST_FILE_HANDLE)fopen(n, Access == HOST_FILE_ACCESS_READ ? "rb" : "wb"); }
-+void Host_CloseFile(HOST_FILE_HANDLE h) { if (h) fclose((FILE *)h); }
-+int Host_GetFileSize(HOST_FILE_HANDLE h) { FILE *f = (FILE *)h; long p = ftell(f), s; fseek(f, 0, SEEK_END); s = ftell(f); fseek(f, p, SEEK_SET); return (int)s; }
-+void Host_WriteData(HOST_FILE_HANDLE h, unsigned char *d, unsigned long l) { fwrite(d, 1, l, (FILE *)h); }
-+void Host_ReadData(HOST_FILE_HANDLE h, unsigned char *d, unsigned long l) { fread(d, 1, l, (FILE *)h); }
-+
-+BOOL Host_LoadFile(const char *n, unsigned char **pp, unsigned long *pl)
-+{
-+	FILE *f = fopen(n, "rb"); long s; unsigned char *p;
-+	*pp = NULL; *pl = 0;
-+	if (!f) return FALSE;
-+	fseek(f, 0, SEEK_END); s = ftell(f); fseek(f, 0, SEEK_SET);
-+	p = malloc(s);
-+	if (!p || fread(p, 1, s, f) != (size_t)s) { fclose(f); free(p); return FALSE; }
-+	fclose(f); *pp = p; *pl = s; return TRUE;
-+}
-+BOOL Host_SaveFile(const char *n, unsigned char *p, unsigned long l)
-+{
-+	FILE *f = fopen(n, "wb"); if (!f) return FALSE;
-+	fwrite(p, 1, l, f); fclose(f); return TRUE;
-+}
-+BOOL LoadFile(const char *n, unsigned char **pp, unsigned long *pl) { return Host_LoadFile(n, pp, pl); }
-+
 +/* Argument keywords ignore case, as AmigaDOS does (13 Oct 2026: "Arnold bench"
 + * typed in lower case started the emulator instead). Return 0 on a match. */
 +static int kwncmp(const char *a, const char *kw, int n)
@@ -5046,6 +5300,7 @@ index 0000000..441bd47
 +		else if (!strcmp(line, "tapesound")) menu.tapesound = atoi(v) ? 1 : 0;
 +		else if (!strcmp(line, "autotape")) menu.autotape = atoi(v) ? 1 : 0;
 +		else if (!strcmp(line, "rtg")) menu.rtg = atoi(v) ? 1 : 0;
++		else if (!strcmp(line, "hdmisound")) menu.hdmisound = atoi(v) ? 1 : 0;
 +		else if (!strcmp(line, "scanlines")) { int k = Sys_ParseScan(v); if (k >= 0) menu.scan = k; }
 +		else if (!strcmp(line, "tape")) strncpy(menu.tape, v, SYS_PATH - 1);
 +	}
@@ -5067,6 +5322,7 @@ index 0000000..441bd47
 +	fprintf(f, "fasttape=%d\ntape=%s\n", global_fasttape, menu.tape);
 +	fprintf(f, "tapesound=%d\n", global_tapesound);
 +	fprintf(f, "autotape=%d\n", global_autotape);
++	fprintf(f, "hdmisound=%d\n", menu.hdmisound);
 +	fprintf(f, "scanlines=%s\n", Sys_ScanWords[global_scan > 0 && global_scan < SYS_SCANS ? global_scan : 0]);
 +	if (global_remap[0]) fprintf(f, "remap=%s\n", global_remap);
 +	fclose(f);
@@ -5582,7 +5838,7 @@ index 0000000..441bd47
 +	 *   with the period shortened so the blocks keep up. */
 +	{
 +		unsigned long clk = Sys_ChipClock(), fus, target;
-+		int period, audint, timer, speed = menu.speed;
++		int period, audint, timer, ahi, speed = menu.speed;
 +		/* RTG screen: there is no RTG VBlank to follow (rtgfw never waits for the board's
 +		 * refresh), so "Follow display" means the CPC's 50 Hz there (DESIGN.md 7) */
 +		if (Sys_RtgActive && speed) { speed = 0; Sys_Log("pacing: RTG screen: Follow display has no meaning, the CPC's 50 Hz"); }
@@ -5595,10 +5851,16 @@ index 0000000..441bd47
 +			fus = speed ? Sys_DisplayFrameUs : (unsigned long)(444ULL * period * 1000000ULL / clk);
 +		}
 +		Sys_SetPacing(timer, fus);
-+		if (audio_open && (period != aud_period || audint != aud_int)) { Sys_AudioClose(); audio_open = 0; }
-+		aud_period = period; aud_int = audint;
++		ahi = menu.hdmisound && Sys_RtgActive;
++		/* HDMI wanted but Paula plays (another program had the driver): try again on each Continue */
++		if (audio_open && (period != aud_period || audint != aud_int || ahi != Sys_AudioAhi || (ahi && !Sys_AudioAhiOn()))) { Sys_AudioClose(); audio_open = 0; }
++		aud_period = period; aud_int = audint; Sys_AudioAhi = ahi;
 +	}
-+	if (menu.sound && !audio_open && Sys_AudioOpen(aud_period, AUD_SAMPLES, aud_int)) { audio_open = 1; CPC_SetAudioActive(TRUE); }
++	if (menu.sound && !audio_open && Sys_AudioOpen(aud_period, AUD_SAMPLES, aud_int)) {
++		audio_open = 1; CPC_SetAudioActive(TRUE);
++		menu.hdmifail = Sys_AudioAhi && !Sys_AudioAhiOn();
++		if (menu.hdmifail) strcpy(menu.status, "HDMI sound not available: playing on Paula");
++	}
 +	if (!menu.sound && audio_open) { Sys_AudioClose(); audio_open = 0; CPC_SetAudioActive(FALSE); }
 +	CPC_ClearKeyboard();
 +	/* and the joystick state with it: a joy key held when Help was pressed is
@@ -5651,6 +5913,7 @@ index 0000000..441bd47
 +		if (st.fasttape >= 0) menu.fasttape = st.fasttape;
 +		if (st.tapesound >= 0) menu.tapesound = st.tapesound;
 +		if (st.autotape >= 0) menu.autotape = autotape_arg = st.autotape;
++		if (st.hdmisound >= 0) menu.hdmisound = st.hdmisound;
 +		if (st.scan >= 0) scan = st.scan;
 +		if (st.rtg >= 0) rtg = st.rtg;
 +		if (st.tape[0]) strncpy(menu.tape, st.tape, SYS_PATH - 1);
@@ -5689,6 +5952,8 @@ index 0000000..441bd47
 +			else if (!kwcmp(argv[i], "TAPESOUND")) menu.tapesound = 1;
 +			else if (!kwncmp(argv[i], "AUTOTAPE=", 9)) menu.autotape = autotape_arg = atoi(argv[i] + 9) ? 1 : 0;   /* auto-start tapes (1.5) */
 +			else if (!kwcmp(argv[i], "AUTOTAPE")) menu.autotape = autotape_arg = 1;
++			else if (!kwncmp(argv[i], "HDMISOUND=", 10)) menu.hdmisound = atoi(argv[i] + 10) ? 1 : 0;
++			else if (!kwcmp(argv[i], "HDMISOUND")) menu.hdmisound = 1;
 +			else if (!kwcmp(argv[i], "RTG")) rtg = 1;                       /* RTG screen (pilot, 26 Oct 2026) */
 +			else if (!kwncmp(argv[i], "RTG=", 4)) rtg = atoi(argv[i] + 4) ? 1 : 0;
 +			else if (!kwcmp(argv[i], "RTGBLIT")) Sys_RtgBlit = 1;           /* diagnostic: off-screen bitmap + blit */
@@ -5863,6 +6128,41 @@ index 0000000..441bd47
 +	Sys_LogClose();
 +	return 0;
 +}
+diff --git a/src/amiga/host_file.c b/src/amiga/host_file.c
+new file mode 100644
+index 0000000..63a6bd1
+--- /dev/null
++++ b/src/amiga/host_file.c
+@@ -0,0 +1,29 @@
++/* Arnold host for AmigaOS: the core's file access (src/cpc/host.h Host_*File,
++ * Host_LoadFile / Host_SaveFile) on stdio. Split off host_amiga.c (split16, 30 Oct 2026). */
++#include "../cpc/host.h"
++#include <stdio.h>
++#include <stdlib.h>
++
++/* ---- files ---- */
++HOST_FILE_HANDLE Host_OpenFile(const char *n, int Access) { return (HOST_FILE_HANDLE)fopen(n, Access == HOST_FILE_ACCESS_READ ? "rb" : "wb"); }
++void Host_CloseFile(HOST_FILE_HANDLE h) { if (h) fclose((FILE *)h); }
++int Host_GetFileSize(HOST_FILE_HANDLE h) { FILE *f = (FILE *)h; long p = ftell(f), s; fseek(f, 0, SEEK_END); s = ftell(f); fseek(f, p, SEEK_SET); return (int)s; }
++void Host_WriteData(HOST_FILE_HANDLE h, unsigned char *d, unsigned long l) { fwrite(d, 1, l, (FILE *)h); }
++void Host_ReadData(HOST_FILE_HANDLE h, unsigned char *d, unsigned long l) { fread(d, 1, l, (FILE *)h); }
++
++BOOL Host_LoadFile(const char *n, unsigned char **pp, unsigned long *pl)
++{
++	FILE *f = fopen(n, "rb"); long s; unsigned char *p;
++	*pp = NULL; *pl = 0;
++	if (!f) return FALSE;
++	fseek(f, 0, SEEK_END); s = ftell(f); fseek(f, 0, SEEK_SET);
++	p = malloc(s);
++	if (!p || fread(p, 1, s, f) != (size_t)s) { fclose(f); free(p); return FALSE; }
++	fclose(f); *pp = p; *pl = s; return TRUE;
++}
++BOOL Host_SaveFile(const char *n, unsigned char *p, unsigned long l)
++{
++	FILE *f = fopen(n, "wb"); if (!f) return FALSE;
++	fwrite(p, 1, l, f); fclose(f); return TRUE;
++}
++BOOL LoadFile(const char *n, unsigned char **pp, unsigned long *pl) { return Host_LoadFile(n, pp, pl); }
 diff --git a/src/amiga/keymaplogic.c b/src/amiga/keymaplogic.c
 new file mode 100644
 index 0000000..bf05b7a
