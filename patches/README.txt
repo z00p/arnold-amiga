@@ -1,16 +1,16 @@
-Arnold for Amiga 1.6 - patch set and Amiga build
+Arnold for Amiga 1.7 - patch set and Amiga build
 =================================================
-3 November 2026.  Arnold (c) Kevin Thacker, GPL-2.0.  Amiga port by John Stringer.
+5 November 2026.  Arnold (c) Kevin Thacker, GPL-2.0.  Amiga port by John Stringer.
 
 This package holds the changes made to Arnold while porting it to 68k AmigaOS 3.x (AGA),
 as patches against the upstream source, plus a ready-to-run Amiga build.
 
-  patches/   42 patches (git format-patch) against rofl0r's GitHub mirror of Arnold,
+  patches/   43 patches (git format-patch) against rofl0r's GitHub mirror of Arnold,
              https://github.com/rofl0r/arnold, master at e5dce08
              ("fix prototype of LoadFile()", 4 Sep 2026)
   amiga/     the Amiga build: drawer Arnold with the program, icons, presets, the Plus
              system cartridge and a user README
-  source/    the complete source of this build (the upstream tree with all 42 patches
+  source/    the complete source of this build (the upstream tree with all 43 patches
              applied), for the GPL
 
 
@@ -20,9 +20,9 @@ Applying the patches
   git checkout e5dce08
   git am /path/to/patches/*.patch
 
-Each patch stands on its own and builds. Patches 1-39 touch only the core (src/cpc;
-38 also adds savestate.o to src/objects.mak); 40 adds the RTG display framework
-(src/amiga/rtgfw, MIT licence), 41 adds src/amiga and 42 adds src/headless. The core changes are all marked "Amiga port"
+Each patch stands on its own and builds. Patches 1-40 touch only the core (src/cpc;
+38 also adds savestate.o to src/objects.mak); 41 adds the RTG display framework
+(src/amiga/rtgfw, MIT licence), 42 adds src/amiga and 43 adds src/headless. The core changes are all marked "Amiga port"
 in comments, and every behaviour change can be switched off with a define (below).
 
 
@@ -205,14 +205,25 @@ Monitor and tape:
        non-black border (R-Type's Easter Egg logo). Palette numbering only:
        RGB output identical.
 
+1.7 (black pens share entry 0 again):
+
+ 0040  Paletted renderer: black pens share entry 0 while the border is black
+                                                               NO_BLACK0_SHARE
+       Keeping black pens off entry 0 cost an entry: a game using 32 colours
+       needed index 32, and on an Amiga a sixth bitplane for many lines. While
+       the border is black, black pens may use entry 0 again; when it turns
+       another colour they move to a black entry of their own at once, and the
+       host is told to show entry 0 black for the rest of that frame. Palette
+       numbering only: RGB output identical.
+
 Tools:
 
  0010  Diagnostics for hardware tracing (TRACE_HW, PAL_COUNT; off by default)
- 0040  RTG display framework for the AmigaOS host (src/amiga/rtgfw): rtgfw,
+ 0041  RTG display framework for the AmigaOS host (src/amiga/rtgfw): rtgfw,
        Copyright (c) 2026 Zoopster, under the MIT licence (its LICENSE file), not
        the GPL; a separate work vendored unchanged. Only the Amiga host uses it.
- 0041  AmigaOS host: Arnold for Amiga (src/amiga, built with bebbo's amiga-gcc)
- 0042  Headless test host (src/headless: frame checksums, PPM, key scripts, WAV,
+ 0042  AmigaOS host: Arnold for Amiga (src/amiga, built with bebbo's amiga-gcc)
+ 0043  Headless test host (src/headless: frame checksums, PPM, key scripts, WAV,
        disk insert / write-back / sector dumps)
 
 
@@ -245,9 +256,12 @@ Amiga build
 See amiga/Arnold/README.txt. In short: CPC 6128 Plus / GX4000 cartridges (.cpr), disks
 (.dsk, with the system cartridge's BASIC and AMSDOS) and snapshots (.sna). It needs an
 AGA Amiga with a 68040 or better (PiStorm/Emu68, 68060, BigMig), with sound through Paula.
-Help opens the menu. New in 1.6: HDMI sound on the RTG screen of a PiStorm with a Pi 4 or CM4
-(16-bit stereo through AHI and the separately installed emu68hdmi.audio driver), and save states
-that load again in the -O3 builds. The core is unchanged from 1.5. 1.5 brought fast-forward
+Help opens the menu. New in 1.7: on the RTG screen with HDMI sound (or no sound) each frame is
+timed to the display's refresh (RTGLOCK=), so none is dropped or shown twice, and an occasional
+black frame is gone; on the AGA screen heavy frames get 4 ms more time (LEAD=) and black pens
+share entry 0 again (patch 0040); Sound tone (Bright, Soft or Warm, Soft by default) for Paula
+and HDMI sound. 1.6 brought HDMI sound on the RTG screen of a PiStorm with a Pi 4 or CM4
+(16-bit stereo through AHI and the separately installed emu68hdmi.audio driver). 1.5 brought fast-forward
 (hold ` , the key left of 1), auto-start tapes (the load command typed after Power ON), black
 pens off palette entry 0 (Amiga colour 0 shows the border colour) and on-screen messages that
 show on RTG screens with scanlines. 1.4 brought
@@ -257,9 +271,8 @@ shown, and the log is no longer written to disk every second). 1.2 added an opti
 (experimental, with scanlines and the Arnold RTG preset) and Games.db, settings for known
 games by image CRC-32.
 
-Builds: Arnold (68040, -O2), Arnold-040-Max (-O3), Arnold-060 and Arnold-060-Max
-(68060), Arnold-030 (68030; runs, but too slow for games). All are soft-float, with
-no FPU needed.
+Builds: Arnold (68040; the one for PiStorm/Emu68) and Arnold-060 (68060, BigMig). Both
+are soft-float, with no FPU needed. 1.6's -O3 and 68030 builds are gone.
 
 Built with: bebbo's amiga-gcc (codeberg.org/bebbo/amiga-gcc), -noixemul;
   cd src/amiga && make TARGET=Arnold CPU=68040 OPT=-O2

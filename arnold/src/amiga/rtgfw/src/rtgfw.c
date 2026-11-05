@@ -717,6 +717,12 @@ static struct {
 	struct timerequest *tr;
 	char calib[100];            /* the calibration steps in us, for the log */
 	RtgVblStats st;
+	u64 t_first;                /* E-clock of the first present not yet written */
+	ULONG pan_back_max, pan_held, pair_max, pair_long, wait_n; u64 wait_sum, wait_max;   /* rtg17: pan back (us), back pans that waited for a blank, whole pair (us), pairs over 5 ms, present->write */
+	ULONG mirrors;   /* rtg17: page 1 refreshed (vt_mirror) */
+	int pan_off, calib_tries;   /* rtg17: the anchor pan's RyOffset (0: the same place), calibrations tried */
+	int pres_pending;   /* rtg17: a frame (not only a palette change) waits to be written */
+	u64 t_run; ULONG held_at[8];   /* rtg17: the end of the calibration; when (ms after it) pans back waited (the first 8) */
 } V = { 0, 0, 0, -1, 0, 0, 0, 1 };
 static int vt_start(void);
 static void vt_stop(void);
@@ -1193,16 +1199,46 @@ static void vt_wait_until(u64 t)
 
 static u64 us_ticks(ULONG us) { return ((u64)us * R.efreq + 500000) / 1000000; }
 
-/* pan to page 1 and straight back: returns the E-clock at the blank start */
+/* The anchor pan: returns the E-clock at the blank start.
+ * rtg17 (4 Nov 2026), John's black frame flash with the lock and HDMI sound:
+ * the anchor panned to page 1 (the surround colour, black) and straight back,
+ * and now and then the pan back missed the blank (measured: 0-2 per 45 s,
+ * each a 20 ms wait), so page 1 was on the screen for a whole refresh. Forbid
+ * around the pair did not stop it (3 in 3 runs), so the hold-up is not another
+ * task. A pan to the offset already shown also busy-waits for the blank on the
+ * Emu68 VideoCore board, but it missed blanks far more often (10 of 18 anchors
+ * in one run, a 20 ms spin each) and failed calibrations, so it is a test
+ * option only (rtg_x_pan_lines 0). The fix: before each anchor page 1 gets the
+ * picture now on page 0 (vt_mirror, ~1 ms in this task), so a late pan back
+ * shows the same frame for one more refresh, never a black one.
+ * Tests: rtg_x_pan_lines (-1 page pans, the default; 0 one pan to the same
+ * place), rtg_x_pan_forbid (1: the pans under Forbid), rtg_x_pan_mirror (0: page
+ * 1 left black, as before). pan_held counts pans back over 1 ms. */
+int rtg_x_pan_forbid = 0;
+int rtg_x_pan_lines = -1;
+int rtg_x_pan_mirror = 1;
 static u64 vt_pan_pair(void)
 {
 	struct ViewPort *vp = &R.scr->ViewPort;
-	u64 t;
-	vp->RasInfo->RyOffset = (WORD)R.scr_h;
+	u64 t, t2, t1 = eclock();
+	ULONG d;
+	int fb = rtg_x_pan_forbid, off = V.pan_off;
+	if (fb) Forbid();
+	vp->RasInfo->RyOffset = (WORD)off;
 	ScrollVPort(vp);
 	t = eclock();
-	vp->RasInfo->RyOffset = 0;
-	ScrollVPort(vp);
+	if (off) {
+		vp->RasInfo->RyOffset = 0;
+		ScrollVPort(vp);
+	}
+	if (fb) Permit();
+	t2 = eclock();
+	d = ticks_us(t2 - t);
+	if (d > V.pan_back_max) V.pan_back_max = d;
+	if (d > 1000) { if (V.pan_held < 8) V.held_at[V.pan_held] = V.t_run ? ticks_us(t - V.t_run) / 1000 : 0; V.pan_held++; }
+	d = ticks_us(t2 - t1);   /* the whole pair: how long Forbid was held */
+	if (d > V.pair_max) V.pair_max = d;
+	if (d > 5000) V.pair_long++;
 	return t;
 }
 
@@ -1244,28 +1280,63 @@ static int vt_calibrate(void)
 		if (d[i] > k * dmin + 400 || d[i] + 400 < k * dmin) return 0;
 		K += k;
 	}
-	V.per_fx = ((a[8] - a[0]) << 16) / K;
+	/* the period from the last run of single steps (3 Nov 2026): a reading held up by ~150 us
+	 * before a double step biased the old whole-span figure by ~17 us a refresh (seen with HDMI
+	 * sound: the phase then drifted ~0.9 ms a second) */
+	for (i = 8; i > 0 && (d[i - 1] + dmin / 2) / dmin == 1; i--) ;
+	if (i <= 5) { V.per_fx = ((a[8] - a[i]) << 16) / (8 - i); V.vb0 = a[i]; V.nb = 8 - i; }
+	else { V.per_fx = ((a[8] - a[0]) << 16) / K; V.vb0 = a[0]; V.nb = K; }
 	V.st.period_us = (ULONG)((V.per_fx * 1000000ull / R.efreq) >> 16);
-	V.vb0 = a[0]; V.vb = a[8]; V.nb = K; V.last_anchor = a[8];
+	V.vb = a[8]; V.last_anchor = a[8];
 	return 1;
 }
 
+/* Anchor (3 Nov 2026, Arnold sonic16). The pan is started VT_LEAD before the predicted blank (it
+ * was 300 us), so a phase a little off, or a wake-up held up by another task (AHI's HDMI driver:
+ * up to ~0.7 ms seen), still starts it before the blank: a pan started after the blank start
+ * waits a whole refresh, spinning at the task's priority (+1 over the emulator), a ~20 ms stall.
+ * The pan returns at a blank start, or later if this task is held up just after it, never
+ * earlier. So every reading names a real blank (the nearest predicted one is matched to it):
+ * an early or on-time one is taken as it is, a late one (maybe held up) moves the phase half
+ * way. Before, readings more than 1.5 ms out were thrown away, so once the phase or the period
+ * was off (one held-up reading taken whole; a period 17 us short from the calibration) every
+ * anchor after it missed and the phase never came back: a long spin once a second. */
+#define VT_LEAD 1500                /* us before the predicted blank */
+#define VT_LATE_OK 200              /* us: a reading this late or less is taken as it is */
+#ifdef RTGFW_ANCHORLOG
+/* diagnostic (sonic16, 3 Nov 2026): per anchor the wake-up lateness, the pan pair's length and the error */
+#define AL_N 64
+static struct { long late, pan, err; } al[AL_N];
+static int al_n;
+#endif
 static void vt_anchor(void)
 {
-	u64 p = vt_next_blank(eclock() + us_ticks(600)), r;
-	int32_t e;
-	vt_wait_until(p - us_ticks(300));
+	u64 p = vt_next_blank(eclock() + us_ticks(VT_LEAD + 300)), r;
+	int32_t e, per = (int32_t)((V.per_fx * 1000000ull / R.efreq) >> 16);
+	ULONG n;
+#ifdef RTGFW_ANCHORLOG
+	u64 w0, w1;
+	vt_wait_until(p - us_ticks(VT_LEAD));
+	w0 = eclock();
+	r = vt_pan_pair();
+	w1 = eclock();
+	e = (int32_t)((int64_t)(r - p) * 1000000 / (int64_t)R.efreq);
+	if (al_n < AL_N) { al[al_n].late = (long)((int64_t)(w0 - (p - us_ticks(VT_LEAD))) * 1000000 / (int64_t)R.efreq); al[al_n].pan = (long)ticks_us(w1 - w0); al[al_n].err = e; al_n++; }
+#else
+	vt_wait_until(p - us_ticks(VT_LEAD));
 	r = vt_pan_pair();
 	e = (int32_t)((int64_t)(r - p) * 1000000 / (int64_t)R.efreq);
+#endif
 	V.st.anchors++;
-	if (e > -1500 && e < 1500) {
-		ULONG n = (ULONG)((((r - V.vb0) << 16) + V.per_fx / 2) / V.per_fx);
-		if (e < 0) e = -e;
-		if ((ULONG)e > V.st.anchor_err_max) V.st.anchor_err_max = (ULONG)e;
-		if (n > V.nb) { V.per_fx = ((r - V.vb0) << 16) / n; V.nb = n; }
-		V.vb = r;
-		V.st.period_us = (ULONG)((V.per_fx * 1000000ull / R.efreq) >> 16);
-	} else V.st.anchor_fails++;
+	while (e > per / 2) e -= per;                            /* the predicted blank nearest the reading */
+	if (e > 1500 || e < -1500) V.st.anchor_fails++;          /* counted (the phase was off), still used */
+	if (e > VT_LATE_OK) r -= us_ticks((ULONG)e / 2);          /* late: maybe held up, half way */
+	n = (ULONG)((((r - V.vb0) << 16) + V.per_fx / 2) / V.per_fx);
+	if (n > V.nb) { V.per_fx = ((r - V.vb0) << 16) / n; V.nb = n; }
+	V.vb = r;
+	if (e < 0) e = -e;
+	if ((ULONG)e > V.st.anchor_err_max) V.st.anchor_err_max = (ULONG)e;
+	V.st.period_us = (ULONG)((V.per_fx * 1000000ull / R.efreq) >> 16);
 	V.last_anchor = eclock();
 }
 
@@ -1303,7 +1374,11 @@ static void vt_write(void)
 	unlock_bm(bm, h);
 	if (R.fmt == RTG_FMT_CLUT8) load_clut(lo, hi);
 	memset(V.pend, 0, R.vis_h);
-	V.pending = 0;
+	if (V.pres_pending && V.t_first && t0 > V.t_first) {   /* present -> write (the frame's wait for its blank) */
+		u64 w = t0 - V.t_first;
+		V.wait_sum += w; V.wait_n++; if (w > V.wait_max) V.wait_max = w;
+	}
+	V.pending = 0; V.pres_pending = 0;
 	ReleaseSemaphore(&V.sem);
 	us = ticks_us(eclock() - t0);
 	V.st.writes++;
@@ -1312,6 +1387,28 @@ static void vt_write(void)
 	R.st.lines_written += R.conv.lines_written - lw;
 	R.st.bytes_written += R.conv.bytes_written - bw;
 	R.st.us_convert += us;
+}
+
+/* rtg17: page 1 gets what page 0 shows (the staging frame, all lines, just after a write); see vt_pan_pair */
+static void vt_mirror(void)
+{
+	struct BitMap *bm = R.scr->RastPort.BitMap;
+	UBYTE *addr = NULL;
+	LONG bpr = 0;
+	APTR h;
+	int lo = 1, hi = 0;
+	ObtainSemaphore(&V.sem);
+	if (V.pending) { ReleaseSemaphore(&V.sem); return; }   /* a newer frame waits: page 0 is not what the stage holds */
+	h = lock_bm(bm, &addr, &bpr);
+	if (h && addr) {
+		UBYTE *p1 = addr + (long)R.scr_h * bpr;
+		fill_surround(p1, bpr, surround_value(0));
+		rtgc_present(&R.conv, 0, V.stage, R.vis_w, NULL, NULL, p1 + (long)R.oy * bpr + (long)R.ox * R.bpp, bpr, &lo, &hi);
+		V.mirrors++;
+	}
+	if (h) unlock_bm(bm, h);
+	ReleaseSemaphore(&V.sem);
+	if (R.fmt == RTG_FMT_CLUT8) load_clut(lo, hi);
 }
 
 static void vt_entry(void)
@@ -1329,7 +1426,15 @@ static void vt_entry(void)
 		return;
 	}
 	V.go_mask = 1UL << go;
+	V.calib_tries = 1;
 	V.ok = vt_calibrate();
+	if (!V.ok) { V.calib_tries++; V.ok = vt_calibrate(); }   /* one held-up reading (rtg17: 253 us seen) fails a calibration */
+	if (!V.ok && V.pan_off == 0) {   /* no steady blank from a pan to the same place: page pans */
+		V.pan_off = R.scr_h;
+		V.calib_tries++; V.ok = vt_calibrate();
+		if (!V.ok) { V.calib_tries++; V.ok = vt_calibrate(); }
+	}
+	V.pan_back_max = V.pan_held = V.pair_max = V.pair_long = 0; V.t_run = eclock();   /* rtg17: pan figures for the anchors only */
 	if (V.ok) Signal(V.owner, 1UL << V.ack_bit);   /* if not, the one signal is the one at the end */
 	while (V.ok && !V.quit) {
 		u64 now, b;
@@ -1346,7 +1451,12 @@ static void vt_entry(void)
 				if (late > V.st.late_max_us) V.st.late_max_us = late;
 			}
 			vt_write();
-			if (eclock() - V.last_anchor > (u64)R.efreq) vt_anchor();
+			/* an anchor a second for the first 10 s, then one every 4 s (3 Nov 2026): the period is
+			 * known by then, and a pan now and then misses a blank and spins a whole refresh */
+			if (eclock() - V.last_anchor > (u64)R.efreq * (V.nb > 500 ? 4 : 1)) {
+				if (V.pan_off && rtg_x_pan_mirror) vt_mirror();
+				vt_anchor();
+			}
 		}
 	}
 	CloseDevice((struct IORequest *)V.tr);
@@ -1373,6 +1483,8 @@ static int vt_start(void)
 	V.pal_lo = 256; V.pal_hi = -1; V.border = -1;
 	V.delta = (ULONG)us_ticks(50);
 	memset(&V.st, 0, sizeof V.st);
+	V.t_first = V.t_run = 0; V.pres_pending = 0; V.mirrors = 0;
+	V.pan_off = rtg_x_pan_lines < 0 || rtg_x_pan_lines > R.scr_h ? R.scr_h : rtg_x_pan_lines; V.pan_back_max = V.pan_held = V.pair_max = V.pair_long = V.wait_n = 0; V.wait_sum = V.wait_max = 0;
 	V.calib[0] = 0;
 	InitSemaphore(&V.sem);
 	V.stage = malloc((long)R.vis_w * R.vis_h);
@@ -1436,6 +1548,14 @@ static void vt_stop(void)
 	      (unsigned long)V.st.presents, (unsigned long)V.st.writes, (unsigned long)V.st.at_once, (unsigned long)V.st.merged,
 	      (unsigned long)(V.st.writes ? V.st.us_write / V.st.writes : 0), (unsigned long)V.st.us_write_max, (unsigned long)V.st.late_max_us,
 	      (unsigned long)V.st.anchors, (unsigned long)V.st.anchor_fails, (unsigned long)V.st.anchor_err_max, (unsigned long)V.st.period_us);
+	logf_(1, "rtgfw: anchor pans: back max %lu us, %lu waited for a blank (page 1 shown), pairs max %lu us, %lu over 5 ms, Forbid %d, offset %d, %d calibs, %lu mirrored",
+	      (unsigned long)V.pan_back_max, (unsigned long)V.pan_held, (unsigned long)V.pair_max, (unsigned long)V.pair_long, rtg_x_pan_forbid, V.pan_off, V.calib_tries, (unsigned long)V.mirrors);
+	logf_(1, "rtgfw: present to write avg %lu max %lu us",
+	      (unsigned long)(V.wait_n ? ticks_us(V.wait_sum / V.wait_n) : 0), (unsigned long)ticks_us(V.wait_max));
+	{ ULONG k; for (k = 0; k < V.pan_held && k < 8; k++) logf_(1, "rtgfw: pan back waited for a blank %lu ms after the calibration", (unsigned long)V.held_at[k]); }
+#ifdef RTGFW_ANCHORLOG
+	{ int k; for (k = 0; k < al_n; k++) logf_(1, "rtgfw: anchor %d: woke %ld us late, pans %ld us, error %ld us", k, al[k].late, al[k].pan, al[k].err); al_n = 0; }
+#endif
 	vt_free();
 }
 
@@ -1447,7 +1567,9 @@ static int32_t vt_present(const uint8_t *pix, int32_t stride, const uint8_t *dir
 	ObtainSemaphore(&V.sem);
 	for (y = 0; y < R.vis_h; y++, pix += stride)
 		if (!dirty || dirty[y]) { memcpy(V.stage + (long)y * R.vis_w, pix, R.vis_w); V.pend[y] = 1; }
-	if (V.pending) V.st.merged++;
+	if (V.pres_pending) V.st.merged++;   /* rtg17: frames only (a palette change before a present set pending too and was counted) */
+	else V.t_first = t0;
+	V.pres_pending = 1;
 	V.pending = 1;
 	V.st.presents++;
 	ReleaseSemaphore(&V.sem);
@@ -1495,6 +1617,19 @@ int32_t rtg_x_vbl_sync(uint32_t timeout_us)
 }
 
 void rtg_x_vbl_stats(RtgVblStats *s) { if (s) { *s = V.st; if (!V.task) s->pri = 0; } }
+/* RTG_F_VBLANK (3 Nov 2026): microseconds from now to the next predicted blank start and the
+ * refresh period, so a caller can time its frames to the display */
+int32_t rtg_x_vbl_next(uint32_t *until_us, uint32_t *period_us)
+{
+	u64 now, b, per;
+	if (!V.task || !V.ok) return RTG_E_NOTOPEN;
+	Forbid();
+	now = eclock(); b = vt_next_blank(now); per = V.per_fx;
+	Permit();
+	if (until_us) *until_us = ticks_us(b - now);
+	if (period_us) *period_us = (uint32_t)((per * 1000000ull / R.efreq) >> 16);
+	return RTG_OK;
+}
 void rtg_x_set_vbl_pri(int rel) { V.rel_pri = rel; }
 
 static int32_t present_common(const uint8_t *pixels, int32_t stride, const uint8_t *dirty, const uint8_t *lineflags)

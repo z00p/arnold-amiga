@@ -1,7 +1,7 @@
-From 0cfaf8583374a4786e9ad88ba6df66992db74a6a Mon Sep 17 00:00:00 2001
+From 497fdc5214749dfe461fd2b8a2d5c532f3d70280 Mon Sep 17 00:00:00 2001
 From: John Stringer <jcec_1@yahoo.co.uk>
-Date: Tue, 3 Nov 2026 09:58:27 +0000
-Subject: [PATCH 31/42] Monitor: 62-character line threshold and a horizontal
+Date: Thu, 5 Nov 2026 08:35:01 +0000
+Subject: [PATCH 31/43] Monitor: 62-character line threshold and a horizontal
  flywheel
 
 Pinball Dreams' 21st Century logo alternates 66- and 62-character lines. The

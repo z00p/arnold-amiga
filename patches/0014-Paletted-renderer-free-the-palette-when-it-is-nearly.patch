@@ -1,7 +1,7 @@
-From b5673844f2f90cdd1796f0b68a6aaaabf506ae64 Mon Sep 17 00:00:00 2001
+From e6def4f412091beed165bbbda4e69a36c75ad35d Mon Sep 17 00:00:00 2001
 From: John Stringer <jcec_1@yahoo.co.uk>
-Date: Tue, 3 Nov 2026 09:58:20 +0000
-Subject: [PATCH 14/42] Paletted renderer: free the palette when it is nearly
+Date: Thu, 5 Nov 2026 08:34:45 +0000
+Subject: [PATCH 14/43] Paletted renderer: free the palette when it is nearly
  full
 
 The paletted renderer gives each new colour one of 256 host palette entries

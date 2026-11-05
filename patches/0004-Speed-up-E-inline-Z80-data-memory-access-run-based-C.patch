@@ -1,7 +1,7 @@
-From ec85f2c30f6997f83f1f14898701bd2f0f5c3840 Mon Sep 17 00:00:00 2001
+From d0845b210eb3d30f3d77a805e448bcaa78e199ae Mon Sep 17 00:00:00 2001
 From: John Stringer <jcec_1@yahoo.co.uk>
-Date: Tue, 3 Nov 2026 09:58:15 +0000
-Subject: [PATCH 04/42] Speed-up E: inline Z80 data memory access, run-based
+Date: Thu, 5 Nov 2026 08:34:35 +0000
+Subject: [PATCH 04/43] Speed-up E: inline Z80 data memory access, run-based
  CRTC stepping
 
 The CRTC is stepped in runs up to its next event instead of one character at

@@ -93,7 +93,8 @@ static int script_quit;
 static int gx_autostart;   /* frames until the GX4000 auto-start presses f2 (0 = off) */
 static long help_after;    /* test: HELPAFTER=n presses Help once after n frames (0 = off) */
 static long help_every;    /* test: HELPEVERY=n presses Help n frames after every start or Continue (RTG pilot menu cycles) */
-static int skip_max = 3, skip_run, refresh = 1;
+static int skip_max = 3, skip_run, refresh = 1; static int rtglock = 1;   /* sonic16: Sys_PaceLock policy (RTGLOCK=n) */
+extern int rtg_x_pan_forbid, rtg_x_pan_lines, rtg_x_pan_mirror;   /* rtgfw.c (rtg17 tests): anchor pans under Forbid (PANFORBID=n), pan offset (PANLINES=n), page 1 mirrored (PANMIRROR=n) */
 static unsigned long refresh_count;
 static long behind_us;
 extern int (*CPC_SkipNextFrameHook)(void);
@@ -277,8 +278,11 @@ void Host_SetPaletteEntry(int i, unsigned char r, unsigned char g, unsigned char
 	 * picture), so it shows the CPC's border colour, as a real monitor does
 	 * out to the tube's edge: blue for BASIC, black for most Plus games
 	 * (19 Oct 2026, John). The core's entry 0 itself is black (blanking). */
-	extern int Render_PaletteIndexBorder;
-	int bi = Render_PaletteIndexBorder;
+	/* Render_Black0Used (render5.c): black pens were on entry 0 during this
+	 * frame, so colour 0 stays black for it (the border turned another colour
+	 * part way down; the surround follows a frame later). */
+	extern int Render_PaletteIndexBorder, Render_Black0Used;
+	int bi = Render_Black0Used ? 0 : Render_PaletteIndexBorder;
 	if (i >= 0 && i < 256) { hostpal[i][0] = r; hostpal[i][1] = g; hostpal[i][2] = b; }
 	if (i == 0 && bi > 0 && bi < 256) { r = hostpal[bi][0]; g = hostpal[bi][1]; b = hostpal[bi][2]; }
 	Sys_SetPaletteEntry(i, r, g, b);
@@ -615,6 +619,8 @@ static void prefs_load(void)
 		else if (!strcmp(line, "autotape")) menu.autotape = atoi(v) ? 1 : 0;
 		else if (!strcmp(line, "rtg")) menu.rtg = atoi(v) ? 1 : 0;
 		else if (!strcmp(line, "hdmisound")) menu.hdmisound = atoi(v) ? 1 : 0;
+		else if (!strcmp(line, "tone")) { int k = Sys_ParseTone(v); if (k >= 0) menu.tone = k; }
+		else if (!strcmp(line, "rtglock")) rtglock = atoi(v);   /* sonic16 test setting, as RTGLOCK=n */
 		else if (!strcmp(line, "scanlines")) { int k = Sys_ParseScan(v); if (k >= 0) menu.scan = k; }
 		else if (!strcmp(line, "tape")) strncpy(menu.tape, v, SYS_PATH - 1);
 	}
@@ -637,6 +643,8 @@ static void prefs_save(void)
 	fprintf(f, "tapesound=%d\n", global_tapesound);
 	fprintf(f, "autotape=%d\n", global_autotape);
 	fprintf(f, "hdmisound=%d\n", menu.hdmisound);
+	fprintf(f, "tone=%s\n", Sys_ToneWords[menu.tone >= 0 && menu.tone <= 2 ? menu.tone : 1]);
+	if (rtglock != 1) fprintf(f, "rtglock=%d\n", rtglock);
 	fprintf(f, "scanlines=%s\n", Sys_ScanWords[global_scan > 0 && global_scan < SYS_SCANS ? global_scan : 0]);
 	if (global_remap[0]) fprintf(f, "remap=%s\n", global_remap);
 	fclose(f);
@@ -1170,12 +1178,18 @@ static int open_emulation(void)
 		if (audio_open && (period != aud_period || audint != aud_int || ahi != Sys_AudioAhi || (ahi && !Sys_AudioAhiOn()))) { Sys_AudioClose(); audio_open = 0; }
 		aud_period = period; aud_int = audint; Sys_AudioAhi = ahi;
 	}
+	Sys_AudioTone = menu.tone;   /* hdmifilt: the sound's low-pass, Paula and HDMI, from this Continue */
 	if (menu.sound && !audio_open && Sys_AudioOpen(aud_period, AUD_SAMPLES, aud_int)) {
 		audio_open = 1; CPC_SetAudioActive(TRUE);
 		menu.hdmifail = Sys_AudioAhi && !Sys_AudioAhiOn();
 		if (menu.hdmifail) strcpy(menu.status, "HDMI sound not available: playing on Paula");
 	}
 	if (!menu.sound && audio_open) { Sys_AudioClose(); audio_open = 0; CPC_SetAudioActive(FALSE); }
+	/* RTG frames timed to the HDMI refresh (sonic16): when nothing ties them to Paula's rate, i.e.
+	 * with HDMI sound (AHI follows the rate) or no sound. RTGLOCK=0 never, 2 also with Paula (tests:
+	 * Paula then drops a block every ~14 s). */
+	Sys_PaceLock = Sys_RtgActive && (rtglock == 2 || (rtglock == 1 && (!audio_open || Sys_AudioAhiOn())));
+	if (!Sys_PaceLock) Sys_AudioLock(0);
 	CPC_ClearKeyboard();
 	/* and the joystick state with it: a joy key held when Help was pressed is
 	 * released in the menu, which kept its bit in kb_joy (the real joystick's
@@ -1202,6 +1216,7 @@ int main(int argc, char **argv)
 	strcpy(menu.cart, "PROGDIR:roms/system.cpr");
 	strcpy(menu.prefs, "PROGDIR:Arnold.prefs");
 	menu.sound = 1;
+	menu.tone = 1;   /* hdmifilt: Sound tone soft (John, 4 Nov) */
 	menu.diskwrite = 1;
 	menu.fasttape = 1; menu.tapesound = 0; menu.autotape = 1;
 	menu.model = SYS_MODEL_PLUS; menu.running_model = -1;
@@ -1228,6 +1243,8 @@ int main(int argc, char **argv)
 		if (st.tapesound >= 0) menu.tapesound = st.tapesound;
 		if (st.autotape >= 0) menu.autotape = autotape_arg = st.autotape;
 		if (st.hdmisound >= 0) menu.hdmisound = st.hdmisound;
+		if (st.rtglock >= 0) rtglock = st.rtglock;   /* rtg17: RTGLOCK ToolType */
+		if (st.tone >= 0) menu.tone = st.tone;   /* hdmifilt: TONE ToolType */
 		if (st.scan >= 0) scan = st.scan;
 		if (st.rtg >= 0) rtg = st.rtg;
 		if (st.tape[0]) strncpy(menu.tape, st.tape, SYS_PATH - 1);
@@ -1252,6 +1269,10 @@ int main(int argc, char **argv)
 			else if (!kwcmp(argv[i], "OSD")) Sys_Osd = 1;
 			else if (!kwcmp(argv[i], "NOCD32")) Sys_NoCD32 = 1;
 			else if (!kwncmp(argv[i], "SKIP=", 5)) skip_max = atoi(argv[i] + 5);
+			else if (!kwncmp(argv[i], "PANMIRROR=", 10)) rtg_x_pan_mirror = atoi(argv[i] + 10);   /* rtg17 test: 0 = page 1 black, as 1.6 */
+			else if (!kwncmp(argv[i], "PANLINES=", 9)) rtg_x_pan_lines = atoi(argv[i] + 9);   /* rtg17 test: -1 a page (default), 0 one pan to the same offset */
+			else if (!kwncmp(argv[i], "PANFORBID=", 10)) rtg_x_pan_forbid = atoi(argv[i] + 10);   /* rtg17 test: 0 = anchor pans without Forbid */
+			else if (!kwncmp(argv[i], "LEAD=", 5)) Sys_LeadUs = atoi(argv[i] + 5);   /* sonic16: frame lead, us (0 = off) */
 			else if (!kwncmp(argv[i], "REFRESH=", 8)) refresh = atoi(argv[i] + 8);
 			else if (!kwncmp(argv[i], "JOYKEYS=", 8)) joykeys = atoi(argv[i] + 8);
 			else if (!kwncmp(argv[i], "REMAP=", 6)) remap_parse(argv[i] + 6);
@@ -1268,11 +1289,13 @@ int main(int argc, char **argv)
 			else if (!kwcmp(argv[i], "AUTOTAPE")) menu.autotape = autotape_arg = 1;
 			else if (!kwncmp(argv[i], "HDMISOUND=", 10)) menu.hdmisound = atoi(argv[i] + 10) ? 1 : 0;
 			else if (!kwcmp(argv[i], "HDMISOUND")) menu.hdmisound = 1;
+			else if (!kwncmp(argv[i], "TONE=", 5)) { int k = Sys_ParseTone(argv[i] + 5); if (k >= 0) menu.tone = k; }   /* hdmifilt: Sound tone */
 			else if (!kwcmp(argv[i], "RTG")) rtg = 1;                       /* RTG screen (pilot, 26 Oct 2026) */
 			else if (!kwncmp(argv[i], "RTG=", 4)) rtg = atoi(argv[i] + 4) ? 1 : 0;
 			else if (!kwcmp(argv[i], "RTGBLIT")) Sys_RtgBlit = 1;           /* diagnostic: off-screen bitmap + blit */
 			else if (!kwcmp(argv[i], "RTGVBL")) Sys_RtgVblank = 1;          /* RTG: write at the display's vertical blank (27 Oct 2026) */
 			else if (!kwncmp(argv[i], "RTGVBL=", 7)) Sys_RtgVblank = atoi(argv[i] + 7) ? 1 : 0;
+			else if (!kwncmp(argv[i], "RTGLOCK=", 8)) rtglock = atoi(argv[i] + 8);   /* sonic16: 0 off, 1 with HDMI sound or no sound, 2 always */
 			else if (!kwncmp(argv[i], "RTGBUF=", 7)) Sys_RtgBuffers = atoi(argv[i] + 7);   /* diagnostic: 3 = screen buffers */
 			else if (!kwcmp(argv[i], "RTGGRAB")) Sys_RtgGrabOn = 1;         /* tests: SNAP also saves the RTG screen */
 			else if (!kwncmp(argv[i], "SCANLINES=", 10)) { int k = Sys_ParseScan(argv[i] + 10); if (k >= 0) scan = k; }   /* RTG scanlines (1.2) */

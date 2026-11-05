@@ -1,7 +1,7 @@
-From 7ab9d8cd1342fba3fe3bf2c417f8aeb55a0de1c9 Mon Sep 17 00:00:00 2001
+From 4d84930a0135a4337fe0753fbc4628f35600411b Mon Sep 17 00:00:00 2001
 From: John Stringer <jcec_1@yahoo.co.uk>
-Date: Tue, 3 Nov 2026 09:58:33 +0000
-Subject: [PATCH 41/42] AmigaOS host (68k AGA): Arnold for Amiga
+Date: Thu, 5 Nov 2026 08:35:14 +0000
+Subject: [PATCH 42/43] AmigaOS host (68k AGA): Arnold for Amiga
 
 src/amiga: the AmigaOS 3.x host (AGA screen with chunky-to-planar and triple
 buffering, an optional RTG screen through rtgfw, Paula sound and AHI sound for
@@ -14,22 +14,22 @@ amiga-gcc (-noixemul): see src/amiga/Makefile.
 Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
 ---
  src/amiga/Makefile         |   50 +
- src/amiga/amiga_audio.c    |  437 +++++++++
+ src/amiga/amiga_audio.c    |  534 ++++++++++
  src/amiga/amiga_iff.c      |  103 ++
  src/amiga/amiga_joy.c      |  127 +++
  src/amiga/amiga_keymap.c   |  239 +++++
  src/amiga/amiga_logo.c     |  153 +++
  src/amiga/amiga_logo.h     |    6 +
- src/amiga/amiga_menu.c     |  818 ++++++++++++++++
- src/amiga/amiga_sys.c      | 1855 ++++++++++++++++++++++++++++++++++++
- src/amiga/amiga_sys.h      |  177 ++++
+ src/amiga/amiga_menu.c     |  837 +++++++++++++++
+ src/amiga/amiga_sys.c      | 1971 ++++++++++++++++++++++++++++++++++++
+ src/amiga/amiga_sys.h      |  184 ++++
  src/amiga/amiga_sys_priv.h |   11 +
- src/amiga/amiga_wb.c       |  244 +++++
+ src/amiga/amiga_wb.c       |  258 +++++
  src/amiga/audio_conv.h     |   46 +
  src/amiga/c2p_sh.h         |   48 +
  src/amiga/gamedb.c         |  157 +++
  src/amiga/gamedb.h         |   42 +
- src/amiga/host_amiga.c     | 1444 ++++++++++++++++++++++++++++
+ src/amiga/host_amiga.c     | 1467 +++++++++++++++++++++++++++
  src/amiga/host_file.c      |   29 +
  src/amiga/keymaplogic.c    |  135 +++
  src/amiga/keymaplogic.h    |   34 +
@@ -40,7 +40,7 @@ Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
  src/amiga/screenshot.h     |    7 +
  src/amiga/tapeauto.c       |   82 ++
  src/amiga/tapeauto.h       |   18 +
- 27 files changed, 6667 insertions(+)
+ 27 files changed, 6943 insertions(+)
  create mode 100644 src/amiga/Makefile
  create mode 100644 src/amiga/amiga_audio.c
  create mode 100644 src/amiga/amiga_iff.c
@@ -127,10 +127,10 @@ index 0000000..414e6a1
 +.PHONY: all clean
 diff --git a/src/amiga/amiga_audio.c b/src/amiga/amiga_audio.c
 new file mode 100644
-index 0000000..fc32040
+index 0000000..c5cc21a
 --- /dev/null
 +++ b/src/amiga/amiga_audio.c
-@@ -0,0 +1,437 @@
+@@ -0,0 +1,534 @@
 +/* Arnold on AmigaOS: Paula sound (audio.device channels 0 and 1, the queue of
 + * blocks and the interrupt that feeds them), and the sound's DC filter for save
 + * states and fast-forward. Split off amiga_sys.c (split16, 30 Oct 2026). */
@@ -164,6 +164,14 @@ index 0000000..fc32040
 +static struct IOAudio *audio;
 +static int aud_open, aud_n;
 +static UBYTE *aud_buf[2][ABUFS];      /* [channel][slot] in chip RAM */
++/* sonic16 (3 Nov 2026): with the RTG frames timed to the HDMI refresh (Sys_PaceLock, RTGLOCK=2 with
++ * Paula) the CPC makes 444 samples every 20000 us, 0.14% more than Paula's 444 x 160 colour clocks
++ * play. While a block waits (2 waiting is "full": one dropped), the next loses its last 2 samples
++ * (one sample in ~450, on a third of the blocks), so the queue holds instead of a whole block
++ * being dropped every ~14 s.
++ * aud_len: each slot's length in words, latched with its pointer. */
++static UWORD aud_len[ABUFS];
++static unsigned long aud_trims;
 +static UBYTE aud_map[] = { 3 };       /* channels 0 and 1 */
 +static volatile int aud_rd, aud_wr, aud_run;
 +static volatile unsigned long aud_irqs;
@@ -184,6 +192,81 @@ index 0000000..fc32040
 + * the sound to AHI, mode 001f0012 = emu68hdmi.audio 16 bit low latency. SetEnv ArnoldAHI
 + * <mode id in hex> tries another mode, on any screen. No AHI or no driver: Paula. */
 +int Sys_AudioAhi;
++
++/* Sound tone (hdmifilt, 4 Nov 2026): a low-pass on the sound before it goes out, the same on
++ * Paula and HDMI. 0 bright, as made; 1 soft (the default), a 6 dB/oct low-pass at 4.5 kHz
++ * (about the A500's fixed filter); 2 warm, a 12 dB/oct Butterworth at 3275 Hz (the A1200's
++ * power-LED filter). Bilinear transform at 22168 Hz, coefficients x 16384. Paula at 0 is the
++ * 8-bit conversion as before (Audio_SplitTo8, the same as the headless build's). So that the
++ * setting sounds the same on both outputs, the A1200's own LED filter is switched off while
++ * Paula plays (led_filter_off) and put back as it was when the sound stops. */
++int Sys_AudioTone = 1;
++#include <hardware/cia.h>
++extern struct CIA ciaa;
++static int led_saved = -1;            /* CIA-A PRA bit 1 (0: LED bright, filter on) as it was; -1: not switched */
++
++static void led_filter_off(void)
++{
++	Disable();
++	if (led_saved < 0) { led_saved = ciaa.ciapra & CIAF_LED; ciaa.ciapra |= CIAF_LED; }
++	Enable();
++}
++
++static void led_filter_back(void)
++{
++	Disable();
++	if (led_saved >= 0) { if (led_saved) ciaa.ciapra |= CIAF_LED; else ciaa.ciapra &= ~CIAF_LED; led_saved = -1; }
++	Enable();
++}
++
++#if !defined(NO_SNDLUT_FIX) && !defined(NO_SNDUNIPOLAR)
++#define USE_TONE
++struct Tone { long x1[2], x2[2], y1[2], y2[2]; };   /* last inputs and outputs per side */
++static struct Tone tone_hdmi, tone_paula;
++
++/* Audio_DcBlock with the sound kept in 16 bits */
++static long audio_dc16(int side, long x)
++{
++	long y, o;
++	if (!Audio_DcOn) { Audio_DcOn = 1; Audio_DcX[0] = Audio_DcX[1] = x; Audio_DcY[0] = Audio_DcY[1] = 0; }
++	y = Audio_DcY[side] + ((x - Audio_DcX[side]) << 8) - (Audio_DcY[side] >> 8);
++	Audio_DcX[side] = x; Audio_DcY[side] = y;
++	o = (y + 128) >> 8;
++	if (o > 32767) o = 32767; else if (o < -32768) o = -32768;
++	return o;
++}
++
++static long audio_tone(struct Tone *t, int k, int side, long x)
++{
++	long y;
++	switch (k) {
++	case 1: y = (6973L * (x + t->x1[side]) + 2437L * t->y1[side] + 8192) >> 14; break;
++	case 2: y = (2096L * (x + 2 * t->x1[side] + t->x2[side]) + 12538L * t->y1[side] - 4539L * t->y2[side] + 8192) >> 14; break;
++	default: y = x; break;
++	}
++	if (y > 32767) y = 32767; else if (y < -32768) y = -32768;
++	t->x2[side] = t->x1[side]; t->x1[side] = x;
++	t->y2[side] = t->y1[side]; t->y1[side] = y;
++	return y;
++}
++
++/* Paula's two 8-bit channels of a block, through the tone */
++static void paula_split(const unsigned short *s16, signed char *l, signed char *r, int samples)
++{
++	int i;
++	long a, b;
++	if (!Sys_AudioTone) { Audio_SplitTo8(s16, l, r, samples); return; }
++	for (i = 0; i < samples; i++) {
++		a = (audio_tone(&tone_paula, Sys_AudioTone, 0, audio_dc16(0, (long)s16[2 * i])) + 64) >> 7;
++		b = (audio_tone(&tone_paula, Sys_AudioTone, 1, audio_dc16(1, (long)s16[2 * i + 1])) + 64) >> 7;
++		l[i] = (signed char)(a > 127 ? 127 : a < -128 ? -128 : a);
++		r[i] = (signed char)(b > 127 ? 127 : b < -128 ? -128 : b);
++	}
++}
++#else
++#define paula_split Audio_SplitTo8
++#endif
++
 +#if !defined(NO_AHI) && !defined(NO_SNDLUT_FIX) && !defined(NO_SNDUNIPOLAR)
 +#define USE_AHI
 +static int  Ahi_Open(int period, int samples);
@@ -199,6 +282,7 @@ index 0000000..fc32040
 +		if (Sys_AudioCount > 0) {
 +			custom.aud[0].ac_ptr = (UWORD *)aud_buf[0][aud_rd];
 +			custom.aud[1].ac_ptr = (UWORD *)aud_buf[1][aud_rd];
++			custom.aud[0].ac_len = aud_len[aud_rd]; custom.aud[1].ac_len = aud_len[aud_rd];
 +			aud_rd = (aud_rd + 1) % ABUFS;
 +			Sys_AudioCount--;
 +		} else if (aud_first)
@@ -266,6 +350,8 @@ index 0000000..fc32040
 +	custom.aud[0].ac_per = period; custom.aud[1].ac_per = period;
 +	custom.aud[0].ac_vol = 64;     custom.aud[1].ac_vol = 64;
 +	custom.aud[0].ac_len = aud_n >> 1; custom.aud[1].ac_len = aud_n >> 1;
++	for (b = 0; b < ABUFS; b++) aud_len[b] = aud_n >> 1;
++	aud_trims = 0;
 +	aud_rd = aud_wr = Sys_AudioCount = 0; aud_run = 0;
 +	if (aud_mode) {
 +		aud_int.is_Node.ln_Type = NT_INTERRUPT;
@@ -298,7 +384,9 @@ index 0000000..fc32040
 +	if (ahi_on) { Ahi_Close(); return; }
 +#endif
 +	if (!aud_open) return;
++	if (aud_trims) Sys_Log("audio: %lu blocks played 2 samples short (frames timed to the HDMI refresh)", aud_trims);
 +	aud_run = 0;
++	led_filter_back();
 +	if (aud_vbint_added) { RemIntServer(INTB_VERTB, &aud_vbint); aud_vbint_added = 0; }
 +	custom.dmacon = DMAF_AUD0 | DMAF_AUD1;   /* clear */
 +	if (aud_mode) {
@@ -334,10 +422,17 @@ index 0000000..fc32040
 +	/* Slots in use: the block playing, the one handed over at the last VBlank
 +	 * (latched when the playing one ends) and the queue; with the queue kept
 +	 * below ABUFS - 2 the slot at aud_wr is none of them. */
-+	Audio_SplitTo8((const unsigned short *)s16, (signed char *)aud_buf[0][slot], (signed char *)aud_buf[1][slot], samples);
++	if (Sys_PaceLock && aud_mode && Sys_AudioCount >= 1 && samples == aud_n) {   /* sonic16: see aud_len */
++		paula_split((const unsigned short *)s16, (signed char *)aud_buf[0][slot], (signed char *)aud_buf[1][slot], samples - 2);
++		aud_len[slot] = (samples - 2) >> 1;
++		aud_trims++;
++	} else {
++	aud_len[slot] = aud_n >> 1;
++	paula_split((const unsigned short *)s16, (signed char *)aud_buf[0][slot], (signed char *)aud_buf[1][slot], samples);
 +	if (samples < aud_n) {                    /* short block: hold the last level */
 +		memset(aud_buf[0][slot] + samples, samples ? aud_buf[0][slot][samples - 1] : 0, aud_n - samples);
 +		memset(aud_buf[1][slot] + samples, samples ? aud_buf[1][slot][samples - 1] : 0, aud_n - samples);
++	}
 +	}
 +#ifdef SOUNDQ_DUMP
 +	/* soundq verification builds only: every block as Paula gets it (left then
@@ -356,12 +451,14 @@ index 0000000..fc32040
 +		/* start: this block plays at once, the server feeds the rest */
 +		custom.aud[0].ac_ptr = (UWORD *)aud_buf[0][slot];
 +		custom.aud[1].ac_ptr = (UWORD *)aud_buf[1][slot];
++		custom.aud[0].ac_len = aud_len[slot]; custom.aud[1].ac_len = aud_len[slot];
 +		aud_rd = aud_wr; Sys_AudioCount = 0;
 +		aud_first = 1;
 +		if (aud_mode) custom.intreq = INTF_AUD0;
 +		custom.dmacon = DMAF_SETCLR | DMAF_MASTER | DMAF_AUD0 | DMAF_AUD1;
 +		if (aud_mode) custom.intena = INTF_SETCLR | INTF_AUD0;   /* off while paused, see Sys_AudioPause */
 +		aud_run = 1;
++		led_filter_off();
 +	}
 +	Enable();
 +	Sys_Perf.aud_underruns = Sys_AudioUnderruns;
@@ -388,6 +485,7 @@ index 0000000..fc32040
 +	custom.dmacon = DMAF_AUD0 | DMAF_AUD1;
 +	if (aud_mode) custom.intreq = INTF_AUD0;
 +	Enable();
++	led_filter_back();
 +}
 +
 +/* Save states (1.4, 28 Oct 2026; host_amiga.c): the DC filter of the sound
@@ -434,7 +532,7 @@ index 0000000..fc32040
 +static int ahi_n, ahi_dev;
 +static volatile int ahi_rd, ahi_wr, ahi_run;
 +static ULONG ahi_rate;
-+
++static volatile ULONG ahi_base;       /* sonic16: the rate for frames timed to the HDMI refresh (0: ahi_rate) */
 +static ULONG ahi_sound(register struct Hook *h __asm("a0"), register struct AHIAudioCtrl *c __asm("a2"),
 +	register struct AHISoundMessage *m __asm("a1"))
 +{
@@ -445,8 +543,8 @@ index 0000000..fc32040
 +			Sys_AudioCount--;
 +		} else
 +			Sys_AudioUnderruns++;
-+		AHI_SetFreq(0, Sys_AudioCount < 1 ? ahi_rate - ahi_rate / 500 :
-+			Sys_AudioCount > 2 ? ahi_rate + ahi_rate / 500 : ahi_rate, c, AHISF_NONE);
++		{ ULONG r = ahi_base ? ahi_base : ahi_rate;
++		AHI_SetFreq(0, Sys_AudioCount < 1 ? r - r / 500 : Sys_AudioCount > 2 ? r + r / 500 : r, c, AHISF_NONE); }
 +	}
 +	return 0;
 +}
@@ -464,7 +562,7 @@ index 0000000..fc32040
 +		return 0;
 +	if (samples & 1) samples--;
 +	ahi_n = samples;
-+	ahi_rate = Sys_ChipClock() / period;
++	ahi_rate = Sys_ChipClock() / period; ahi_base = 0;
 +	ahi_buf = AllocMem(AHI_SLOTS * ahi_n * 4, MEMF_PUBLIC | MEMF_CLEAR);
 +	ahi_port = CreateMsgPort();
 +	if (ahi_port) ahi_io = (struct AHIRequest *)CreateIORequest(ahi_port, sizeof(struct AHIRequest));
@@ -486,6 +584,7 @@ index 0000000..fc32040
 +	AHI_SetVol(0, 0x10000, 0x8000, ahi_ctrl, AHISF_IMM);
 +	AHI_SetFreq(0, ahi_rate, ahi_ctrl, AHISF_IMM);
 +	ahi_rd = ahi_wr = Sys_AudioCount = 0; ahi_run = 0;
++	memset(&tone_hdmi, 0, sizeof tone_hdmi);
 +	ahi_on = 1; aud_open = 1;
 +	Sys_Log("audio: AHI mode %08lx, %lu Hz, %d samples a block, max play %lu", mode, ahi_rate, ahi_n, maxplay);
 +	return 1;
@@ -510,18 +609,6 @@ index 0000000..fc32040
 +	ahi_on = 0; aud_open = 0;
 +}
 +
-+/* Audio_DcBlock with the sound kept in 16 bits */
-+static WORD ahi_dc(int side, long x)
-+{
-+	long y, o;
-+	if (!Audio_DcOn) { Audio_DcOn = 1; Audio_DcX[0] = Audio_DcX[1] = x; Audio_DcY[0] = Audio_DcY[1] = 0; }
-+	y = Audio_DcY[side] + ((x - Audio_DcX[side]) << 8) - (Audio_DcY[side] >> 8);
-+	Audio_DcX[side] = x; Audio_DcY[side] = y;
-+	o = (y + 128) >> 8;
-+	if (o > 32767) o = 32767; else if (o < -32768) o = -32768;
-+	return (WORD)o;
-+}
-+
 +static void Ahi_Queue(const unsigned short *s16, int samples)
 +{
 +	int slot, i, first = -1;
@@ -537,8 +624,8 @@ index 0000000..fc32040
 +	Enable();
 +	d = ahi_buf + slot * ahi_n * 2;
 +	for (i = 0; i < samples; i++) {
-+		d[2 * i] = ahi_dc(0, (long)s16[2 * i]);
-+		d[2 * i + 1] = ahi_dc(1, (long)s16[2 * i + 1]);
++		d[2 * i] = (WORD)audio_tone(&tone_hdmi, Sys_AudioTone, 0, audio_dc16(0, (long)s16[2 * i]));
++		d[2 * i + 1] = (WORD)audio_tone(&tone_hdmi, Sys_AudioTone, 1, audio_dc16(1, (long)s16[2 * i + 1]));
 +	}
 +	for (; i < ahi_n; i++) {                      /* short block: hold the last level */
 +		d[2 * i] = i ? d[2 * i - 2] : 0;
@@ -568,6 +655,16 @@ index 0000000..fc32040
 +	Enable();
 +}
 +#endif
++
++/* sonic16 (3 Nov 2026): Sys_WaitFrame tells the sound how long a frame is while the frames are timed
++ * to the HDMI refresh (0: not timed). AHI then plays a block in that time, so the queue stays where
++ * it was (1-2 blocks) instead of sitting a block higher on the +0.2% step. Paula: see aud_len. */
++void Sys_AudioLock(unsigned long frame_us)
++{
++#ifdef USE_AHI
++	ahi_base = frame_us && ahi_on ? (ULONG)((unsigned long long)ahi_n * 1000000ULL / frame_us) : 0;
++#endif
++}
 diff --git a/src/amiga/amiga_iff.c b/src/amiga/amiga_iff.c
 new file mode 100644
 index 0000000..224f1af
@@ -1228,10 +1325,10 @@ index 0000000..b22b3c7
 +#endif
 diff --git a/src/amiga/amiga_menu.c b/src/amiga/amiga_menu.c
 new file mode 100644
-index 0000000..ae7b2c5
+index 0000000..6f29a72
 --- /dev/null
 +++ b/src/amiga/amiga_menu.c
-@@ -0,0 +1,818 @@
+@@ -0,0 +1,837 @@
 +/* Arnold on AmigaOS: the menu screen (GadTools), styled after the OS 3.2 prefs
 + * editors. 17 Oct 2026 (John): the settings live in pull-down menus (Options,
 + * Controls, Display) and the window keeps what changes from game to game.
@@ -1284,6 +1381,7 @@ index 0000000..ae7b2c5
 +       M_SSAVE1, M_SSAVE2, M_SSAVE3, M_SSAVE4, M_SLOAD1, M_SLOAD2, M_SLOAD3, M_SLOAD4,   /* save states (1.4) */
 +       M_AUTOTAPE,   /* auto-start tapes (1.5) */
 +       M_HDMISOUND,  /* HDMI sound through AHI (RTG screen) */
++       M_TONE0, M_TONE1, M_TONE2,   /* Sound tone, Paula and HDMI (hdmifilt) */
 +       M_PRESET0 };   /* M_PRESET0 last: the presets follow it */
 +#define MAXPRESETS 12   /* menu entries for KeyMap_Presets (keymaplogic.c) */
 +#define MENU_REOPEN (-2)   /* menu_pick: the video mode changed, open the screen again */
@@ -1365,6 +1463,10 @@ index 0000000..ae7b2c5
 +	{ NM_ITEM, NM_BARLABEL, NULL, 0, 0, NULL },
 +	{ NM_ITEM, (STRPTR)"Sound", NULL, CHECKIT | MENUTOGGLE, 0, (APTR)M_SOUND },
 +	{ NM_ITEM, (STRPTR)"HDMI sound (RTG screen)", NULL, CHECKIT | MENUTOGGLE, 0, (APTR)M_HDMISOUND },
++	{ NM_ITEM, (STRPTR)"Sound tone", NULL, 0, 0, NULL },
++	{ NM_SUB, (STRPTR)"Bright (unfiltered)", NULL, CHECKIT, X(0), (APTR)M_TONE0 },
++	{ NM_SUB, (STRPTR)"Soft (4.5 kHz)", NULL, CHECKIT, X(1), (APTR)M_TONE1 },
++	{ NM_SUB, (STRPTR)"Warm (3.3 kHz, A1200 filter)", NULL, CHECKIT, X(2), (APTR)M_TONE2 },
 +	{ NM_ITEM, (STRPTR)"Hires screen", NULL, CHECKIT | MENUTOGGLE, 0, (APTR)M_HIRES },
 +	{ NM_ITEM, (STRPTR)"Write disks back", NULL, CHECKIT | MENUTOGGLE, 0, (APTR)M_DISKWRITE },
 +	{ NM_ITEM, (STRPTR)"Fast tape loading", NULL, CHECKIT | MENUTOGGLE, 0, (APTR)M_FASTTAPE },
@@ -1648,7 +1750,8 @@ index 0000000..ae7b2c5
 +	int on[] = { M_SKIP0 + skip_index(m->skip), M_REF1 + refresh_index(m->refresh),
 +	             M_JOY0 + (m->joykeys >= 0 && m->joykeys <= 3 ? m->joykeys : 0), M_PAD0 + (m->pad ? 1 : 0),
 +	             M_SPEED50 + (m->speed ? 1 : 0), M_VIDAUTO + video_of(m), M_MODEL464 + model_of(m),
-+	             M_SCAN0 + (m->scan > 0 && m->scan < SYS_SCANS ? m->scan : 0) };
++	             M_SCAN0 + (m->scan > 0 && m->scan < SYS_SCANS ? m->scan : 0),
++	             M_TONE0 + (m->tone > 0 && m->tone <= 2 ? m->tone : 0) };
 +	for (i = 0; nmx[i].nm_Type != NM_END; i++) {
 +		int id = (int)(ULONG)nmx[i].nm_UserData, k, want = 0;
 +		if (!(nmx[i].nm_Flags & CHECKIT)) continue;
@@ -1782,7 +1885,7 @@ index 0000000..ae7b2c5
 +	if (!g) { close_menu(); return 0; }
 +	if (!make_menus(m)) { close_menu(); return 0; }
 +	/* version, credit and build time (date and hh:mm) in the title bar */
-+	sprintf(wintitle, "Arnold v1.6 for Amiga - core: Kevin Thacker - built %.6s %.4s %.5s", __DATE__, __DATE__ + 7, __TIME__);
++	sprintf(wintitle, "Arnold v1.7 for Amiga - core: Kevin Thacker - built %.6s %.4s %.5s", __DATE__, __DATE__ + 7, __TIME__);
 +	mwin = OpenWindowTags(NULL, WA_CustomScreen, (ULONG)mscr, WA_Left, wl, WA_Top, wt,
 +		WA_Width, 640, WA_Height, wh,
 +		WA_Title, (ULONG)wintitle,
@@ -1871,6 +1974,16 @@ index 0000000..ae7b2c5
 +	status(t);
 +}
 +
++/* a sound tone chosen (Options menu, hdmifilt): used from the next Continue */
++static void tone_status(int k)
++{
++	static const char *const what[3] = { "bright, the sound as made", "soft (6 dB/oct at 4.5 kHz)",
++		"warm (12 dB/oct at 3.3 kHz, as the A1200's filter)" };
++	char t[96];
++	sprintf(t, "Sound tone: %s.", what[k >= 0 && k <= 2 ? k : 0]);
++	status(t);
++}
++
 +static int menu_pick(struct SysMenu *m, struct MenuItem *item)
 +{
 +	int id = (int)(ULONG)GTMENUITEM_USERDATA(item);
@@ -1930,6 +2043,9 @@ index 0000000..ae7b2c5
 +		break;
 +	case M_HDMISOUND: m->hdmisound = checked; m->hdmifail = 0;
 +		status(checked ? "HDMI sound: on the RTG screen, through AHI and emu68hdmi.audio." : "HDMI sound off: Paula.");
++		break;
++	case M_TONE0: case M_TONE1: case M_TONE2: m->tone = id - M_TONE0;
++		tone_status(m->tone);
 +		break;
 +	case M_AUTOTAPE: m->autotape = checked;
 +		status(checked ? "Auto-start tapes: Power ON types RUN\" and presses PLAY." : "Auto-start tapes off: type RUN\" yourself.");
@@ -2052,10 +2168,10 @@ index 0000000..ae7b2c5
 +}
 diff --git a/src/amiga/amiga_sys.c b/src/amiga/amiga_sys.c
 new file mode 100644
-index 0000000..803d8eb
+index 0000000..5f1cb22
 --- /dev/null
 +++ b/src/amiga/amiga_sys.c
-@@ -0,0 +1,1855 @@
+@@ -0,0 +1,1971 @@
 +/* Arnold on AmigaOS: screen, c2p, palette and keyboard (joystick: amiga_joy.c, sound: amiga_audio.c).
 + * AmigaOS 3.x, AGA. Built with bebbo's m68k-amigaos-gcc, -noixemul. */
 +#include <exec/types.h>
@@ -2086,7 +2202,7 @@ index 0000000..803d8eb
 +#include <stdarg.h>
 +
 +unsigned long __stack = 256 * 1024;   /* libnix: enlarge the stack at start */
-+static const char ver[] __attribute__((used)) = "$VER: Arnold 1.6 (3.11.2026) Amiga port, GPL-2.0";
++static const char ver[] __attribute__((used)) = "$VER: Arnold 1.7 (5.11.2026) Amiga port, GPL-2.0";
 +
 +/* ---- diagnostic log ---- */
 +static FILE *logf;
@@ -2161,6 +2277,7 @@ index 0000000..803d8eb
 +/* heartbeat counters (15 Oct 2026: SKIP=0 freezes on the A1200 PiStorm) */
 +static unsigned long hb_safe_waits, hb_refused, hb_reuse_waits;
 +static int hb_log_waits; static void hb_log(const char *fmt, ...); static void hb_dump(void); static int line_planes4(const unsigned char *src); static void bpu_fit(int next); static void bpu_reset(void); static void bpu_audit(void);   /* agaperf (end of file): heartbeat ring; displayed planes fitted to the picture */
++static void lead_flip_wait(void); static void beam_measure(void);   /* frame lead (sonic16 AGA, by Sys_WaitFrame) */
 +int Sys_PalAll;   /* PALALL argument (15 Oct 2026: GnG colour scramble test on the A1200) */
 +int Sys_AllLines, Sys_SafeFlip;   /* ALLLINES / SAFEFLIP (17 Oct 2026: torn frames on the A1200) */
 +int Sys_Osd, Sys_OsdSkip;         /* OSD (18 Oct 2026): which test mode a photo or video shows */
@@ -2576,6 +2693,7 @@ index 0000000..803d8eb
 +			was, Sys_DisplayFrameUs);
 +	}
 +#endif
++	beam_measure();
 +	Sys_Log("display: VBlank every %lu us (%s), mode %08lx, viewport mode %08lx, gfx DisplayFlags %04x, E-clock %lu Hz",
 +		Sys_DisplayFrameUs, Sys_Display50Hz() ? "50 Hz" : "not 50 Hz", (unsigned long)modeid,
 +		(unsigned long)GetVPModeID(&scr->ViewPort), (unsigned)GfxBase->DisplayFlags, (unsigned long)SysBase->ex_EClockFrequency);
@@ -3395,6 +3513,7 @@ index 0000000..803d8eb
 +		if (safe_pend[next]) { WaitPort(safeport); collect_safe(); }
 +		else { WaitPort(dispport); collect_disp(); }
 +	}
++	lead_flip_wait();
 +	bpu_fit(next); Sys_Perf.flip_vb = GfxBase->VBCounter; Sys_Perf.flip_beam = ((custom.vposr & 1) << 8) | (custom.vhposr >> 8); if (!ChangeScreenBuffer(scr, sb[next])) hb_refused++;
 +	else {
 +		safe_for[next] = shown;          /* this change's SafeMessage frees the old one */
@@ -3420,6 +3539,19 @@ index 0000000..803d8eb
 +static unsigned long pace_us = 20000;
 +static struct MsgPort *delayport;
 +static struct timerequest *delayreq; static int pace_restart;   /* 1.5: Sys_PacingRestart (after fast-forward / fast tape) */
++/* Frames timed to the HDMI refresh (sonic16, 3 Nov 2026). On the RTG screen the frames ran at
++ * the E-clock's 49.93 Hz (a Paula block) and the RTGVBL task wrote each at the next 50 Hz HDMI
++ * blank. The two beat: about three times in 45 s the frame ends drift across the blank, and while
++ * they do, the work's spread (7-15 ms) puts two frames in one refresh now and then (one never
++ * shown, the next refresh shows the old one again): 10-18 such stumbles in Sonic GX's 45 s on
++ * Paula, 25-60 with HDMI sound. Sys_PaceLock: each frame is due SYS_LOCK_US after an HDMI blank
++ * (rtgfw's prediction), so it is always written at the next blank: no stumbles, and the frame is
++ * on the screen about 20 ms after it starts. The CPC then runs at the HDMI's 50 Hz; AHI's rate
++ * control takes up the 0.14% (Paula can't: its block is a whole number of colour clocks, so the
++ * host sets this only with HDMI sound unless RTGLOCK=2). */
++int Sys_PaceLock;
++#define SYS_LOCK_US 500
++static unsigned long lock_frames, lock_snaps;
 +
 +void Sys_SetPacing(int timer, unsigned long frame_us)
 +{
@@ -3450,6 +3582,86 @@ index 0000000..803d8eb
 +	if (delayport) { DeleteMsgPort(delayport); delayport = NULL; }
 +}
 +
++/* Frame lead (sonic16 AGA, 3 Nov 2026). In VBlank pacing each frame started at a VBlank and had
++ * until the next one to be emulated, converted and flipped: 20 ms. Sonic GX's heaviest frames (a
++ * new act drawn whole, the springs) take 20.5-23 ms on the A1200, so they missed it: the frame
++ * before was shown twice and the next one skipped. Sys_LeadUs (LEAD=us; 0 = off): each frame
++ * starts that long before the VBlank at which the frame before it goes on the screen, so it has
++ * 20 ms + the lead. It is shown at the VBlank after that one, as before, so the picture is only
++ * the lead later than it was (4 ms). Its flip waits until the frame before is on the screen (one
++ * ChangeScreenBuffer per VBlank). Times come from the beam: the VBlank the frame before goes
++ * up at (lead_tgt, a VBCounter value) is (lead_tgt - VBCounter) frames minus the beam's line
++ * away. AGA screens in VBlank pacing only (not RTG, not the E-clock timer pacing). More than
++ * 10 frames behind (a machine too slow for the game): start again from the next VBlank without
++ * waiting, as the plain VBlank pacing does. */
++int Sys_LeadUs = -1;                  /* -1: the default (SYS_LEAD_US) */
++#define SYS_LEAD_US 4000
++static int beam_lines;                /* lines a frame (beam_measure) */
++static unsigned long lead_tgt;        /* VBCounter at which the frame just made goes on the screen (0: restart) */
++static unsigned long lead_frames, lead_late, lead_flip_waits;
++/* volatile reads: struct Custom and GfxBase->VBCounter are not volatile in the NDK, so a wait loop on
++ * them was compiled to read once and spin for ever (the A1200 hung in beam_now, 3 Nov 2026) */
++static int beam_y(void) { return ((*(volatile UWORD *)&custom.vposr & 1) << 8) | (*(volatile UWORD *)&custom.vhposr >> 8); }
++static unsigned long vb_count(void) { return *(volatile ULONG *)&GfxBase->VBCounter; }
++static void beam_measure(void)
++{
++	unsigned long t0;
++	int m = 0, l;
++	WaitTOF();
++	t0 = Sys_Micros();
++	while (Sys_Micros() - t0 < Sys_DisplayFrameUs + 2000) { l = beam_y(); if (l > m) m = l; }
++	beam_lines = m + 1;
++	Sys_Log("display: %d lines a frame", beam_lines);
++}
++static int lead_us(void)
++{
++	int l = Sys_LeadUs >= 0 ? Sys_LeadUs : SYS_LEAD_US;
++	if (Sys_RtgActive || pace_timer || !scr || beam_lines < 200 || !Sys_Display50Hz() || l > 10000) return 0;
++	return l;
++}
++/* VBCounter and the beam's line, read together: VBCounter goes up in the VBlank interrupt, just
++ * after line 0, so the first lines are left to pass (at most half a millisecond) */
++static void beam_now(unsigned long *vb, int *y)
++{
++	for (;;) {
++		unsigned long v;
++		int l;
++		while (beam_y() < 8) ;
++		v = vb_count(); l = beam_y();
++		if (l >= 8 && vb_count() == v) { *vb = v; *y = l; return; }
++	}
++}
++/* before a flip: the frame flipped last must be on the screen (its VBlank passed) */
++static void lead_flip_wait(void)
++{
++	unsigned long vb;
++	int y;
++	if (!flipped || !lead_us()) return;
++	beam_now(&vb, &y);
++	if (vb == Sys_Perf.flip_vb) { lead_flip_waits++; WaitTOF(); }
++}
++/* Sys_WaitFrame's VBlank pacing with a lead: the behind time, as there */
++static long lead_wait(int lead)
++{
++	unsigned long vb, line_us = Sys_DisplayFrameUs / beam_lines;
++	long rem;
++	int y;
++	beam_now(&vb, &y);
++	if (lead_tgt && (long)(vb - lead_tgt) > 10) {   /* more than 10 frames behind (a slow machine): */
++		rem = (long)(vb - lead_tgt) * (long)Sys_DisplayFrameUs;   /* start again from the next VBlank, */
++		lead_tgt = vb + 2; lead_late++; Sys_Perf.late_frames++;   /* no wait, still behind for the skip */
++		return rem;
++	}
++	if (!lead_tgt || (long)(lead_tgt - vb) > 2) lead_tgt = vb + 1;   /* (re)start */
++	if (!lead_frames++) Sys_Log("pacing: frames start %d us before the VBlank the frame before goes up at (%d lines of %lu us)", lead, beam_lines, line_us);
++	/* us until the VBlank lead_tgt (negative: past it, so the frame just made missed it) */
++	rem = (long)(lead_tgt - vb) * (long)Sys_DisplayFrameUs - (long)y * (long)line_us;
++	lead_tgt++;   /* the next frame's */
++	if (rem < 0) { lead_late++; Sys_Perf.late_frames++; return -rem; }
++	if (rem - lead > 500) timer_delay((unsigned long)(rem - lead));
++	return 0;
++}
++
 +long Sys_WaitFrame(void)
 +{
 +	/* VBlank mode: one CPC frame per VBlank. On time: WaitTOF, and the next
@@ -3469,6 +3681,19 @@ index 0000000..803d8eb
 +		long d;
 +		if (!was_timer || due == 0 || (long)(t0 - due) > 1000000 || (long)(due - t0) > (long)(2 * pace_us)) due = t0 + pace_us;   /* (re)start */
 +		was_timer = 1;
++		if (Sys_PaceLock && Sys_RtgActive) {
++			uint32_t u, per;
++			unsigned long t1 = Sys_Micros();
++			int ok = rtg_x_vbl_next(&u, &per) == RTG_OK && per > 19000 && per < 21000;
++			Sys_AudioLock(ok ? per : 0);
++			if (ok) {
++				long x = (long)(due - (t1 + u + SYS_LOCK_US)) % (long)per;   /* due against blank + SYS_LOCK_US */
++				if (x > (long)per / 2) x -= per; else if (x <= -(long)per / 2) x += per;
++				if (x > 1000 || x < -1000) lock_snaps++;
++				due -= x;
++				if (!lock_frames++) Sys_Log("pacing: frames timed to the HDMI refresh (%lu us a frame), each due %d us after a blank", (unsigned long)per, SYS_LOCK_US);
++			}
++		}
 +		d = (long)(due - t0);
 +		if (d > 500) {
 +			timer_delay((unsigned long)d);
@@ -3479,6 +3704,10 @@ index 0000000..803d8eb
 +			else due += pace_us;
 +			if (behind > 0) Sys_Perf.late_frames++;
 +		}
++	} else if (lead_us()) {
++		was_timer = 0;
++		if (due == 0) { lead_tgt = 0; due = 1; }   /* (due: only "not restarted" here) */
++		behind = lead_wait(lead_us());
 +	} else {
 +		was_timer = 0;
 +		if (due == 0 || (long)(due - t0) > 500) {
@@ -3539,6 +3768,9 @@ index 0000000..803d8eb
 +unsigned long Sys_Millis(void) { return frames * 20; }
 +void Sys_TimerClose(void)
 +{
++	if (lock_frames) Sys_Log("pacing: %lu frames timed to the HDMI refresh, %lu moved more than 1 ms", lock_frames, lock_snaps);
++	if (lead_frames) Sys_Log("pacing: %lu frames with a lead, %lu missed their VBlank, %lu flips waited for the one before", lead_frames, lead_late, lead_flip_waits);
++	lock_frames = lock_snaps = 0;
 +	timer_close();
 +	/* the E-clock request Sys_Micros opened (it was never closed) */
 +	if (TimerBase) { CloseDevice((struct IORequest *)&timereq); TimerBase = NULL; }
@@ -3913,10 +4145,10 @@ index 0000000..803d8eb
 +void Sys_PacingRestart(void) { pace_restart = 1; }
 diff --git a/src/amiga/amiga_sys.h b/src/amiga/amiga_sys.h
 new file mode 100644
-index 0000000..5fee700
+index 0000000..e38e439
 --- /dev/null
 +++ b/src/amiga/amiga_sys.h
-@@ -0,0 +1,177 @@
+@@ -0,0 +1,184 @@
 +/* Arnold on AmigaOS: the OS-facing half of the host. No Arnold headers here
 + * (cpcglob.h has its own BOOL, which clashes with exec/types.h), so
 + * host_amiga.c talks to the Amiga through this small interface only. */
@@ -3962,6 +4194,8 @@ index 0000000..5fee700
 +void Sys_AudioClose(void);
 +extern int Sys_AudioAhi;             /* before Sys_AudioOpen: HDMI sound through AHI wanted */
 +int  Sys_AudioAhiOn(void);           /* 1: this open went to AHI, 0: Paula */
++extern int Sys_AudioTone;            /* hdmifilt: the sound's low-pass, Paula and HDMI: 0 bright (off), 1 soft, 2 warm (A1200 filter) */
++void Sys_AudioLock(unsigned long frame_us);   /* sonic16: frames timed to the HDMI refresh, frame_us each (0: not) */
 +void Sys_AudioQueue(const unsigned char *s16stereo, int samples);
 +
 +void Sys_AudioPause(void);           /* DMA off; the next Sys_AudioQueue restarts it */
@@ -3994,6 +4228,7 @@ index 0000000..5fee700
 +	int rtg;                 /* RTG screen (experimental, 26 Oct 2026): the emulation (and the menu) on an RTG board's 8-bit screen */
 +	int hdmisound;           /* HDMI sound (Nov 2026): on the RTG screen, sound through AHI and emu68hdmi.audio; a setting of the machine, not per game */
 +	int hdmifail;            /* host: HDMI sound was asked for but the driver wouldn't open, Paula plays (cleared by a sound change in the menu) */
++	int tone;                /* Sound tone (hdmifilt, 4 Nov 2026), Paula and HDMI: 0 bright (as made), 1 soft, 2 warm (Sys_AudioTone) */
 +	int scan;               /* Scanlines on the RTG screen (SYS_SCAN_*, 1.2) */
 +	int state_slot;          /* save states (1.4): the slot (1-4) of SYS_MENU_SAVESTATE / SYS_MENU_LOADSTATE */
 +	char state_label[4][40]; /* the host's labels for the slots ("Slot 1 (empty)"), shown in the Project menu */
@@ -4014,7 +4249,7 @@ index 0000000..5fee700
 +
 +/* Workbench start (amiga_wb.c): fills st from the icon's ToolTypes and a
 + * project icon; returns 1 when started from Workbench. */
-+struct SysStart { char prefs[SYS_PATH], media[SYS_PATH], remap[128]; int menu, hires, tall, wide, nosound, skip, refresh, joykeys, pad, speed, video, model, diskwrite, fasttape, tapesound, rtg, scan; char tape[SYS_PATH]; int autotape, hdmisound; };   /* skip -1, refresh 0, others -1: not given */
++struct SysStart { char prefs[SYS_PATH], media[SYS_PATH], remap[128]; int menu, hires, tall, wide, nosound, skip, refresh, joykeys, pad, speed, video, model, diskwrite, fasttape, tapesound, rtg, scan; char tape[SYS_PATH]; int autotape, hdmisound, rtglock, tone; };   /* skip -1, refresh 0, others -1: not given */
 +int Sys_ParseModel(const char *v);   /* "464" "664" "6128" "PLUS" "GX4000" (any case) -> SYS_MODEL_*, -1 if not one */
 +int Sys_ParseVideo(const char *v);   /* "AUTO" "PAL" "NTSC" or 0-2 -> 0-2, -1 if not one */
 +int Sys_ParseSpeed(const char *v);   /* "50" or 0 -> 0, "DISPLAY" or 1 -> 1, -1 if not one */
@@ -4032,6 +4267,7 @@ index 0000000..5fee700
 +extern int Sys_RtgBlit;              /* RTGBLIT (diagnostic): off-screen bitmap + blit of the changed lines */
 +extern int Sys_RtgBuffers;           /* RTGBUF=1|3 (diagnostic): 3 = ChangeScreenBuffer triple buffering */
 +extern int Sys_RtgVblank;            /* RTGVBL (27 Oct 2026): rtgfw RTG_F_VBLANK, the frame written at the display's blank: no tearing */
++extern int Sys_PaceLock;             /* sonic16 (3 Nov 2026): RTG frames due just after an HDMI blank (host: with HDMI sound or no sound) */
 +extern int Sys_RtgDead;              /* RTG failed once: AGA until the user ticks RTG screen again (no retry on every Help) */
 +extern int Sys_RtgGrabOn;            /* RTGGRAB (tests): every SNAP also reads the RTG screen back (rtg-NNNNN.png) */
 +extern char Sys_RtgStatus[80];       /* why RTG fell back to AGA, for the next menu's status line ("" none) */
@@ -4044,7 +4280,9 @@ index 0000000..5fee700
 +extern int Sys_RtgDepth;             /* RTGDEPTH=8|16|32 (tests): the RTG screen's depth, 0 = by the scanline setting */
 +extern int Sys_RtgScanW, Sys_RtgScanH;   /* SCANMODE=<w>x<h> (tests): the scanline mode size, 0 = 960x540 */
 +extern const char *Sys_ScanWords[SYS_SCANS];   /* prefs words: off 25 50 75 blendlight blend blendstrong */
++extern const char *Sys_ToneWords[3];           /* prefs words of the Sound tone (hdmifilt): bright soft warm */
 +int  Sys_ParseScan(const char *v);   /* a prefs word (any case; also hard25..hard75, 0) -> SYS_SCAN_*, -1 if not one */
++int  Sys_ParseTone(const char *v);   /* hdmifilt: "BRIGHT" "SOFT" "WARM" (any case) or 0-2 -> 0-2, -1 if not one */
 +
 +/* Performance counters (timer.device E-clock): time in c2p (conversion plus the
 + * chip RAM writes), time waiting for flips/VBlank, lines converted. */
@@ -4077,6 +4315,7 @@ index 0000000..5fee700
 +extern int Sys_PalAll;              /* PALALL: reload the whole palette every frame */
 +extern int Sys_AllLines;            /* ALLLINES: convert every line every frame (no dirty-line tracking) */
 +extern int Sys_SafeFlip;            /* SAFEFLIP: wait for the previous flip's messages before the next */
++extern int Sys_LeadUs;              /* LEAD=us: AGA frames start this long before the VBlank the frame before goes up at (-1: default) */
 +extern int Sys_Osd, Sys_OsdSkip;     /* OSD: test-mode label in the picture's corner; skip value it shows */
 +/* palette entry the host keeps for the label and messages (yellow). 127, not 255 (29 Oct 2026):
 + * on an 8-bit RTG screen with scanlines, entries 128-255 are the dimmed copies of 0-127, so 255
@@ -4113,10 +4352,10 @@ index 0000000..d316dd0
 +#endif
 diff --git a/src/amiga/amiga_wb.c b/src/amiga/amiga_wb.c
 new file mode 100644
-index 0000000..2f62708
+index 0000000..627e0b0
 --- /dev/null
 +++ b/src/amiga/amiga_wb.c
-@@ -0,0 +1,244 @@
+@@ -0,0 +1,258 @@
 +/* Arnold on AmigaOS: Workbench start. With libnix, main() gets argc == 0 and
 + * argv == the WBStartup message. We read the PREFS ToolType from the icon we
 + * were started from (Arnold's own, or a preset project icon) and take a project icon
@@ -4177,6 +4416,10 @@ index 0000000..2f62708
 +	if (tt) st->autotape = (!*tt || atoi(tt)) ? 1 : 0;   /* AUTOTAPE=0|1: auto-start tapes (1.5; a bare AUTOTAPE means on) */
 +	tt = (char *)FindToolType((STRPTR *)dobj->do_ToolTypes, (STRPTR)"HDMISOUND");
 +	if (tt) st->hdmisound = (!*tt || atoi(tt)) ? 1 : 0;   /* HDMISOUND=0|1: on the RTG screen, sound through AHI */
++	tt = (char *)FindToolType((STRPTR *)dobj->do_ToolTypes, (STRPTR)"RTGLOCK");
++	if (tt && *tt) st->rtglock = atoi(tt);   /* RTGLOCK=0|1|2: frame lock to the HDMI blank (0 never, 1 with HDMI sound or none, 2 always; rtg17) */
++	tt = (char *)FindToolType((STRPTR *)dobj->do_ToolTypes, (STRPTR)"TONE");
++	if (tt) st->tone = Sys_ParseTone(tt);   /* TONE=BRIGHT|SOFT|WARM or 0-2: the sound's low-pass, Paula and HDMI (hdmifilt) */
 +	tt = (char *)FindToolType((STRPTR *)dobj->do_ToolTypes, (STRPTR)"RTG");
 +	if (tt) st->rtg = (!*tt || atoi(tt)) ? 1 : 0;   /* RTG=0|1, a bare RTG means on: the RTG screen (pilot, 26 Oct 2026) */
 +	tt = (char *)FindToolType((STRPTR *)dobj->do_ToolTypes, (STRPTR)"RTGVBL");
@@ -4262,7 +4505,7 @@ index 0000000..2f62708
 +	struct WBArg *wa;
 +	memset(st, 0, sizeof *st);
 +	st->skip = -1;
-+	st->joykeys = -1; st->pad = -1; st->speed = -1; st->video = -1; st->model = -1; st->diskwrite = -1; st->fasttape = -1; st->tapesound = -1; st->rtg = -1; st->scan = -1; st->autotape = -1; st->hdmisound = -1;
++	st->joykeys = -1; st->pad = -1; st->speed = -1; st->video = -1; st->model = -1; st->diskwrite = -1; st->fasttape = -1; st->tapesound = -1; st->rtg = -1; st->scan = -1; st->autotape = -1; st->hdmisound = -1; st->rtglock = -1; st->tone = -1;
 +	if (argc != 0) return 0;
 +	wbs = (struct WBStartup *)argv;
 +	if (!wbs || wbs->sm_NumArgs < 1) return 0;
@@ -4280,7 +4523,7 @@ index 0000000..2f62708
 +		memset(&pre, 0, sizeof pre);
 +		pre.skip = -1;
 +		pre.joykeys = -1; pre.pad = -1; pre.speed = -1; pre.video = -1; pre.model = -1; pre.diskwrite = -1;
-+		pre.fasttape = -1; pre.tapesound = -1; pre.rtg = -1; pre.scan = -1; pre.autotape = -1; pre.hdmisound = -1;
++		pre.fasttape = -1; pre.tapesound = -1; pre.rtg = -1; pre.scan = -1; pre.autotape = -1; pre.hdmisound = -1; pre.rtglock = -1; pre.tone = -1;
 +		if (IconBase && read_tooltypes(wa[1].wa_Name, &pre) && pre.prefs[0]) {
 +			char dir[SYS_PATH];
 +			if (strchr(pre.prefs, ':') == NULL && NameFromLock(wa[1].wa_Lock, (STRPTR)dir, SYS_PATH)) {
@@ -4306,6 +4549,8 @@ index 0000000..2f62708
 +			if (pre.tapesound >= 0) st->tapesound = pre.tapesound;
 +			if (pre.autotape >= 0) st->autotape = pre.autotape;
 +			if (pre.hdmisound >= 0) st->hdmisound = pre.hdmisound;
++			if (pre.rtglock >= 0) st->rtglock = pre.rtglock;
++			if (pre.tone >= 0) st->tone = pre.tone;
 +			if (pre.rtg >= 0) st->rtg = pre.rtg;
 +			if (pre.scan >= 0) st->scan = pre.scan;
 +			if (pre.tape[0]) strcpy(st->tape, pre.tape);
@@ -4359,6 +4604,14 @@ index 0000000..2f62708
 +{
 +	int i = word_index(v, scan_upper, SYS_SCANS);
 +	if (i < 0) i = word_index(v, scan_hard, 4);
++	return i;
++}
++const char *Sys_ToneWords[3] = { "bright", "soft", "warm" };
++static const char *tone_upper[3] = { "BRIGHT", "SOFT", "WARM" };
++int Sys_ParseTone(const char *v)
++{
++	int i = word_index(v, tone_upper, 3);
++	if (i < 0 && v[0] >= '0' && v[0] <= '2' && !v[1]) i = v[0] - '0';
 +	return i;
 +}
 diff --git a/src/amiga/audio_conv.h b/src/amiga/audio_conv.h
@@ -4680,10 +4933,10 @@ index 0000000..eaaa6ea
 +#endif
 diff --git a/src/amiga/host_amiga.c b/src/amiga/host_amiga.c
 new file mode 100644
-index 0000000..561a46b
+index 0000000..b6b7b11
 --- /dev/null
 +++ b/src/amiga/host_amiga.c
-@@ -0,0 +1,1444 @@
+@@ -0,0 +1,1467 @@
 +/* Arnold host for AmigaOS: implements src/cpc/host.h on top of amiga_sys.c.
 + * The core renders into an 8-bit chunky buffer (384 x 272, one byte per
 + * pixel, PaletteRemap indices); amiga_sys converts it to AGA bitplanes.
@@ -4779,7 +5032,8 @@ index 0000000..561a46b
 +static int gx_autostart;   /* frames until the GX4000 auto-start presses f2 (0 = off) */
 +static long help_after;    /* test: HELPAFTER=n presses Help once after n frames (0 = off) */
 +static long help_every;    /* test: HELPEVERY=n presses Help n frames after every start or Continue (RTG pilot menu cycles) */
-+static int skip_max = 3, skip_run, refresh = 1;
++static int skip_max = 3, skip_run, refresh = 1; static int rtglock = 1;   /* sonic16: Sys_PaceLock policy (RTGLOCK=n) */
++extern int rtg_x_pan_forbid, rtg_x_pan_lines, rtg_x_pan_mirror;   /* rtgfw.c (rtg17 tests): anchor pans under Forbid (PANFORBID=n), pan offset (PANLINES=n), page 1 mirrored (PANMIRROR=n) */
 +static unsigned long refresh_count;
 +static long behind_us;
 +extern int (*CPC_SkipNextFrameHook)(void);
@@ -4963,8 +5217,11 @@ index 0000000..561a46b
 +	 * picture), so it shows the CPC's border colour, as a real monitor does
 +	 * out to the tube's edge: blue for BASIC, black for most Plus games
 +	 * (19 Oct 2026, John). The core's entry 0 itself is black (blanking). */
-+	extern int Render_PaletteIndexBorder;
-+	int bi = Render_PaletteIndexBorder;
++	/* Render_Black0Used (render5.c): black pens were on entry 0 during this
++	 * frame, so colour 0 stays black for it (the border turned another colour
++	 * part way down; the surround follows a frame later). */
++	extern int Render_PaletteIndexBorder, Render_Black0Used;
++	int bi = Render_Black0Used ? 0 : Render_PaletteIndexBorder;
 +	if (i >= 0 && i < 256) { hostpal[i][0] = r; hostpal[i][1] = g; hostpal[i][2] = b; }
 +	if (i == 0 && bi > 0 && bi < 256) { r = hostpal[bi][0]; g = hostpal[bi][1]; b = hostpal[bi][2]; }
 +	Sys_SetPaletteEntry(i, r, g, b);
@@ -5301,6 +5558,8 @@ index 0000000..561a46b
 +		else if (!strcmp(line, "autotape")) menu.autotape = atoi(v) ? 1 : 0;
 +		else if (!strcmp(line, "rtg")) menu.rtg = atoi(v) ? 1 : 0;
 +		else if (!strcmp(line, "hdmisound")) menu.hdmisound = atoi(v) ? 1 : 0;
++		else if (!strcmp(line, "tone")) { int k = Sys_ParseTone(v); if (k >= 0) menu.tone = k; }
++		else if (!strcmp(line, "rtglock")) rtglock = atoi(v);   /* sonic16 test setting, as RTGLOCK=n */
 +		else if (!strcmp(line, "scanlines")) { int k = Sys_ParseScan(v); if (k >= 0) menu.scan = k; }
 +		else if (!strcmp(line, "tape")) strncpy(menu.tape, v, SYS_PATH - 1);
 +	}
@@ -5323,6 +5582,8 @@ index 0000000..561a46b
 +	fprintf(f, "tapesound=%d\n", global_tapesound);
 +	fprintf(f, "autotape=%d\n", global_autotape);
 +	fprintf(f, "hdmisound=%d\n", menu.hdmisound);
++	fprintf(f, "tone=%s\n", Sys_ToneWords[menu.tone >= 0 && menu.tone <= 2 ? menu.tone : 1]);
++	if (rtglock != 1) fprintf(f, "rtglock=%d\n", rtglock);
 +	fprintf(f, "scanlines=%s\n", Sys_ScanWords[global_scan > 0 && global_scan < SYS_SCANS ? global_scan : 0]);
 +	if (global_remap[0]) fprintf(f, "remap=%s\n", global_remap);
 +	fclose(f);
@@ -5856,12 +6117,18 @@ index 0000000..561a46b
 +		if (audio_open && (period != aud_period || audint != aud_int || ahi != Sys_AudioAhi || (ahi && !Sys_AudioAhiOn()))) { Sys_AudioClose(); audio_open = 0; }
 +		aud_period = period; aud_int = audint; Sys_AudioAhi = ahi;
 +	}
++	Sys_AudioTone = menu.tone;   /* hdmifilt: the sound's low-pass, Paula and HDMI, from this Continue */
 +	if (menu.sound && !audio_open && Sys_AudioOpen(aud_period, AUD_SAMPLES, aud_int)) {
 +		audio_open = 1; CPC_SetAudioActive(TRUE);
 +		menu.hdmifail = Sys_AudioAhi && !Sys_AudioAhiOn();
 +		if (menu.hdmifail) strcpy(menu.status, "HDMI sound not available: playing on Paula");
 +	}
 +	if (!menu.sound && audio_open) { Sys_AudioClose(); audio_open = 0; CPC_SetAudioActive(FALSE); }
++	/* RTG frames timed to the HDMI refresh (sonic16): when nothing ties them to Paula's rate, i.e.
++	 * with HDMI sound (AHI follows the rate) or no sound. RTGLOCK=0 never, 2 also with Paula (tests:
++	 * Paula then drops a block every ~14 s). */
++	Sys_PaceLock = Sys_RtgActive && (rtglock == 2 || (rtglock == 1 && (!audio_open || Sys_AudioAhiOn())));
++	if (!Sys_PaceLock) Sys_AudioLock(0);
 +	CPC_ClearKeyboard();
 +	/* and the joystick state with it: a joy key held when Help was pressed is
 +	 * released in the menu, which kept its bit in kb_joy (the real joystick's
@@ -5888,6 +6155,7 @@ index 0000000..561a46b
 +	strcpy(menu.cart, "PROGDIR:roms/system.cpr");
 +	strcpy(menu.prefs, "PROGDIR:Arnold.prefs");
 +	menu.sound = 1;
++	menu.tone = 1;   /* hdmifilt: Sound tone soft (John, 4 Nov) */
 +	menu.diskwrite = 1;
 +	menu.fasttape = 1; menu.tapesound = 0; menu.autotape = 1;
 +	menu.model = SYS_MODEL_PLUS; menu.running_model = -1;
@@ -5914,6 +6182,8 @@ index 0000000..561a46b
 +		if (st.tapesound >= 0) menu.tapesound = st.tapesound;
 +		if (st.autotape >= 0) menu.autotape = autotape_arg = st.autotape;
 +		if (st.hdmisound >= 0) menu.hdmisound = st.hdmisound;
++		if (st.rtglock >= 0) rtglock = st.rtglock;   /* rtg17: RTGLOCK ToolType */
++		if (st.tone >= 0) menu.tone = st.tone;   /* hdmifilt: TONE ToolType */
 +		if (st.scan >= 0) scan = st.scan;
 +		if (st.rtg >= 0) rtg = st.rtg;
 +		if (st.tape[0]) strncpy(menu.tape, st.tape, SYS_PATH - 1);
@@ -5938,6 +6208,10 @@ index 0000000..561a46b
 +			else if (!kwcmp(argv[i], "OSD")) Sys_Osd = 1;
 +			else if (!kwcmp(argv[i], "NOCD32")) Sys_NoCD32 = 1;
 +			else if (!kwncmp(argv[i], "SKIP=", 5)) skip_max = atoi(argv[i] + 5);
++			else if (!kwncmp(argv[i], "PANMIRROR=", 10)) rtg_x_pan_mirror = atoi(argv[i] + 10);   /* rtg17 test: 0 = page 1 black, as 1.6 */
++			else if (!kwncmp(argv[i], "PANLINES=", 9)) rtg_x_pan_lines = atoi(argv[i] + 9);   /* rtg17 test: -1 a page (default), 0 one pan to the same offset */
++			else if (!kwncmp(argv[i], "PANFORBID=", 10)) rtg_x_pan_forbid = atoi(argv[i] + 10);   /* rtg17 test: 0 = anchor pans without Forbid */
++			else if (!kwncmp(argv[i], "LEAD=", 5)) Sys_LeadUs = atoi(argv[i] + 5);   /* sonic16: frame lead, us (0 = off) */
 +			else if (!kwncmp(argv[i], "REFRESH=", 8)) refresh = atoi(argv[i] + 8);
 +			else if (!kwncmp(argv[i], "JOYKEYS=", 8)) joykeys = atoi(argv[i] + 8);
 +			else if (!kwncmp(argv[i], "REMAP=", 6)) remap_parse(argv[i] + 6);
@@ -5954,11 +6228,13 @@ index 0000000..561a46b
 +			else if (!kwcmp(argv[i], "AUTOTAPE")) menu.autotape = autotape_arg = 1;
 +			else if (!kwncmp(argv[i], "HDMISOUND=", 10)) menu.hdmisound = atoi(argv[i] + 10) ? 1 : 0;
 +			else if (!kwcmp(argv[i], "HDMISOUND")) menu.hdmisound = 1;
++			else if (!kwncmp(argv[i], "TONE=", 5)) { int k = Sys_ParseTone(argv[i] + 5); if (k >= 0) menu.tone = k; }   /* hdmifilt: Sound tone */
 +			else if (!kwcmp(argv[i], "RTG")) rtg = 1;                       /* RTG screen (pilot, 26 Oct 2026) */
 +			else if (!kwncmp(argv[i], "RTG=", 4)) rtg = atoi(argv[i] + 4) ? 1 : 0;
 +			else if (!kwcmp(argv[i], "RTGBLIT")) Sys_RtgBlit = 1;           /* diagnostic: off-screen bitmap + blit */
 +			else if (!kwcmp(argv[i], "RTGVBL")) Sys_RtgVblank = 1;          /* RTG: write at the display's vertical blank (27 Oct 2026) */
 +			else if (!kwncmp(argv[i], "RTGVBL=", 7)) Sys_RtgVblank = atoi(argv[i] + 7) ? 1 : 0;
++			else if (!kwncmp(argv[i], "RTGLOCK=", 8)) rtglock = atoi(argv[i] + 8);   /* sonic16: 0 off, 1 with HDMI sound or no sound, 2 always */
 +			else if (!kwncmp(argv[i], "RTGBUF=", 7)) Sys_RtgBuffers = atoi(argv[i] + 7);   /* diagnostic: 3 = screen buffers */
 +			else if (!kwcmp(argv[i], "RTGGRAB")) Sys_RtgGrabOn = 1;         /* tests: SNAP also saves the RTG screen */
 +			else if (!kwncmp(argv[i], "SCANLINES=", 10)) { int k = Sys_ParseScan(argv[i] + 10); if (k >= 0) scan = k; }   /* RTG scanlines (1.2) */

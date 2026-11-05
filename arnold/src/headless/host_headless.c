@@ -47,7 +47,25 @@ BOOL Host_LockGraphicsBuffer(void) { return TRUE; }
 void Host_UnlockGraphicsBuffer(void) {}
 static void framesum(void);
 static void undrawn(void);
-void Host_SwapGraphicsBuffers(void) { frames++; if (depth == 8) Palette_Set(); if (getenv("FRAMESUM")) framesum(); if (getenv("UNDRAWN")) undrawn(); }
+/* AMIGACOL0=1: index 0 is shown as Amiga colour 0: the border's colour, or black
+ * while black pens were on entry 0 (render5.c Render_Black0Used; weak: the ref
+ * core of headless_check may not have it), latched when the frame is out */
+extern int Render_PaletteIndexBorder, Render_Black0Used __attribute__((weak));
+static int col0_a0 = -1, col0_index;
+static void col0_latch(void)
+{
+	if (col0_a0 < 0) col0_a0 = getenv("AMIGACOL0") != NULL;
+	col0_index = (&Render_Black0Used && Render_Black0Used) ? 0 : Render_PaletteIndexBorder;
+}
+/* COL0LOG=1 (tests): frames where colour 0 is held black although the border is another colour */
+static void col0_log(void)
+{
+	static int on = -1; int b = Render_PaletteIndexBorder & 255;
+	if (on < 0) on = getenv("COL0LOG") != NULL;
+	if (on && &Render_Black0Used && Render_Black0Used && (pal[b][0] | pal[b][1] | pal[b][2]))
+		printf("col0hold %d border %d rgb %d %d %d\n", frames, b, pal[b][0], pal[b][1], pal[b][2]);
+}
+void Host_SwapGraphicsBuffers(void) { frames++; col0_latch(); if (depth == 8) { Palette_Set(); col0_log(); } if (getenv("FRAMESUM")) framesum(); if (getenv("UNDRAWN")) undrawn(); }
 void Host_SetPaletteEntry(int i, unsigned char r, unsigned char g, unsigned char b)
 {
 	pal[i & 255][0] = r; pal[i & 255][1] = g; pal[i & 255][2] = b;
@@ -375,8 +393,7 @@ static unsigned long dump_to(const char *name)
 		if (depth == 8) {
 			unsigned char c = chunky[i];
 			/* AMIGACOL0=1: index 0 shows the border colour, as Amiga colour 0 does */
-			{ extern int Render_PaletteIndexBorder; static int a0 = -1; if (a0 < 0) a0 = getenv("AMIGACOL0") != NULL;
-			  if (a0 && c == 0) c = (unsigned char)Render_PaletteIndexBorder; }
+			if (col0_a0 > 0 && c == 0) c = (unsigned char)col0_index;
 			fwrite(pal[c], 1, 3, f);
 			/* RGB, not the palette index (20 Oct 2026): index numbers may change
 			 * (palette freeing, PALGC_TOP) while the picture stays the same */
@@ -409,7 +426,7 @@ static void framesum(void)
 {
 	int i; unsigned long sum = 0;
 	for (i = 0; i < W*H; i++) {
-		if (depth == 8) { unsigned char c = chunky[i]; sum = ((sum * 31 + pal[c][0]) * 31 + pal[c][1]) * 31 + pal[c][2]; }
+		if (depth == 8) { unsigned char c = chunky[i]; if (col0_a0 > 0 && c == 0) c = (unsigned char)col0_index; sum = ((sum * 31 + pal[c][0]) * 31 + pal[c][1]) * 31 + pal[c][2]; }
 		else sum = sum * 31 + ((unsigned short *)chunky)[i];
 	}
 	printf("framesum %d %08lx\n", frames, sum & 0xffffffffUL);

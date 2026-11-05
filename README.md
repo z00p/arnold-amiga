@@ -59,6 +59,17 @@ default): after Power ON Arnold types the load command (`RUN"` on a 464, `|TAPE`
 a 664 or 6128, f1 first on the Plus) and presses a key at "Press PLAY then any key". Saving to
 tape is not supported, and only .cdt images load (no .wav, .voc or .csw samples).
 
+Smoother frames and Sound tone (1.7): on the RTG screen with HDMI sound (or no sound) each frame is
+timed to the display's refresh, so none is dropped or shown twice and the delay from joystick to
+picture is steady (`RTGLOCK=0|1|2`, 1 by default; Paula can't follow the display, so with Paula the
+frames keep the Amiga's clock unless `RTGLOCK=2`); an occasional black frame is gone. On the AGA
+screen heavy frames get 4 ms more time (`LEAD=us`, 0 = off), and black pens share colour 0 again
+while the border is black (core patch 0040), which wins back about half of 1.5's AGA slowdown.
+Options menu "Sound tone" (`TONE=BRIGHT|SOFT|WARM`) takes the edge off the CPC's sound on Paula and
+HDMI alike, Soft by default; Arnold switches the Amiga's own audio filter off while Paula plays so
+the two outputs sound the same, and puts it back on Help and Exit. 1.7 ships two builds,
+`Arnold` (68040, PiStorm/Emu68) and `Arnold-060` (68060, BigMig).
+
 HDMI sound (1.6): on a PiStorm with a Raspberry Pi 4 or CM4, the RTG screen can play its sound over
 HDMI instead of Paula, as 16-bit stereo, through AHI and the emu68hdmi.audio driver (installed
 separately; it is not part of Arnold). Options menu "HDMI sound (RTG screen)", `HDMISOUND=0|1`, off by
@@ -96,12 +107,12 @@ Arnold for Amiga targets PiStorm/Emu68-class machines.
 - **BigMig (MiSTer):** games currently run below full speed; use `Arnold-060` with frame skip (the BigMig
   preset, which uses BigMig's RTG screen: faster than AGA there).
 - **Real 68060 accelerator cards** have not been tested; expect games below full speed.
-- **68030 machines** are too slow for games (`Arnold-030` is for trying BASIC).
+- **68030 machines** are too slow for games (1.6 had an `Arnold-030` build for trying BASIC).
 
 ## Download
 
-The release zip holds the Amiga drawer (five builds: 68040 and 68060, each at -O2 and -O3,
-and a 68030 build; all soft-float), icons, presets, the Plus system cartridge, the CPC 464/664/6128 system ROMs
+The release zip holds the Amiga drawer (two builds, `Arnold` for the 68040 and `Arnold-060` for
+the 68060, both soft-float), icons, presets, the Plus system cartridge, the CPC 464/664/6128 system ROMs
 and a user README. See the
 Releases page. The RTG code uses the RTG display framework (rtgfw, MIT licence; its
 licence text is `LICENSE-rtgfw` in the package and `arnold/src/amiga/rtgfw/LICENSE` here).

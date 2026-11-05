@@ -245,6 +245,25 @@ Index)
 int Render_PaletteIndexBlack = 0;   /* Amiga port: not static (crtc.c inline sync) */
 int Render_PaletteIndexBorder = 0;  /* border fix: palette index of pen 16 (see Render_Paletted_PutBorder) */
 
+/* Amiga port (3 Nov 2026): black pens share entry 0 again while the border is
+ * black. Entry 0 is Amiga colour 0, shown in the border colour (host_amiga.c),
+ * so a black pen there is drawn right only while the border is black; then the
+ * border pen itself takes entry 0 too. Keeping the black pens off entry 0 (the
+ * 29 Oct fix below) cost Sonic GX an entry: 33 entries, so many lines needed a
+ * sixth bitplane on AGA (1 KB more chip writes a frame).
+ * black0_ok: pen 16 is black, so a black pen may match entry 0. When the border
+ * turns another colour, the pens on entry 0 move to a black entry of their own
+ * at once (Black0_Leave). Pixels drawn earlier in that frame still hold 0, so
+ * Render_Black0Used (a pen was on entry 0 during this frame, kept until the
+ * frame is out: Render_DumpDisplay) tells the host to show colour 0 black for
+ * that frame instead of the border colour.
+ * NO_BLACK0_SHARE: black pens never use entry 0 (as 29 Oct). */
+#if !defined(NO_BLACK0_FIX) && !defined(NO_BLACK0_SHARE)
+#define BLACK0_SHARE 1
+static int black0_ok;
+#endif
+int Render_Black0Used;
+
 
 /* find a colour match */
 /* Amiga port (29 Oct 2026): entry 0 is never matched. Amiga colour 0 shows
@@ -256,7 +275,9 @@ int     Palette_MatchColour(int Red, int Green, int Blue)
 {
         int i;
 
-#ifndef NO_BLACK0_FIX
+#if defined(BLACK0_SHARE)
+        for (i=black0_ok ? 0 : 1; i<256; i++)
+#elif !defined(NO_BLACK0_FIX)
         for (i=1; i<256; i++)
 #else
         for (i=0; i<256; i++)
@@ -369,14 +390,39 @@ int     GetIndexInPalette(int PenIndex, int Red, int Green, int Blue)
 }
 
 
-static void	Render_Paletted_SetColour(const RGBCOLOUR *pColour,/*int 
+#ifdef BLACK0_SHARE
+/* the border is no longer black: pens on entry 0 get a black entry of their own */
+static void Black0_Leave(void)
+{
+	int i, p = -1;
+	for (i = 0; i < 32; i++)
+	{
+		if (i == 16 || PaletteRemap[i] != 0) continue;
+		if (p == -1)
+		{
+			p = Palette_MatchColour(0, 0, 0);   /* black0_ok is 0: not entry 0 */
+			if (p == -1) p = Palette_StoreColour(0, 0, 0);
+			if (p == -1) return;   /* palette full: left on entry 0 (Render_Black0Used still covers this frame) */
+		}
+		PaletteRemap[i] = p;
+		Render_RemapStamp++;
+	}
+}
+#endif
+
+static void	Render_Paletted_SetColour(const RGBCOLOUR *pColour,/*int
 Red, int Green, int Blue,*/
 int Index)
 {
 	int PaletteIndex;
+#ifdef BLACK0_SHARE
+	int was_ok = black0_ok;
+	if (Index == 16)   /* before the match, so a black border takes entry 0 itself */
+		black0_ok = !(pColour->u.element.Red | pColour->u.element.Green | pColour->u.element.Blue);
+#endif
 
 	PaletteIndex = GetIndexInPalette(Index, pColour->u.element.Red, pColour->u.element.Green, pColour->u.element.Blue);
-        
+
 	if (PaletteIndex!=-1)
 	{
 		/* set mapping */
@@ -384,6 +430,10 @@ int Index)
 		Render_RemapStamp++;   /* Amiga port: cached remapped pixels are stale */
 		if (Index == 16) Render_PaletteIndexBorder = PaletteIndex;
 	}
+#ifdef BLACK0_SHARE
+	if (was_ok && !black0_ok) Black0_Leave();
+	if (PaletteRemap[Index] == 0) Render_Black0Used = 1;
+#endif
 }
 
 static void	Render_Paletted_Setup(void)
@@ -404,6 +454,9 @@ static void Render_Paletted_ClearRemapping(void)
 {
 	int i;
 	Render_PaletteIndexBorder = Render_PaletteIndexBlack;   /* border fix */
+#ifdef BLACK0_SHARE
+	black0_ok = 0;   /* pen 16 has no colour yet */
+#endif
 
 	/* clear all re-map stuff */
 	for (i=0; i<32; i++)
@@ -1694,6 +1747,9 @@ static void Palette_Compact(void)
 	for (i = 0; i < 256; i++)
 		if (!(CPCPalette[i].Flags & PALETTE_ENTRY_DO_NOT_REMOVE)) CPCPalette[i].Flags = 0;
 	Render_ReserveBlack();
+#ifdef BLACK0_SHARE
+	black0_ok = have[16] && !(rgb[16][0] | rgb[16][1] | rgb[16][2]);   /* pens before 16 may take entry 0 too */
+#endif
 	for (i = 0; i < 32; i++)
 	{
 		int p = -1;
@@ -1742,6 +1798,13 @@ void    Render_DumpDisplay(void)
 		for (i = 0; i < 256; i++) if (CPCPalette[i].Flags & PALETTE_ENTRY_USED) n++;
 		if (n >= PALGC_LIMIT) Palette_Reset();
 #endif
+	}
+#endif
+#ifdef BLACK0_SHARE
+	{	/* this frame is out: the next one starts with the pens on entry 0 now */
+		int i;
+		Render_Black0Used = 0;
+		for (i = 0; i < 32; i++) if (PaletteRemap[i] == 0) Render_Black0Used = 1;
 	}
 #endif
 #ifdef PAL_COUNT
@@ -2306,6 +2369,9 @@ void SS_Render(SS_IO *io)
 				if (remap[i] >= 256 || (remap[i] >= 0 && (CPCPalette[remap[i]].Flags & (PALETTE_ENTRY_USED | PALETTE_ENTRY_DO_NOT_MATCH)) != PALETTE_ENTRY_USED)) ok = 0;
 			}
 			Render_PaletteIndexBorder = border;
+#ifdef BLACK0_SHARE
+			black0_ok = ok && remap[16] >= 0 && !(CPCPalette[remap[16]].Red | CPCPalette[remap[16]].Green | CPCPalette[remap[16]].Blue);
+#endif
 			if (!ok) {
 				/* another host's reserved entries were in use: pens get entries again */
 				for (i = 0; i < 256; i++) if (!(CPCPalette[i].Flags & PALETTE_ENTRY_DO_NOT_REMOVE)) CPCPalette[i].Flags = 0;
@@ -2313,6 +2379,10 @@ void SS_Render(SS_IO *io)
 				for (i = 0; i < 32; i++) PaletteRemap[i] = -1;
 				for (i = 0; i < 32; i++) if (BytesPerPixel == 1) Render_Paletted_SetColour(&UnConvertedColourTable[i].RGB.SeperateElements, i);
 			}
+#ifdef BLACK0_SHARE
+			Render_Black0Used = 0;
+			for (i = 0; i < 32; i++) if (PaletteRemap[i] == 0) Render_Black0Used = 1;
+#endif
 		}
 	}
 	/* the visible part of the render buffer */

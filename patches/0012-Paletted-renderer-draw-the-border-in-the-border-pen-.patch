@@ -1,7 +1,7 @@
-From 0635b6f134b3c542bbfba0f6e34d6116dfb3d72c Mon Sep 17 00:00:00 2001
+From 929c022f2ac21e5a0380f748c4ff4d0707382360 Mon Sep 17 00:00:00 2001
 From: John Stringer <jcec_1@yahoo.co.uk>
-Date: Tue, 3 Nov 2026 09:58:19 +0000
-Subject: [PATCH 12/42] Paletted renderer: draw the border in the border pen's
+Date: Thu, 5 Nov 2026 08:34:44 +0000
+Subject: [PATCH 12/43] Paletted renderer: draw the border in the border pen's
  colour
 
 Render_Paletted_PutBorder (and its inlined copies) took the border colour from

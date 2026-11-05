@@ -31,6 +31,14 @@ static struct MsgPort *audport;
 static struct IOAudio *audio;
 static int aud_open, aud_n;
 static UBYTE *aud_buf[2][ABUFS];      /* [channel][slot] in chip RAM */
+/* sonic16 (3 Nov 2026): with the RTG frames timed to the HDMI refresh (Sys_PaceLock, RTGLOCK=2 with
+ * Paula) the CPC makes 444 samples every 20000 us, 0.14% more than Paula's 444 x 160 colour clocks
+ * play. While a block waits (2 waiting is "full": one dropped), the next loses its last 2 samples
+ * (one sample in ~450, on a third of the blocks), so the queue holds instead of a whole block
+ * being dropped every ~14 s.
+ * aud_len: each slot's length in words, latched with its pointer. */
+static UWORD aud_len[ABUFS];
+static unsigned long aud_trims;
 static UBYTE aud_map[] = { 3 };       /* channels 0 and 1 */
 static volatile int aud_rd, aud_wr, aud_run;
 static volatile unsigned long aud_irqs;
@@ -51,6 +59,81 @@ static struct Interrupt aud_int, *aud_oldint;
  * the sound to AHI, mode 001f0012 = emu68hdmi.audio 16 bit low latency. SetEnv ArnoldAHI
  * <mode id in hex> tries another mode, on any screen. No AHI or no driver: Paula. */
 int Sys_AudioAhi;
+
+/* Sound tone (hdmifilt, 4 Nov 2026): a low-pass on the sound before it goes out, the same on
+ * Paula and HDMI. 0 bright, as made; 1 soft (the default), a 6 dB/oct low-pass at 4.5 kHz
+ * (about the A500's fixed filter); 2 warm, a 12 dB/oct Butterworth at 3275 Hz (the A1200's
+ * power-LED filter). Bilinear transform at 22168 Hz, coefficients x 16384. Paula at 0 is the
+ * 8-bit conversion as before (Audio_SplitTo8, the same as the headless build's). So that the
+ * setting sounds the same on both outputs, the A1200's own LED filter is switched off while
+ * Paula plays (led_filter_off) and put back as it was when the sound stops. */
+int Sys_AudioTone = 1;
+#include <hardware/cia.h>
+extern struct CIA ciaa;
+static int led_saved = -1;            /* CIA-A PRA bit 1 (0: LED bright, filter on) as it was; -1: not switched */
+
+static void led_filter_off(void)
+{
+	Disable();
+	if (led_saved < 0) { led_saved = ciaa.ciapra & CIAF_LED; ciaa.ciapra |= CIAF_LED; }
+	Enable();
+}
+
+static void led_filter_back(void)
+{
+	Disable();
+	if (led_saved >= 0) { if (led_saved) ciaa.ciapra |= CIAF_LED; else ciaa.ciapra &= ~CIAF_LED; led_saved = -1; }
+	Enable();
+}
+
+#if !defined(NO_SNDLUT_FIX) && !defined(NO_SNDUNIPOLAR)
+#define USE_TONE
+struct Tone { long x1[2], x2[2], y1[2], y2[2]; };   /* last inputs and outputs per side */
+static struct Tone tone_hdmi, tone_paula;
+
+/* Audio_DcBlock with the sound kept in 16 bits */
+static long audio_dc16(int side, long x)
+{
+	long y, o;
+	if (!Audio_DcOn) { Audio_DcOn = 1; Audio_DcX[0] = Audio_DcX[1] = x; Audio_DcY[0] = Audio_DcY[1] = 0; }
+	y = Audio_DcY[side] + ((x - Audio_DcX[side]) << 8) - (Audio_DcY[side] >> 8);
+	Audio_DcX[side] = x; Audio_DcY[side] = y;
+	o = (y + 128) >> 8;
+	if (o > 32767) o = 32767; else if (o < -32768) o = -32768;
+	return o;
+}
+
+static long audio_tone(struct Tone *t, int k, int side, long x)
+{
+	long y;
+	switch (k) {
+	case 1: y = (6973L * (x + t->x1[side]) + 2437L * t->y1[side] + 8192) >> 14; break;
+	case 2: y = (2096L * (x + 2 * t->x1[side] + t->x2[side]) + 12538L * t->y1[side] - 4539L * t->y2[side] + 8192) >> 14; break;
+	default: y = x; break;
+	}
+	if (y > 32767) y = 32767; else if (y < -32768) y = -32768;
+	t->x2[side] = t->x1[side]; t->x1[side] = x;
+	t->y2[side] = t->y1[side]; t->y1[side] = y;
+	return y;
+}
+
+/* Paula's two 8-bit channels of a block, through the tone */
+static void paula_split(const unsigned short *s16, signed char *l, signed char *r, int samples)
+{
+	int i;
+	long a, b;
+	if (!Sys_AudioTone) { Audio_SplitTo8(s16, l, r, samples); return; }
+	for (i = 0; i < samples; i++) {
+		a = (audio_tone(&tone_paula, Sys_AudioTone, 0, audio_dc16(0, (long)s16[2 * i])) + 64) >> 7;
+		b = (audio_tone(&tone_paula, Sys_AudioTone, 1, audio_dc16(1, (long)s16[2 * i + 1])) + 64) >> 7;
+		l[i] = (signed char)(a > 127 ? 127 : a < -128 ? -128 : a);
+		r[i] = (signed char)(b > 127 ? 127 : b < -128 ? -128 : b);
+	}
+}
+#else
+#define paula_split Audio_SplitTo8
+#endif
+
 #if !defined(NO_AHI) && !defined(NO_SNDLUT_FIX) && !defined(NO_SNDUNIPOLAR)
 #define USE_AHI
 static int  Ahi_Open(int period, int samples);
@@ -66,6 +149,7 @@ static void aud_feed(void)
 		if (Sys_AudioCount > 0) {
 			custom.aud[0].ac_ptr = (UWORD *)aud_buf[0][aud_rd];
 			custom.aud[1].ac_ptr = (UWORD *)aud_buf[1][aud_rd];
+			custom.aud[0].ac_len = aud_len[aud_rd]; custom.aud[1].ac_len = aud_len[aud_rd];
 			aud_rd = (aud_rd + 1) % ABUFS;
 			Sys_AudioCount--;
 		} else if (aud_first)
@@ -133,6 +217,8 @@ int Sys_AudioOpen(int period, int samples, int audint)
 	custom.aud[0].ac_per = period; custom.aud[1].ac_per = period;
 	custom.aud[0].ac_vol = 64;     custom.aud[1].ac_vol = 64;
 	custom.aud[0].ac_len = aud_n >> 1; custom.aud[1].ac_len = aud_n >> 1;
+	for (b = 0; b < ABUFS; b++) aud_len[b] = aud_n >> 1;
+	aud_trims = 0;
 	aud_rd = aud_wr = Sys_AudioCount = 0; aud_run = 0;
 	if (aud_mode) {
 		aud_int.is_Node.ln_Type = NT_INTERRUPT;
@@ -165,7 +251,9 @@ void Sys_AudioClose(void)
 	if (ahi_on) { Ahi_Close(); return; }
 #endif
 	if (!aud_open) return;
+	if (aud_trims) Sys_Log("audio: %lu blocks played 2 samples short (frames timed to the HDMI refresh)", aud_trims);
 	aud_run = 0;
+	led_filter_back();
 	if (aud_vbint_added) { RemIntServer(INTB_VERTB, &aud_vbint); aud_vbint_added = 0; }
 	custom.dmacon = DMAF_AUD0 | DMAF_AUD1;   /* clear */
 	if (aud_mode) {
@@ -201,10 +289,17 @@ void Sys_AudioQueue(const unsigned char *s16, int samples)
 	/* Slots in use: the block playing, the one handed over at the last VBlank
 	 * (latched when the playing one ends) and the queue; with the queue kept
 	 * below ABUFS - 2 the slot at aud_wr is none of them. */
-	Audio_SplitTo8((const unsigned short *)s16, (signed char *)aud_buf[0][slot], (signed char *)aud_buf[1][slot], samples);
+	if (Sys_PaceLock && aud_mode && Sys_AudioCount >= 1 && samples == aud_n) {   /* sonic16: see aud_len */
+		paula_split((const unsigned short *)s16, (signed char *)aud_buf[0][slot], (signed char *)aud_buf[1][slot], samples - 2);
+		aud_len[slot] = (samples - 2) >> 1;
+		aud_trims++;
+	} else {
+	aud_len[slot] = aud_n >> 1;
+	paula_split((const unsigned short *)s16, (signed char *)aud_buf[0][slot], (signed char *)aud_buf[1][slot], samples);
 	if (samples < aud_n) {                    /* short block: hold the last level */
 		memset(aud_buf[0][slot] + samples, samples ? aud_buf[0][slot][samples - 1] : 0, aud_n - samples);
 		memset(aud_buf[1][slot] + samples, samples ? aud_buf[1][slot][samples - 1] : 0, aud_n - samples);
+	}
 	}
 #ifdef SOUNDQ_DUMP
 	/* soundq verification builds only: every block as Paula gets it (left then
@@ -223,12 +318,14 @@ void Sys_AudioQueue(const unsigned char *s16, int samples)
 		/* start: this block plays at once, the server feeds the rest */
 		custom.aud[0].ac_ptr = (UWORD *)aud_buf[0][slot];
 		custom.aud[1].ac_ptr = (UWORD *)aud_buf[1][slot];
+		custom.aud[0].ac_len = aud_len[slot]; custom.aud[1].ac_len = aud_len[slot];
 		aud_rd = aud_wr; Sys_AudioCount = 0;
 		aud_first = 1;
 		if (aud_mode) custom.intreq = INTF_AUD0;
 		custom.dmacon = DMAF_SETCLR | DMAF_MASTER | DMAF_AUD0 | DMAF_AUD1;
 		if (aud_mode) custom.intena = INTF_SETCLR | INTF_AUD0;   /* off while paused, see Sys_AudioPause */
 		aud_run = 1;
+		led_filter_off();
 	}
 	Enable();
 	Sys_Perf.aud_underruns = Sys_AudioUnderruns;
@@ -255,6 +352,7 @@ void Sys_AudioPause(void)
 	custom.dmacon = DMAF_AUD0 | DMAF_AUD1;
 	if (aud_mode) custom.intreq = INTF_AUD0;
 	Enable();
+	led_filter_back();
 }
 
 /* Save states (1.4, 28 Oct 2026; host_amiga.c): the DC filter of the sound
@@ -301,7 +399,7 @@ static WORD *ahi_buf;
 static int ahi_n, ahi_dev;
 static volatile int ahi_rd, ahi_wr, ahi_run;
 static ULONG ahi_rate;
-
+static volatile ULONG ahi_base;       /* sonic16: the rate for frames timed to the HDMI refresh (0: ahi_rate) */
 static ULONG ahi_sound(register struct Hook *h __asm("a0"), register struct AHIAudioCtrl *c __asm("a2"),
 	register struct AHISoundMessage *m __asm("a1"))
 {
@@ -312,8 +410,8 @@ static ULONG ahi_sound(register struct Hook *h __asm("a0"), register struct AHIA
 			Sys_AudioCount--;
 		} else
 			Sys_AudioUnderruns++;
-		AHI_SetFreq(0, Sys_AudioCount < 1 ? ahi_rate - ahi_rate / 500 :
-			Sys_AudioCount > 2 ? ahi_rate + ahi_rate / 500 : ahi_rate, c, AHISF_NONE);
+		{ ULONG r = ahi_base ? ahi_base : ahi_rate;
+		AHI_SetFreq(0, Sys_AudioCount < 1 ? r - r / 500 : Sys_AudioCount > 2 ? r + r / 500 : r, c, AHISF_NONE); }
 	}
 	return 0;
 }
@@ -331,7 +429,7 @@ static int Ahi_Open(int period, int samples)
 		return 0;
 	if (samples & 1) samples--;
 	ahi_n = samples;
-	ahi_rate = Sys_ChipClock() / period;
+	ahi_rate = Sys_ChipClock() / period; ahi_base = 0;
 	ahi_buf = AllocMem(AHI_SLOTS * ahi_n * 4, MEMF_PUBLIC | MEMF_CLEAR);
 	ahi_port = CreateMsgPort();
 	if (ahi_port) ahi_io = (struct AHIRequest *)CreateIORequest(ahi_port, sizeof(struct AHIRequest));
@@ -353,6 +451,7 @@ static int Ahi_Open(int period, int samples)
 	AHI_SetVol(0, 0x10000, 0x8000, ahi_ctrl, AHISF_IMM);
 	AHI_SetFreq(0, ahi_rate, ahi_ctrl, AHISF_IMM);
 	ahi_rd = ahi_wr = Sys_AudioCount = 0; ahi_run = 0;
+	memset(&tone_hdmi, 0, sizeof tone_hdmi);
 	ahi_on = 1; aud_open = 1;
 	Sys_Log("audio: AHI mode %08lx, %lu Hz, %d samples a block, max play %lu", mode, ahi_rate, ahi_n, maxplay);
 	return 1;
@@ -377,18 +476,6 @@ static void Ahi_Close(void)
 	ahi_on = 0; aud_open = 0;
 }
 
-/* Audio_DcBlock with the sound kept in 16 bits */
-static WORD ahi_dc(int side, long x)
-{
-	long y, o;
-	if (!Audio_DcOn) { Audio_DcOn = 1; Audio_DcX[0] = Audio_DcX[1] = x; Audio_DcY[0] = Audio_DcY[1] = 0; }
-	y = Audio_DcY[side] + ((x - Audio_DcX[side]) << 8) - (Audio_DcY[side] >> 8);
-	Audio_DcX[side] = x; Audio_DcY[side] = y;
-	o = (y + 128) >> 8;
-	if (o > 32767) o = 32767; else if (o < -32768) o = -32768;
-	return (WORD)o;
-}
-
 static void Ahi_Queue(const unsigned short *s16, int samples)
 {
 	int slot, i, first = -1;
@@ -404,8 +491,8 @@ static void Ahi_Queue(const unsigned short *s16, int samples)
 	Enable();
 	d = ahi_buf + slot * ahi_n * 2;
 	for (i = 0; i < samples; i++) {
-		d[2 * i] = ahi_dc(0, (long)s16[2 * i]);
-		d[2 * i + 1] = ahi_dc(1, (long)s16[2 * i + 1]);
+		d[2 * i] = (WORD)audio_tone(&tone_hdmi, Sys_AudioTone, 0, audio_dc16(0, (long)s16[2 * i]));
+		d[2 * i + 1] = (WORD)audio_tone(&tone_hdmi, Sys_AudioTone, 1, audio_dc16(1, (long)s16[2 * i + 1]));
 	}
 	for (; i < ahi_n; i++) {                      /* short block: hold the last level */
 		d[2 * i] = i ? d[2 * i - 2] : 0;
@@ -435,3 +522,13 @@ static void Ahi_Pause(void)
 	Enable();
 }
 #endif
+
+/* sonic16 (3 Nov 2026): Sys_WaitFrame tells the sound how long a frame is while the frames are timed
+ * to the HDMI refresh (0: not timed). AHI then plays a block in that time, so the queue stays where
+ * it was (1-2 blocks) instead of sitting a block higher on the +0.2% step. Paula: see aud_len. */
+void Sys_AudioLock(unsigned long frame_us)
+{
+#ifdef USE_AHI
+	ahi_base = frame_us && ahi_on ? (ULONG)((unsigned long long)ahi_n * 1000000ULL / frame_us) : 0;
+#endif
+}

@@ -1,7 +1,7 @@
-From f74e9c5719e2861b704c04f88e1cf1bccd1fdc2d Mon Sep 17 00:00:00 2001
+From 17a7a3f16d8f97054c3d8c6e7734a3a98a6860ad Mon Sep 17 00:00:00 2001
 From: John Stringer <jcec_1@yahoo.co.uk>
-Date: Tue, 3 Nov 2026 09:58:26 +0000
-Subject: [PATCH 28/42] Speed-ups for the Emu68 JIT (pixel-exact); I/O lead
+Date: Thu, 5 Nov 2026 08:34:58 +0000
+Subject: [PATCH 28/43] Speed-ups for the Emu68 JIT (pixel-exact); I/O lead
  carried over
 
 Emu68 (PiStorm) guesses every branch at translation time (forward = not

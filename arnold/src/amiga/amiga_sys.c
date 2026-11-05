@@ -28,7 +28,7 @@
 #include <stdarg.h>
 
 unsigned long __stack = 256 * 1024;   /* libnix: enlarge the stack at start */
-static const char ver[] __attribute__((used)) = "$VER: Arnold 1.6 (3.11.2026) Amiga port, GPL-2.0";
+static const char ver[] __attribute__((used)) = "$VER: Arnold 1.7 (5.11.2026) Amiga port, GPL-2.0";
 
 /* ---- diagnostic log ---- */
 static FILE *logf;
@@ -103,6 +103,7 @@ static int pal_dirty, pal_dirty_all, pal_lo, pal_hi;
 /* heartbeat counters (15 Oct 2026: SKIP=0 freezes on the A1200 PiStorm) */
 static unsigned long hb_safe_waits, hb_refused, hb_reuse_waits;
 static int hb_log_waits; static void hb_log(const char *fmt, ...); static void hb_dump(void); static int line_planes4(const unsigned char *src); static void bpu_fit(int next); static void bpu_reset(void); static void bpu_audit(void);   /* agaperf (end of file): heartbeat ring; displayed planes fitted to the picture */
+static void lead_flip_wait(void); static void beam_measure(void);   /* frame lead (sonic16 AGA, by Sys_WaitFrame) */
 int Sys_PalAll;   /* PALALL argument (15 Oct 2026: GnG colour scramble test on the A1200) */
 int Sys_AllLines, Sys_SafeFlip;   /* ALLLINES / SAFEFLIP (17 Oct 2026: torn frames on the A1200) */
 int Sys_Osd, Sys_OsdSkip;         /* OSD (18 Oct 2026): which test mode a photo or video shows */
@@ -518,6 +519,7 @@ static void measure_vblank(ULONG modeid)
 			was, Sys_DisplayFrameUs);
 	}
 #endif
+	beam_measure();
 	Sys_Log("display: VBlank every %lu us (%s), mode %08lx, viewport mode %08lx, gfx DisplayFlags %04x, E-clock %lu Hz",
 		Sys_DisplayFrameUs, Sys_Display50Hz() ? "50 Hz" : "not 50 Hz", (unsigned long)modeid,
 		(unsigned long)GetVPModeID(&scr->ViewPort), (unsigned)GfxBase->DisplayFlags, (unsigned long)SysBase->ex_EClockFrequency);
@@ -1337,6 +1339,7 @@ void Sys_ShowFrame(const unsigned char *chunky, int pitch)
 		if (safe_pend[next]) { WaitPort(safeport); collect_safe(); }
 		else { WaitPort(dispport); collect_disp(); }
 	}
+	lead_flip_wait();
 	bpu_fit(next); Sys_Perf.flip_vb = GfxBase->VBCounter; Sys_Perf.flip_beam = ((custom.vposr & 1) << 8) | (custom.vhposr >> 8); if (!ChangeScreenBuffer(scr, sb[next])) hb_refused++;
 	else {
 		safe_for[next] = shown;          /* this change's SafeMessage frees the old one */
@@ -1362,6 +1365,19 @@ static int pace_timer;
 static unsigned long pace_us = 20000;
 static struct MsgPort *delayport;
 static struct timerequest *delayreq; static int pace_restart;   /* 1.5: Sys_PacingRestart (after fast-forward / fast tape) */
+/* Frames timed to the HDMI refresh (sonic16, 3 Nov 2026). On the RTG screen the frames ran at
+ * the E-clock's 49.93 Hz (a Paula block) and the RTGVBL task wrote each at the next 50 Hz HDMI
+ * blank. The two beat: about three times in 45 s the frame ends drift across the blank, and while
+ * they do, the work's spread (7-15 ms) puts two frames in one refresh now and then (one never
+ * shown, the next refresh shows the old one again): 10-18 such stumbles in Sonic GX's 45 s on
+ * Paula, 25-60 with HDMI sound. Sys_PaceLock: each frame is due SYS_LOCK_US after an HDMI blank
+ * (rtgfw's prediction), so it is always written at the next blank: no stumbles, and the frame is
+ * on the screen about 20 ms after it starts. The CPC then runs at the HDMI's 50 Hz; AHI's rate
+ * control takes up the 0.14% (Paula can't: its block is a whole number of colour clocks, so the
+ * host sets this only with HDMI sound unless RTGLOCK=2). */
+int Sys_PaceLock;
+#define SYS_LOCK_US 500
+static unsigned long lock_frames, lock_snaps;
 
 void Sys_SetPacing(int timer, unsigned long frame_us)
 {
@@ -1392,6 +1408,86 @@ static void timer_close(void)
 	if (delayport) { DeleteMsgPort(delayport); delayport = NULL; }
 }
 
+/* Frame lead (sonic16 AGA, 3 Nov 2026). In VBlank pacing each frame started at a VBlank and had
+ * until the next one to be emulated, converted and flipped: 20 ms. Sonic GX's heaviest frames (a
+ * new act drawn whole, the springs) take 20.5-23 ms on the A1200, so they missed it: the frame
+ * before was shown twice and the next one skipped. Sys_LeadUs (LEAD=us; 0 = off): each frame
+ * starts that long before the VBlank at which the frame before it goes on the screen, so it has
+ * 20 ms + the lead. It is shown at the VBlank after that one, as before, so the picture is only
+ * the lead later than it was (4 ms). Its flip waits until the frame before is on the screen (one
+ * ChangeScreenBuffer per VBlank). Times come from the beam: the VBlank the frame before goes
+ * up at (lead_tgt, a VBCounter value) is (lead_tgt - VBCounter) frames minus the beam's line
+ * away. AGA screens in VBlank pacing only (not RTG, not the E-clock timer pacing). More than
+ * 10 frames behind (a machine too slow for the game): start again from the next VBlank without
+ * waiting, as the plain VBlank pacing does. */
+int Sys_LeadUs = -1;                  /* -1: the default (SYS_LEAD_US) */
+#define SYS_LEAD_US 4000
+static int beam_lines;                /* lines a frame (beam_measure) */
+static unsigned long lead_tgt;        /* VBCounter at which the frame just made goes on the screen (0: restart) */
+static unsigned long lead_frames, lead_late, lead_flip_waits;
+/* volatile reads: struct Custom and GfxBase->VBCounter are not volatile in the NDK, so a wait loop on
+ * them was compiled to read once and spin for ever (the A1200 hung in beam_now, 3 Nov 2026) */
+static int beam_y(void) { return ((*(volatile UWORD *)&custom.vposr & 1) << 8) | (*(volatile UWORD *)&custom.vhposr >> 8); }
+static unsigned long vb_count(void) { return *(volatile ULONG *)&GfxBase->VBCounter; }
+static void beam_measure(void)
+{
+	unsigned long t0;
+	int m = 0, l;
+	WaitTOF();
+	t0 = Sys_Micros();
+	while (Sys_Micros() - t0 < Sys_DisplayFrameUs + 2000) { l = beam_y(); if (l > m) m = l; }
+	beam_lines = m + 1;
+	Sys_Log("display: %d lines a frame", beam_lines);
+}
+static int lead_us(void)
+{
+	int l = Sys_LeadUs >= 0 ? Sys_LeadUs : SYS_LEAD_US;
+	if (Sys_RtgActive || pace_timer || !scr || beam_lines < 200 || !Sys_Display50Hz() || l > 10000) return 0;
+	return l;
+}
+/* VBCounter and the beam's line, read together: VBCounter goes up in the VBlank interrupt, just
+ * after line 0, so the first lines are left to pass (at most half a millisecond) */
+static void beam_now(unsigned long *vb, int *y)
+{
+	for (;;) {
+		unsigned long v;
+		int l;
+		while (beam_y() < 8) ;
+		v = vb_count(); l = beam_y();
+		if (l >= 8 && vb_count() == v) { *vb = v; *y = l; return; }
+	}
+}
+/* before a flip: the frame flipped last must be on the screen (its VBlank passed) */
+static void lead_flip_wait(void)
+{
+	unsigned long vb;
+	int y;
+	if (!flipped || !lead_us()) return;
+	beam_now(&vb, &y);
+	if (vb == Sys_Perf.flip_vb) { lead_flip_waits++; WaitTOF(); }
+}
+/* Sys_WaitFrame's VBlank pacing with a lead: the behind time, as there */
+static long lead_wait(int lead)
+{
+	unsigned long vb, line_us = Sys_DisplayFrameUs / beam_lines;
+	long rem;
+	int y;
+	beam_now(&vb, &y);
+	if (lead_tgt && (long)(vb - lead_tgt) > 10) {   /* more than 10 frames behind (a slow machine): */
+		rem = (long)(vb - lead_tgt) * (long)Sys_DisplayFrameUs;   /* start again from the next VBlank, */
+		lead_tgt = vb + 2; lead_late++; Sys_Perf.late_frames++;   /* no wait, still behind for the skip */
+		return rem;
+	}
+	if (!lead_tgt || (long)(lead_tgt - vb) > 2) lead_tgt = vb + 1;   /* (re)start */
+	if (!lead_frames++) Sys_Log("pacing: frames start %d us before the VBlank the frame before goes up at (%d lines of %lu us)", lead, beam_lines, line_us);
+	/* us until the VBlank lead_tgt (negative: past it, so the frame just made missed it) */
+	rem = (long)(lead_tgt - vb) * (long)Sys_DisplayFrameUs - (long)y * (long)line_us;
+	lead_tgt++;   /* the next frame's */
+	if (rem < 0) { lead_late++; Sys_Perf.late_frames++; return -rem; }
+	if (rem - lead > 500) timer_delay((unsigned long)(rem - lead));
+	return 0;
+}
+
 long Sys_WaitFrame(void)
 {
 	/* VBlank mode: one CPC frame per VBlank. On time: WaitTOF, and the next
@@ -1411,6 +1507,19 @@ long Sys_WaitFrame(void)
 		long d;
 		if (!was_timer || due == 0 || (long)(t0 - due) > 1000000 || (long)(due - t0) > (long)(2 * pace_us)) due = t0 + pace_us;   /* (re)start */
 		was_timer = 1;
+		if (Sys_PaceLock && Sys_RtgActive) {
+			uint32_t u, per;
+			unsigned long t1 = Sys_Micros();
+			int ok = rtg_x_vbl_next(&u, &per) == RTG_OK && per > 19000 && per < 21000;
+			Sys_AudioLock(ok ? per : 0);
+			if (ok) {
+				long x = (long)(due - (t1 + u + SYS_LOCK_US)) % (long)per;   /* due against blank + SYS_LOCK_US */
+				if (x > (long)per / 2) x -= per; else if (x <= -(long)per / 2) x += per;
+				if (x > 1000 || x < -1000) lock_snaps++;
+				due -= x;
+				if (!lock_frames++) Sys_Log("pacing: frames timed to the HDMI refresh (%lu us a frame), each due %d us after a blank", (unsigned long)per, SYS_LOCK_US);
+			}
+		}
 		d = (long)(due - t0);
 		if (d > 500) {
 			timer_delay((unsigned long)d);
@@ -1421,6 +1530,10 @@ long Sys_WaitFrame(void)
 			else due += pace_us;
 			if (behind > 0) Sys_Perf.late_frames++;
 		}
+	} else if (lead_us()) {
+		was_timer = 0;
+		if (due == 0) { lead_tgt = 0; due = 1; }   /* (due: only "not restarted" here) */
+		behind = lead_wait(lead_us());
 	} else {
 		was_timer = 0;
 		if (due == 0 || (long)(due - t0) > 500) {
@@ -1481,6 +1594,9 @@ int Sys_GetKey(int *rawcode, int *down, int *qualifier)
 unsigned long Sys_Millis(void) { return frames * 20; }
 void Sys_TimerClose(void)
 {
+	if (lock_frames) Sys_Log("pacing: %lu frames timed to the HDMI refresh, %lu moved more than 1 ms", lock_frames, lock_snaps);
+	if (lead_frames) Sys_Log("pacing: %lu frames with a lead, %lu missed their VBlank, %lu flips waited for the one before", lead_frames, lead_late, lead_flip_waits);
+	lock_frames = lock_snaps = 0;
 	timer_close();
 	/* the E-clock request Sys_Micros opened (it was never closed) */
 	if (TimerBase) { CloseDevice((struct IORequest *)&timereq); TimerBase = NULL; }

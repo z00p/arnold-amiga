@@ -6,9 +6,10 @@
 set -e
 R=$(cd "$(dirname "$0")/../.." && pwd)
 PKG="$R/tools/package"
-WT=$R/build/upstream-wt
+WT=${SERIES_WT:-$R/build/upstream-wt}   # SERIES_WT=<a scratch worktree at e5dce08> leaves upstream-wt alone
 B13=d9af72a   # main after 1.3: the core of 1.3 (the steps below that once took HEAD take this, so 1.4 changes stay out of them)
 B14=10d2714   # main after 1.4: the core of 1.4 (the save state step takes this, so 1.5 changes stay out of it)
+B16=efd4be7   # main after 1.6: the black-pen step of 1.5 takes render5.c from here (sonic16 changes stay out of it)
 cd ${SERIES_TREE:-$R}   # HEAD of this tree is what the series is made from (a release worktree: SERIES_TREE=<its path>)
 TRAILER="Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>"
 
@@ -394,7 +395,7 @@ frames and sound as uninterrupted ones (headless tests: carts, disks, tapes,
 frame skip). NO_SAVESTATE builds the core without it."
 
 # 1.5 (29 Oct 2026): black pens off entry 0
-post HEAD arnold/src/cpc/render5.c
+post $B16 arnold/src/cpc/render5.c
 commit "Paletted renderer: black pens get an entry of their own" "Palette_MatchColour no longer matches a pen to entry 0. Entry 0 is kept
 black for blanking (Render_PaletteIndexBlack), but a host may show it as
 something else: on an Amiga colour 0 also fills the screen surround, and
@@ -404,6 +405,23 @@ border (R-Type's Easter Egg logo lost its outline and letter shadows). Black
 pens now take an entry of their own. Palette numbering changes only: RGB
 output identical (headless checksums of the test set). NO_BLACK0_FIX restores
 the old match (and, as before, drops the entry-0 reservation)."
+
+# sonic16 (3 Nov 2026): black pens back on entry 0 while the border is black
+post HEAD arnold/src/cpc/render5.c
+commit "Paletted renderer: black pens share entry 0 while the border is black" "Entry 0 is shown as the border colour on a host like the Amiga (colour 0
+fills the screen surround), so black pens were kept off it (previous patch).
+That costs an entry: a game using 32 colours needed index 32, and on an Amiga
+a sixth bitplane for many lines. While pen 16 (the border) is black, a black
+pen may match entry 0 again, and the border takes it too. When the border
+turns another colour, the pens on entry 0 move to a black entry of their own
+at once; pixels drawn earlier in that frame still hold 0, so
+Render_Black0Used (a pen was on entry 0 during the frame, kept until the frame
+is out in Render_DumpDisplay) tells the host to show entry 0 black for that
+frame. Palette numbering changes only: RGB output identical (headless
+checksums of the test set, every frame of whole runs, raster tests that change
+the border and a black pen part way down the frame), and identical with entry
+0 shown as the border colour (AMIGACOL0 in the headless host).
+NO_BLACK0_SHARE restores the previous patch."
 
 post HEAD arnold/src/cpc
 commit "Core: remaining changes" "Small changes made after the fixes above."
@@ -436,4 +454,4 @@ prints a checksum, writes a PPM; optional key script, frame-skip hook test and
 WAV output). Used for the pixel-exact checks of every change above."
 
 echo "--- remaining diff vs HEAD:arnold/src:"
-git diff --stat upstream-patches:src HEAD:arnold/src | tail -3
+git diff --stat $(git -C $WT rev-parse HEAD):src HEAD:arnold/src | tail -3   # the series' end (upstream-patches in upstream-wt)

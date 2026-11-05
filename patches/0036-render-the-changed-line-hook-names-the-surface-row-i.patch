@@ -1,7 +1,7 @@
-From ab04894170c04070a2bee374073f665c4b4f8ddd Mon Sep 17 00:00:00 2001
+From 3f486d614f95fcc88824977f8dc4e19d027aa04c Mon Sep 17 00:00:00 2001
 From: John Stringer <jcec_1@yahoo.co.uk>
-Date: Tue, 3 Nov 2026 09:58:29 +0000
-Subject: [PATCH 36/42] render: the changed-line hook names the surface row in
+Date: Thu, 5 Nov 2026 08:35:06 +0000
+Subject: [PATCH 36/43] render: the changed-line hook names the surface row in
  scanline mode
 
 With ScanLines set (RENDERING_ACCURACY_HIGH, a host's hires picture) CPC line i

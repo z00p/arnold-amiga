@@ -50,6 +50,7 @@ enum { M_NONE, M_LOADCART, M_LOADA, M_LOADB, M_EJECTALL, M_KEYS, M_SHOT, M_SAVE,
        M_SSAVE1, M_SSAVE2, M_SSAVE3, M_SSAVE4, M_SLOAD1, M_SLOAD2, M_SLOAD3, M_SLOAD4,   /* save states (1.4) */
        M_AUTOTAPE,   /* auto-start tapes (1.5) */
        M_HDMISOUND,  /* HDMI sound through AHI (RTG screen) */
+       M_TONE0, M_TONE1, M_TONE2,   /* Sound tone, Paula and HDMI (hdmifilt) */
        M_PRESET0 };   /* M_PRESET0 last: the presets follow it */
 #define MAXPRESETS 12   /* menu entries for KeyMap_Presets (keymaplogic.c) */
 #define MENU_REOPEN (-2)   /* menu_pick: the video mode changed, open the screen again */
@@ -131,6 +132,10 @@ static struct NewMenu nm[] = {
 	{ NM_ITEM, NM_BARLABEL, NULL, 0, 0, NULL },
 	{ NM_ITEM, (STRPTR)"Sound", NULL, CHECKIT | MENUTOGGLE, 0, (APTR)M_SOUND },
 	{ NM_ITEM, (STRPTR)"HDMI sound (RTG screen)", NULL, CHECKIT | MENUTOGGLE, 0, (APTR)M_HDMISOUND },
+	{ NM_ITEM, (STRPTR)"Sound tone", NULL, 0, 0, NULL },
+	{ NM_SUB, (STRPTR)"Bright (unfiltered)", NULL, CHECKIT, X(0), (APTR)M_TONE0 },
+	{ NM_SUB, (STRPTR)"Soft (4.5 kHz)", NULL, CHECKIT, X(1), (APTR)M_TONE1 },
+	{ NM_SUB, (STRPTR)"Warm (3.3 kHz, A1200 filter)", NULL, CHECKIT, X(2), (APTR)M_TONE2 },
 	{ NM_ITEM, (STRPTR)"Hires screen", NULL, CHECKIT | MENUTOGGLE, 0, (APTR)M_HIRES },
 	{ NM_ITEM, (STRPTR)"Write disks back", NULL, CHECKIT | MENUTOGGLE, 0, (APTR)M_DISKWRITE },
 	{ NM_ITEM, (STRPTR)"Fast tape loading", NULL, CHECKIT | MENUTOGGLE, 0, (APTR)M_FASTTAPE },
@@ -414,7 +419,8 @@ static void set_checks(struct SysMenu *m)
 	int on[] = { M_SKIP0 + skip_index(m->skip), M_REF1 + refresh_index(m->refresh),
 	             M_JOY0 + (m->joykeys >= 0 && m->joykeys <= 3 ? m->joykeys : 0), M_PAD0 + (m->pad ? 1 : 0),
 	             M_SPEED50 + (m->speed ? 1 : 0), M_VIDAUTO + video_of(m), M_MODEL464 + model_of(m),
-	             M_SCAN0 + (m->scan > 0 && m->scan < SYS_SCANS ? m->scan : 0) };
+	             M_SCAN0 + (m->scan > 0 && m->scan < SYS_SCANS ? m->scan : 0),
+	             M_TONE0 + (m->tone > 0 && m->tone <= 2 ? m->tone : 0) };
 	for (i = 0; nmx[i].nm_Type != NM_END; i++) {
 		int id = (int)(ULONG)nmx[i].nm_UserData, k, want = 0;
 		if (!(nmx[i].nm_Flags & CHECKIT)) continue;
@@ -548,7 +554,7 @@ static int open_menu(struct SysMenu *m)
 	if (!g) { close_menu(); return 0; }
 	if (!make_menus(m)) { close_menu(); return 0; }
 	/* version, credit and build time (date and hh:mm) in the title bar */
-	sprintf(wintitle, "Arnold v1.6 for Amiga - core: Kevin Thacker - built %.6s %.4s %.5s", __DATE__, __DATE__ + 7, __TIME__);
+	sprintf(wintitle, "Arnold v1.7 for Amiga - core: Kevin Thacker - built %.6s %.4s %.5s", __DATE__, __DATE__ + 7, __TIME__);
 	mwin = OpenWindowTags(NULL, WA_CustomScreen, (ULONG)mscr, WA_Left, wl, WA_Top, wt,
 		WA_Width, 640, WA_Height, wh,
 		WA_Title, (ULONG)wintitle,
@@ -637,6 +643,16 @@ static void scan_set(struct SysMenu *m, int k)
 	status(t);
 }
 
+/* a sound tone chosen (Options menu, hdmifilt): used from the next Continue */
+static void tone_status(int k)
+{
+	static const char *const what[3] = { "bright, the sound as made", "soft (6 dB/oct at 4.5 kHz)",
+		"warm (12 dB/oct at 3.3 kHz, as the A1200's filter)" };
+	char t[96];
+	sprintf(t, "Sound tone: %s.", what[k >= 0 && k <= 2 ? k : 0]);
+	status(t);
+}
+
 static int menu_pick(struct SysMenu *m, struct MenuItem *item)
 {
 	int id = (int)(ULONG)GTMENUITEM_USERDATA(item);
@@ -696,6 +712,9 @@ static int menu_pick(struct SysMenu *m, struct MenuItem *item)
 		break;
 	case M_HDMISOUND: m->hdmisound = checked; m->hdmifail = 0;
 		status(checked ? "HDMI sound: on the RTG screen, through AHI and emu68hdmi.audio." : "HDMI sound off: Paula.");
+		break;
+	case M_TONE0: case M_TONE1: case M_TONE2: m->tone = id - M_TONE0;
+		tone_status(m->tone);
 		break;
 	case M_AUTOTAPE: m->autotape = checked;
 		status(checked ? "Auto-start tapes: Power ON types RUN\" and presses PLAY." : "Auto-start tapes off: type RUN\" yourself.");

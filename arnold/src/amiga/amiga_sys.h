@@ -43,6 +43,8 @@ unsigned long Sys_ChipClock(void);   /* Paula clock, Hz (PAL 3546895, NTSC 35795
 void Sys_AudioClose(void);
 extern int Sys_AudioAhi;             /* before Sys_AudioOpen: HDMI sound through AHI wanted */
 int  Sys_AudioAhiOn(void);           /* 1: this open went to AHI, 0: Paula */
+extern int Sys_AudioTone;            /* hdmifilt: the sound's low-pass, Paula and HDMI: 0 bright (off), 1 soft, 2 warm (A1200 filter) */
+void Sys_AudioLock(unsigned long frame_us);   /* sonic16: frames timed to the HDMI refresh, frame_us each (0: not) */
 void Sys_AudioQueue(const unsigned char *s16stereo, int samples);
 
 void Sys_AudioPause(void);           /* DMA off; the next Sys_AudioQueue restarts it */
@@ -75,6 +77,7 @@ struct SysMenu {
 	int rtg;                 /* RTG screen (experimental, 26 Oct 2026): the emulation (and the menu) on an RTG board's 8-bit screen */
 	int hdmisound;           /* HDMI sound (Nov 2026): on the RTG screen, sound through AHI and emu68hdmi.audio; a setting of the machine, not per game */
 	int hdmifail;            /* host: HDMI sound was asked for but the driver wouldn't open, Paula plays (cleared by a sound change in the menu) */
+	int tone;                /* Sound tone (hdmifilt, 4 Nov 2026), Paula and HDMI: 0 bright (as made), 1 soft, 2 warm (Sys_AudioTone) */
 	int scan;               /* Scanlines on the RTG screen (SYS_SCAN_*, 1.2) */
 	int state_slot;          /* save states (1.4): the slot (1-4) of SYS_MENU_SAVESTATE / SYS_MENU_LOADSTATE */
 	char state_label[4][40]; /* the host's labels for the slots ("Slot 1 (empty)"), shown in the Project menu */
@@ -95,7 +98,7 @@ void Sys_ShowPicture(void *screen, const char *name);   /* amiga_iff.c: modal IF
 
 /* Workbench start (amiga_wb.c): fills st from the icon's ToolTypes and a
  * project icon; returns 1 when started from Workbench. */
-struct SysStart { char prefs[SYS_PATH], media[SYS_PATH], remap[128]; int menu, hires, tall, wide, nosound, skip, refresh, joykeys, pad, speed, video, model, diskwrite, fasttape, tapesound, rtg, scan; char tape[SYS_PATH]; int autotape, hdmisound; };   /* skip -1, refresh 0, others -1: not given */
+struct SysStart { char prefs[SYS_PATH], media[SYS_PATH], remap[128]; int menu, hires, tall, wide, nosound, skip, refresh, joykeys, pad, speed, video, model, diskwrite, fasttape, tapesound, rtg, scan; char tape[SYS_PATH]; int autotape, hdmisound, rtglock, tone; };   /* skip -1, refresh 0, others -1: not given */
 int Sys_ParseModel(const char *v);   /* "464" "664" "6128" "PLUS" "GX4000" (any case) -> SYS_MODEL_*, -1 if not one */
 int Sys_ParseVideo(const char *v);   /* "AUTO" "PAL" "NTSC" or 0-2 -> 0-2, -1 if not one */
 int Sys_ParseSpeed(const char *v);   /* "50" or 0 -> 0, "DISPLAY" or 1 -> 1, -1 if not one */
@@ -113,6 +116,7 @@ extern int Sys_RtgActive;            /* the display open now is the RTG screen *
 extern int Sys_RtgBlit;              /* RTGBLIT (diagnostic): off-screen bitmap + blit of the changed lines */
 extern int Sys_RtgBuffers;           /* RTGBUF=1|3 (diagnostic): 3 = ChangeScreenBuffer triple buffering */
 extern int Sys_RtgVblank;            /* RTGVBL (27 Oct 2026): rtgfw RTG_F_VBLANK, the frame written at the display's blank: no tearing */
+extern int Sys_PaceLock;             /* sonic16 (3 Nov 2026): RTG frames due just after an HDMI blank (host: with HDMI sound or no sound) */
 extern int Sys_RtgDead;              /* RTG failed once: AGA until the user ticks RTG screen again (no retry on every Help) */
 extern int Sys_RtgGrabOn;            /* RTGGRAB (tests): every SNAP also reads the RTG screen back (rtg-NNNNN.png) */
 extern char Sys_RtgStatus[80];       /* why RTG fell back to AGA, for the next menu's status line ("" none) */
@@ -125,7 +129,9 @@ extern int Sys_RtgScan;              /* SYS_SCAN_* for the next RTG screen (menu
 extern int Sys_RtgDepth;             /* RTGDEPTH=8|16|32 (tests): the RTG screen's depth, 0 = by the scanline setting */
 extern int Sys_RtgScanW, Sys_RtgScanH;   /* SCANMODE=<w>x<h> (tests): the scanline mode size, 0 = 960x540 */
 extern const char *Sys_ScanWords[SYS_SCANS];   /* prefs words: off 25 50 75 blendlight blend blendstrong */
+extern const char *Sys_ToneWords[3];           /* prefs words of the Sound tone (hdmifilt): bright soft warm */
 int  Sys_ParseScan(const char *v);   /* a prefs word (any case; also hard25..hard75, 0) -> SYS_SCAN_*, -1 if not one */
+int  Sys_ParseTone(const char *v);   /* hdmifilt: "BRIGHT" "SOFT" "WARM" (any case) or 0-2 -> 0-2, -1 if not one */
 
 /* Performance counters (timer.device E-clock): time in c2p (conversion plus the
  * chip RAM writes), time waiting for flips/VBlank, lines converted. */
@@ -158,6 +164,7 @@ extern int Sys_NoCD32;               /* NOCD32: port 2 as a plain 2-button joyst
 extern int Sys_PalAll;              /* PALALL: reload the whole palette every frame */
 extern int Sys_AllLines;            /* ALLLINES: convert every line every frame (no dirty-line tracking) */
 extern int Sys_SafeFlip;            /* SAFEFLIP: wait for the previous flip's messages before the next */
+extern int Sys_LeadUs;              /* LEAD=us: AGA frames start this long before the VBlank the frame before goes up at (-1: default) */
 extern int Sys_Osd, Sys_OsdSkip;     /* OSD: test-mode label in the picture's corner; skip value it shows */
 /* palette entry the host keeps for the label and messages (yellow). 127, not 255 (29 Oct 2026):
  * on an 8-bit RTG screen with scanlines, entries 128-255 are the dimmed copies of 0-127, so 255

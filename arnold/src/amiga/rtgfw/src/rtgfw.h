@@ -254,5 +254,9 @@ typedef struct RtgVblStats {
 void        rtg_x_vbl_stats(RtgVblStats *s);
 int32_t     rtg_x_vbl_sync(uint32_t timeout_us);      /* wait until the last presented frame is written (grabs) */
 void        rtg_x_set_vbl_pri(int rel);                 /* vblank task priority relative to the caller's (default +1) */
+int32_t     rtg_x_vbl_next(uint32_t *until_us, uint32_t *period_us);
+extern int  rtg_x_pan_lines;    /* RTG_F_VBLANK anchors: pan RyOffset (-1 a page; 0 one pan, same offset; tests) */
+extern int  rtg_x_pan_forbid;
+extern int  rtg_x_pan_mirror;   /* RTG_F_VBLANK anchors: page 1 gets the picture first (default 1; 0 = black page 1, tests) */   /* RTG_F_VBLANK anchors: pan pair under Forbid (default 1; 0 = as before, tests) */   /* us to the next predicted blank, the period (RTG_E_NOTOPEN: not running) */
 
 #endif
