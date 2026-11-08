@@ -1,6 +1,6 @@
-From a0b5029d677d55c206c78589d8ae456489c989f3 Mon Sep 17 00:00:00 2001
+From 42e48b6d377213b80b10d6164d1162ca70def0ab Mon Sep 17 00:00:00 2001
 From: John Stringer <jcec_1@yahoo.co.uk>
-Date: Thu, 5 Nov 2026 08:34:42 +0000
+Date: Sun, 8 Nov 2026 19:33:35 +0000
 Subject: [PATCH 10/43] Diagnostics for hardware tracing (off by default)
 
 TRACE_HW: per-line trace of CRTC, Gate Array and ASIC writes for a chosen

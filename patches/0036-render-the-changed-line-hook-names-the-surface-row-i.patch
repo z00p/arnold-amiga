@@ -1,6 +1,6 @@
-From 3f486d614f95fcc88824977f8dc4e19d027aa04c Mon Sep 17 00:00:00 2001
+From e93a24f9812c9c5ea5844551751335619be0db58 Mon Sep 17 00:00:00 2001
 From: John Stringer <jcec_1@yahoo.co.uk>
-Date: Thu, 5 Nov 2026 08:35:06 +0000
+Date: Sun, 8 Nov 2026 19:33:47 +0000
 Subject: [PATCH 36/43] render: the changed-line hook names the surface row in
  scanline mode
 

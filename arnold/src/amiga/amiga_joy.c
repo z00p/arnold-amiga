@@ -8,6 +8,11 @@
 #include "amiga_sys.h"
 
 extern struct Custom custom;
+/* The NDK's struct Custom isn't volatile: at -O2 gcc dropped the 0x6f00 POTGO
+ * write (a later 0xff00 overwrites it) and read POTINP once for all nine bits,
+ * so the pad never entered CD32 mode (found 7 Nov 2026). Every chip register
+ * goes through this. */
+#define CUSTOM ((volatile struct Custom *)&custom)
 extern struct CIA ciaa;
 
 /* Joystick: the hardware port 2 (joy1dat, CIA-A fire, POTINP fire 2) as
@@ -49,17 +54,17 @@ static unsigned read_cd32_buttons(void)
 	*pra |= 0x80;                  /* clock high first... */
 	*ddra |= 0x80;                 /* ...then port 2 fire line as an output */
 	for (d = 0; d < 4; d++) dummy = *pra;
-	custom.potgo = 0x6f00;         /* port 2: pin 5 output low (CD32 mode), pin 9 input */
+	CUSTOM->potgo = 0x6f00;        /* port 2: pin 5 output low (CD32 mode), pin 9 input */
 	for (d = 0; d < 25; d++) dummy = *pra;
 	for (i = 0; i < 9; i++) {
 		for (d = 0; d < 10; d++) dummy = *pra;
-		if (!(custom.potinp & 0x4000)) bits |= 1u << i;
+		if (!(CUSTOM->potinp & 0x4000)) bits |= 1u << i;
 		*pra &= ~0x80;             /* clock pulse: next bit */
 		for (d = 0; d < 4; d++) dummy = *pra;
 		*pra |= 0x80;
 	}
 	*ddra &= ~0x80;                /* fire line back to input */
-	custom.potgo = 0xff00;         /* pin 5 high again: 2-button mode */
+	CUSTOM->potgo = 0xff00;        /* pin 5 high again: 2-button mode */
 	Enable();
 	(void)dummy;
 	return bits;
@@ -83,7 +88,7 @@ unsigned Sys_ReadJoystick(void)
 {
 	unsigned m = 0;
 	int port;
-	UWORD j = custom.joy1dat;
+	UWORD j = CUSTOM->joy1dat;
 	if (!lowlevel_tried) {
 		lowlevel_tried = 1;
 		LowLevelBase = OpenLibrary((STRPTR)"lowlevel.library", 39);
@@ -105,9 +110,9 @@ unsigned Sys_ReadJoystick(void)
 		if (b & (0x01 | 0x04 | 0x08)) m |= SYS_JOY_FIRE2;   /* blue, yellow, green */
 	} else {
 		if (!(ciaa.ciapra & 0x80)) m |= SYS_JOY_FIRE1;
-		custom.potgo = 0xff00;
+		CUSTOM->potgo = 0xff00;
 		/* fire 2 on pin 9 (Amiga standard) or pin 5 (as AmiMSX reads it; some 2-button pads) */
-		if (!(custom.potinp & 0x4000) || !(custom.potinp & 0x1000)) m |= SYS_JOY_FIRE2;
+		if (!(CUSTOM->potinp & 0x4000) || !(CUSTOM->potinp & 0x1000)) m |= SYS_JOY_FIRE2;
 	}
 	if (LowLevelBase) {
 		for (port = 2; port < 4; port++) {

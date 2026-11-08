@@ -59,6 +59,10 @@ default): after Power ON Arnold types the load command (`RUN"` on a 464, `|TAPE`
 a 664 or 6128, f1 first on the Plus) and presses a key at "Press PLAY then any key". Saving to
 tape is not supported, and only .cdt images load (no .wav, .voc or .csw samples).
 
+CD32 pad fix (1.7.1): with Pad set to CD32, the pad's buttons are read again. Built with
+optimisation, the read lost the write that puts the pad in CD32 mode, so the buttons never came
+through. Nothing else changed from 1.7.
+
 Smoother frames and Sound tone (1.7): on the RTG screen with HDMI sound (or no sound) each frame is
 timed to the display's refresh, so none is dropped or shown twice and the delay from joystick to
 picture is steady (`RTGLOCK=0|1|2`, 1 by default; Paula can't follow the display, so with Paula the

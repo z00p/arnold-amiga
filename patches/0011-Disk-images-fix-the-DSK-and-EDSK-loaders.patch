@@ -1,6 +1,6 @@
-From de7ec815ba92b8e5c247a95af663f18ac3ad8b4b Mon Sep 17 00:00:00 2001
+From 0da24d89a6cc74a92490c8d2e01e27a8872f127f Mon Sep 17 00:00:00 2001
 From: John Stringer <jcec_1@yahoo.co.uk>
-Date: Thu, 5 Nov 2026 08:34:43 +0000
+Date: Sun, 8 Nov 2026 19:33:36 +0000
 Subject: [PATCH 11/43] Disk images: fix the DSK and EDSK loaders
 
 EDSK: the loader stepped and copied each sector by the larger of its stored

@@ -16,6 +16,11 @@
 #include <stdio.h>
 
 extern struct Custom custom;
+/* The NDK's struct Custom isn't volatile: at -O2 gcc dropped the 0x6f00 POTGO
+ * write (a later 0xff00 overwrites it) and read POTINP once for all nine bits,
+ * so the pad never entered CD32 mode (found 7 Nov 2026). Every chip register
+ * goes through this. */
+#define CUSTOM ((volatile struct Custom *)&custom)
 extern struct CIA ciaa;
 struct Library *LowLevelBase;
 
@@ -33,17 +38,17 @@ static unsigned cd32_read(int p2)
 	Disable();
 	*ddra |= clk;
 	*pra &= ~clk;
-	custom.potgo = mode;
+	CUSTOM->potgo = mode;
 	for (d = 0; d < 25; d++) dummy = *pra;
 	for (i = 0; i < 9; i++) {
 		for (d = 0; d < 10; d++) dummy = *pra;
-		if (!(custom.potinp & data)) bits |= 1u << i;
+		if (!(CUSTOM->potinp & data)) bits |= 1u << i;
 		*pra |= clk;
 		for (d = 0; d < 2; d++) dummy = *pra;
 		*pra &= ~clk;
 	}
 	*ddra &= ~clk;
-	custom.potgo = 0xff00;
+	CUSTOM->potgo = 0xff00;
 	Enable();
 	(void)dummy;
 	return bits;
@@ -68,15 +73,15 @@ int main(int argc, char **argv)
 	printf("lowlevel.library: %s\n\n", LowLevelBase ? "open" : "not found (ll column off)");
 	printf("hw: dirs F1 F2(pin9) F(pin5) | ll: type dirs buttons | cd32: B R Y G < > P id | guess\n");
 	for (n = 0; !(SetSignal(0, 0) & SIGBREAKF_CTRL_C); n++) {
-		UWORD j = port2 ? custom.joy1dat : custom.joy0dat;
+		UWORD j = port2 ? CUSTOM->joy1dat : CUSTOM->joy0dat;
 		int f1, f2, f3;
 		unsigned long hw, ll = 0, cd;
 		char hd[5], ld[5];
 		const char *type = "-", *guess;
-		custom.potgo = 0xff00;
+		CUSTOM->potgo = 0xff00;
 		f1 = !(ciaa.ciapra & (port2 ? 0x80 : 0x40));
-		f2 = !(custom.potinp & (port2 ? 0x4000 : 0x0400));
-		f3 = !(custom.potinp & (port2 ? 0x1000 : 0x0100));   /* pin 5: AmiMSX reads fire 2 here */
+		f2 = !(CUSTOM->potinp & (port2 ? 0x4000 : 0x0400));
+		f3 = !(CUSTOM->potinp & (port2 ? 0x1000 : 0x0100));  /* pin 5: AmiMSX reads fire 2 here */
 		dirs(hd, ((j >> 9) ^ (j >> 8)) & 1, ((j >> 1) ^ j) & 1, (j >> 9) & 1, (j >> 1) & 1);
 		hw = ((unsigned long)j << 3) | (f3 << 2) | (f1 << 1) | f2;
 		if (LowLevelBase) {

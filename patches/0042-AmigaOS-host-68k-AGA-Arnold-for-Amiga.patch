@@ -1,6 +1,6 @@
-From 4d84930a0135a4337fe0753fbc4628f35600411b Mon Sep 17 00:00:00 2001
+From ef5b666e3e69b3b3756dfc502a0dc6945ec79e2c Mon Sep 17 00:00:00 2001
 From: John Stringer <jcec_1@yahoo.co.uk>
-Date: Thu, 5 Nov 2026 08:35:14 +0000
+Date: Sun, 8 Nov 2026 19:33:50 +0000
 Subject: [PATCH 42/43] AmigaOS host (68k AGA): Arnold for Amiga
 
 src/amiga: the AmigaOS 3.x host (AGA screen with chunky-to-planar and triple
@@ -16,7 +16,7 @@ Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
  src/amiga/Makefile         |   50 +
  src/amiga/amiga_audio.c    |  534 ++++++++++
  src/amiga/amiga_iff.c      |  103 ++
- src/amiga/amiga_joy.c      |  127 +++
+ src/amiga/amiga_joy.c      |  132 +++
  src/amiga/amiga_keymap.c   |  239 +++++
  src/amiga/amiga_logo.c     |  153 +++
  src/amiga/amiga_logo.h     |    6 +
@@ -35,12 +35,12 @@ Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
  src/amiga/keymaplogic.h    |   34 +
  src/amiga/keyscript.c      |  151 +++
  src/amiga/keyscript.h      |   13 +
- src/amiga/padtest.c        |  125 +++
+ src/amiga/padtest.c        |  130 +++
  src/amiga/screenshot.c     |  116 +++
  src/amiga/screenshot.h     |    7 +
  src/amiga/tapeauto.c       |   82 ++
  src/amiga/tapeauto.h       |   18 +
- 27 files changed, 6943 insertions(+)
+ 27 files changed, 6953 insertions(+)
  create mode 100644 src/amiga/Makefile
  create mode 100644 src/amiga/amiga_audio.c
  create mode 100644 src/amiga/amiga_iff.c
@@ -776,10 +776,10 @@ index 0000000..224f1af
 +}
 diff --git a/src/amiga/amiga_joy.c b/src/amiga/amiga_joy.c
 new file mode 100644
-index 0000000..b186c20
+index 0000000..bc3b9a0
 --- /dev/null
 +++ b/src/amiga/amiga_joy.c
-@@ -0,0 +1,127 @@
+@@ -0,0 +1,132 @@
 +/* Arnold on AmigaOS: the joystick port (hardware registers, a CD32 pad read by
 + * hand) and the pads lowlevel.library reports on ports 2-3. Split off amiga_sys.c
 + * (split16, 30 Oct 2026). */
@@ -790,6 +790,11 @@ index 0000000..b186c20
 +#include "amiga_sys.h"
 +
 +extern struct Custom custom;
++/* The NDK's struct Custom isn't volatile: at -O2 gcc dropped the 0x6f00 POTGO
++ * write (a later 0xff00 overwrites it) and read POTINP once for all nine bits,
++ * so the pad never entered CD32 mode (found 7 Nov 2026). Every chip register
++ * goes through this. */
++#define CUSTOM ((volatile struct Custom *)&custom)
 +extern struct CIA ciaa;
 +
 +/* Joystick: the hardware port 2 (joy1dat, CIA-A fire, POTINP fire 2) as
@@ -831,17 +836,17 @@ index 0000000..b186c20
 +	*pra |= 0x80;                  /* clock high first... */
 +	*ddra |= 0x80;                 /* ...then port 2 fire line as an output */
 +	for (d = 0; d < 4; d++) dummy = *pra;
-+	custom.potgo = 0x6f00;         /* port 2: pin 5 output low (CD32 mode), pin 9 input */
++	CUSTOM->potgo = 0x6f00;        /* port 2: pin 5 output low (CD32 mode), pin 9 input */
 +	for (d = 0; d < 25; d++) dummy = *pra;
 +	for (i = 0; i < 9; i++) {
 +		for (d = 0; d < 10; d++) dummy = *pra;
-+		if (!(custom.potinp & 0x4000)) bits |= 1u << i;
++		if (!(CUSTOM->potinp & 0x4000)) bits |= 1u << i;
 +		*pra &= ~0x80;             /* clock pulse: next bit */
 +		for (d = 0; d < 4; d++) dummy = *pra;
 +		*pra |= 0x80;
 +	}
 +	*ddra &= ~0x80;                /* fire line back to input */
-+	custom.potgo = 0xff00;         /* pin 5 high again: 2-button mode */
++	CUSTOM->potgo = 0xff00;        /* pin 5 high again: 2-button mode */
 +	Enable();
 +	(void)dummy;
 +	return bits;
@@ -865,7 +870,7 @@ index 0000000..b186c20
 +{
 +	unsigned m = 0;
 +	int port;
-+	UWORD j = custom.joy1dat;
++	UWORD j = CUSTOM->joy1dat;
 +	if (!lowlevel_tried) {
 +		lowlevel_tried = 1;
 +		LowLevelBase = OpenLibrary((STRPTR)"lowlevel.library", 39);
@@ -887,9 +892,9 @@ index 0000000..b186c20
 +		if (b & (0x01 | 0x04 | 0x08)) m |= SYS_JOY_FIRE2;   /* blue, yellow, green */
 +	} else {
 +		if (!(ciaa.ciapra & 0x80)) m |= SYS_JOY_FIRE1;
-+		custom.potgo = 0xff00;
++		CUSTOM->potgo = 0xff00;
 +		/* fire 2 on pin 9 (Amiga standard) or pin 5 (as AmiMSX reads it; some 2-button pads) */
-+		if (!(custom.potinp & 0x4000) || !(custom.potinp & 0x1000)) m |= SYS_JOY_FIRE2;
++		if (!(CUSTOM->potinp & 0x4000) || !(CUSTOM->potinp & 0x1000)) m |= SYS_JOY_FIRE2;
 +	}
 +	if (LowLevelBase) {
 +		for (port = 2; port < 4; port++) {
@@ -1325,7 +1330,7 @@ index 0000000..b22b3c7
 +#endif
 diff --git a/src/amiga/amiga_menu.c b/src/amiga/amiga_menu.c
 new file mode 100644
-index 0000000..6f29a72
+index 0000000..486f686
 --- /dev/null
 +++ b/src/amiga/amiga_menu.c
 @@ -0,0 +1,837 @@
@@ -1885,7 +1890,7 @@ index 0000000..6f29a72
 +	if (!g) { close_menu(); return 0; }
 +	if (!make_menus(m)) { close_menu(); return 0; }
 +	/* version, credit and build time (date and hh:mm) in the title bar */
-+	sprintf(wintitle, "Arnold v1.7 for Amiga - core: Kevin Thacker - built %.6s %.4s %.5s", __DATE__, __DATE__ + 7, __TIME__);
++	sprintf(wintitle, "Arnold v1.7.1 for Amiga - core: Kevin Thacker - built %.6s %.4s %.5s", __DATE__, __DATE__ + 7, __TIME__);
 +	mwin = OpenWindowTags(NULL, WA_CustomScreen, (ULONG)mscr, WA_Left, wl, WA_Top, wt,
 +		WA_Width, 640, WA_Height, wh,
 +		WA_Title, (ULONG)wintitle,
@@ -2168,7 +2173,7 @@ index 0000000..6f29a72
 +}
 diff --git a/src/amiga/amiga_sys.c b/src/amiga/amiga_sys.c
 new file mode 100644
-index 0000000..5f1cb22
+index 0000000..2ef59d7
 --- /dev/null
 +++ b/src/amiga/amiga_sys.c
 @@ -0,0 +1,1971 @@
@@ -2202,7 +2207,7 @@ index 0000000..5f1cb22
 +#include <stdarg.h>
 +
 +unsigned long __stack = 256 * 1024;   /* libnix: enlarge the stack at start */
-+static const char ver[] __attribute__((used)) = "$VER: Arnold 1.7 (5.11.2026) Amiga port, GPL-2.0";
++static const char ver[] __attribute__((used)) = "$VER: Arnold 1.7.1 (8.11.2026) Amiga port, GPL-2.0";
 +
 +/* ---- diagnostic log ---- */
 +static FILE *logf;
@@ -6798,10 +6803,10 @@ index 0000000..942cf99
 +#endif
 diff --git a/src/amiga/padtest.c b/src/amiga/padtest.c
 new file mode 100644
-index 0000000..fe7ebe0
+index 0000000..09fcfe5
 --- /dev/null
 +++ b/src/amiga/padtest.c
-@@ -0,0 +1,125 @@
+@@ -0,0 +1,130 @@
 +/* PadTest: shows what a joystick or pad in port 2 sends, three ways at once,
 + * and guesses the pad's mode. Shell tool; Ctrl-C quits.
 + *   hw   - the plain hardware read (directions, fire 1 on CIA-A, fire 2 on POTINP)
@@ -6820,6 +6825,11 @@ index 0000000..fe7ebe0
 +#include <stdio.h>
 +
 +extern struct Custom custom;
++/* The NDK's struct Custom isn't volatile: at -O2 gcc dropped the 0x6f00 POTGO
++ * write (a later 0xff00 overwrites it) and read POTINP once for all nine bits,
++ * so the pad never entered CD32 mode (found 7 Nov 2026). Every chip register
++ * goes through this. */
++#define CUSTOM ((volatile struct Custom *)&custom)
 +extern struct CIA ciaa;
 +struct Library *LowLevelBase;
 +
@@ -6837,17 +6847,17 @@ index 0000000..fe7ebe0
 +	Disable();
 +	*ddra |= clk;
 +	*pra &= ~clk;
-+	custom.potgo = mode;
++	CUSTOM->potgo = mode;
 +	for (d = 0; d < 25; d++) dummy = *pra;
 +	for (i = 0; i < 9; i++) {
 +		for (d = 0; d < 10; d++) dummy = *pra;
-+		if (!(custom.potinp & data)) bits |= 1u << i;
++		if (!(CUSTOM->potinp & data)) bits |= 1u << i;
 +		*pra |= clk;
 +		for (d = 0; d < 2; d++) dummy = *pra;
 +		*pra &= ~clk;
 +	}
 +	*ddra &= ~clk;
-+	custom.potgo = 0xff00;
++	CUSTOM->potgo = 0xff00;
 +	Enable();
 +	(void)dummy;
 +	return bits;
@@ -6872,15 +6882,15 @@ index 0000000..fe7ebe0
 +	printf("lowlevel.library: %s\n\n", LowLevelBase ? "open" : "not found (ll column off)");
 +	printf("hw: dirs F1 F2(pin9) F(pin5) | ll: type dirs buttons | cd32: B R Y G < > P id | guess\n");
 +	for (n = 0; !(SetSignal(0, 0) & SIGBREAKF_CTRL_C); n++) {
-+		UWORD j = port2 ? custom.joy1dat : custom.joy0dat;
++		UWORD j = port2 ? CUSTOM->joy1dat : CUSTOM->joy0dat;
 +		int f1, f2, f3;
 +		unsigned long hw, ll = 0, cd;
 +		char hd[5], ld[5];
 +		const char *type = "-", *guess;
-+		custom.potgo = 0xff00;
++		CUSTOM->potgo = 0xff00;
 +		f1 = !(ciaa.ciapra & (port2 ? 0x80 : 0x40));
-+		f2 = !(custom.potinp & (port2 ? 0x4000 : 0x0400));
-+		f3 = !(custom.potinp & (port2 ? 0x1000 : 0x0100));   /* pin 5: AmiMSX reads fire 2 here */
++		f2 = !(CUSTOM->potinp & (port2 ? 0x4000 : 0x0400));
++		f3 = !(CUSTOM->potinp & (port2 ? 0x1000 : 0x0100));  /* pin 5: AmiMSX reads fire 2 here */
 +		dirs(hd, ((j >> 9) ^ (j >> 8)) & 1, ((j >> 1) ^ j) & 1, (j >> 9) & 1, (j >> 1) & 1);
 +		hw = ((unsigned long)j << 3) | (f3 << 2) | (f1 << 1) | f2;
 +		if (LowLevelBase) {

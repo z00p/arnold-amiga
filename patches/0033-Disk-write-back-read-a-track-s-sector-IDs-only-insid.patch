@@ -1,6 +1,6 @@
-From 21cd94c158ffb9b581a3075deb4eae4de4aeaf60 Mon Sep 17 00:00:00 2001
+From ff43245f2a205fef99998c754627671d135764b7 Mon Sep 17 00:00:00 2001
 From: John Stringer <jcec_1@yahoo.co.uk>
-Date: Thu, 5 Nov 2026 08:35:02 +0000
+Date: Sun, 8 Nov 2026 19:33:45 +0000
 Subject: [PATCH 33/43] Disk write-back: read a track's sector IDs only inside
  its block
 

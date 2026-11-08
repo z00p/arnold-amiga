@@ -1,6 +1,6 @@
-From 4a95c7da58a57191446d09b982826d88b3f9f58e Mon Sep 17 00:00:00 2001
+From a452a4649cabf469d025fac89a567af5568910aa Mon Sep 17 00:00:00 2001
 From: John Stringer <jcec_1@yahoo.co.uk>
-Date: Thu, 5 Nov 2026 08:34:59 +0000
+Date: Sun, 8 Nov 2026 19:33:44 +0000
 Subject: [PATCH 29/43] Disk drives: an 80-track image gets an 80-track drive
 
 Drive A is a 43-track 3" drive, so the head stopped at track 42 on 80-track

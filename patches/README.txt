@@ -1,6 +1,6 @@
-Arnold for Amiga 1.7 - patch set and Amiga build
-=================================================
-5 November 2026.  Arnold (c) Kevin Thacker, GPL-2.0.  Amiga port by John Stringer.
+Arnold for Amiga 1.7.1 - patch set and Amiga build
+===================================================
+8 November 2026.  Arnold (c) Kevin Thacker, GPL-2.0.  Amiga port by John Stringer.
 
 This package holds the changes made to Arnold while porting it to 68k AmigaOS 3.x (AGA),
 as patches against the upstream source, plus a ready-to-run Amiga build.
@@ -256,7 +256,8 @@ Amiga build
 See amiga/Arnold/README.txt. In short: CPC 6128 Plus / GX4000 cartridges (.cpr), disks
 (.dsk, with the system cartridge's BASIC and AMSDOS) and snapshots (.sna). It needs an
 AGA Amiga with a 68040 or better (PiStorm/Emu68, 68060, BigMig), with sound through Paula.
-Help opens the menu. New in 1.7: on the RTG screen with HDMI sound (or no sound) each frame is
+Help opens the menu. New in 1.7.1: the CD32 pad's buttons are read again (the Amiga host
+code only; the patches are 1.7's). New in 1.7: on the RTG screen with HDMI sound (or no sound) each frame is
 timed to the display's refresh (RTGLOCK=), so none is dropped or shown twice, and an occasional
 black frame is gone; on the AGA screen heavy frames get 4 ms more time (LEAD=) and black pens
 share entry 0 again (patch 0040); Sound tone (Bright, Soft or Warm, Soft by default) for Paula
