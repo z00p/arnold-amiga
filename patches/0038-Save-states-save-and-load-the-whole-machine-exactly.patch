@@ -1,7 +1,7 @@
-From e2265d33f3e5a2d43cd115b7b4f35f22c1adb2f2 Mon Sep 17 00:00:00 2001
+From 9336952a4da7a9267dfd906bdef91d1504dd1ece Mon Sep 17 00:00:00 2001
 From: John Stringer <jcec_1@yahoo.co.uk>
-Date: Mon, 9 Nov 2026 10:17:14 +0000
-Subject: [PATCH 38/48] Save states: save and load the whole machine exactly
+Date: Mon, 9 Nov 2026 21:20:59 +0000
+Subject: [PATCH 38/51] Save states: save and load the whole machine exactly
 
 cpc/savestate.c: SaveState_Save / SaveState_Load / SaveState_Check for a host,
 between two CPCEmulation_Run calls. The file is a standard SNA v3 (upstream's

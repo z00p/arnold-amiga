@@ -1,7 +1,7 @@
-From a0cd2c2295151932ae190739c43c6340d20e1962 Mon Sep 17 00:00:00 2001
+From 6ec6ac26968e506997e5f381c64c5d8f0addc6ed Mon Sep 17 00:00:00 2001
 From: John Stringer <jcec_1@yahoo.co.uk>
-Date: Mon, 9 Nov 2026 10:17:18 +0000
-Subject: [PATCH 47/48] AmigaOS host (68k AGA): Arnold for Amiga
+Date: Mon, 9 Nov 2026 21:21:04 +0000
+Subject: [PATCH 50/51] AmigaOS host (68k AGA): Arnold for Amiga
 
 src/amiga: the AmigaOS 3.x host (AGA screen with chunky-to-planar and triple
 buffering, an optional RTG screen through rtgfw, Paula sound and AHI sound for
@@ -21,7 +21,7 @@ Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
  src/amiga/amiga_logo.c     |  153 +++
  src/amiga/amiga_logo.h     |    6 +
  src/amiga/amiga_menu.c     |  837 ++++++++++++++
- src/amiga/amiga_sys.c      | 2093 ++++++++++++++++++++++++++++++++++++
+ src/amiga/amiga_sys.c      | 2106 ++++++++++++++++++++++++++++++++++++
  src/amiga/amiga_sys.h      |  198 ++++
  src/amiga/amiga_sys_priv.h |   11 +
  src/amiga/amiga_wb.c       |  258 +++++
@@ -29,7 +29,7 @@ Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
  src/amiga/c2p_sh.h         |   48 +
  src/amiga/gamedb.c         |  157 +++
  src/amiga/gamedb.h         |   42 +
- src/amiga/host_amiga.c     | 1561 +++++++++++++++++++++++++++
+ src/amiga/host_amiga.c     | 1575 +++++++++++++++++++++++++++
  src/amiga/host_file.c      |   29 +
  src/amiga/keymaplogic.c    |  135 +++
  src/amiga/keymaplogic.h    |   34 +
@@ -40,7 +40,7 @@ Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
  src/amiga/screenshot.h     |    7 +
  src/amiga/tapeauto.c       |   82 ++
  src/amiga/tapeauto.h       |   18 +
- 27 files changed, 7203 insertions(+)
+ 27 files changed, 7230 insertions(+)
  create mode 100644 src/amiga/Makefile
  create mode 100644 src/amiga/amiga_audio.c
  create mode 100644 src/amiga/amiga_iff.c
@@ -1350,7 +1350,7 @@ index 0000000..b22b3c7
 +#endif
 diff --git a/src/amiga/amiga_menu.c b/src/amiga/amiga_menu.c
 new file mode 100644
-index 0000000..19dfdf5
+index 0000000..6eda01d
 --- /dev/null
 +++ b/src/amiga/amiga_menu.c
 @@ -0,0 +1,837 @@
@@ -1910,7 +1910,7 @@ index 0000000..19dfdf5
 +	if (!g) { close_menu(); return 0; }
 +	if (!make_menus(m)) { close_menu(); return 0; }
 +	/* version, credit and build time (date and hh:mm) in the title bar */
-+	sprintf(wintitle, "Arnold v1.8 for Amiga - core: Kevin Thacker - built %.6s %.4s %.5s", __DATE__, __DATE__ + 7, __TIME__);
++	sprintf(wintitle, "Arnold v1.9 for Amiga - core: Kevin Thacker - built %.6s %.4s %.5s", __DATE__, __DATE__ + 7, __TIME__);
 +	mwin = OpenWindowTags(NULL, WA_CustomScreen, (ULONG)mscr, WA_Left, wl, WA_Top, wt,
 +		WA_Width, 640, WA_Height, wh,
 +		WA_Title, (ULONG)wintitle,
@@ -2193,10 +2193,10 @@ index 0000000..19dfdf5
 +}
 diff --git a/src/amiga/amiga_sys.c b/src/amiga/amiga_sys.c
 new file mode 100644
-index 0000000..4a49d03
+index 0000000..4140aad
 --- /dev/null
 +++ b/src/amiga/amiga_sys.c
-@@ -0,0 +1,2093 @@
+@@ -0,0 +1,2106 @@
 +/* Arnold on AmigaOS: screen, c2p, palette and keyboard (joystick: amiga_joy.c, sound: amiga_audio.c).
 + * AmigaOS 3.x, AGA. Built with bebbo's m68k-amigaos-gcc, -noixemul. */
 +#include <exec/types.h>
@@ -2227,7 +2227,7 @@ index 0000000..4a49d03
 +#include <stdarg.h>
 +
 +unsigned long __stack = 256 * 1024;   /* libnix: enlarge the stack at start */
-+static const char ver[] __attribute__((used)) = "$VER: Arnold 1.8 (9.11.2026) Amiga port, GPL-2.0";
++static const char ver[] __attribute__((used)) = "$VER: Arnold 1.9 (9.11.2026) Amiga port, GPL-2.0";
 +
 +/* ---- diagnostic log ---- */
 +static FILE *logf;
@@ -2323,6 +2323,9 @@ index 0000000..4a49d03
 +	Text(&rp, (STRPTR)t, strlen(t));
 +}
 +static unsigned long frames;
++#ifdef LATEDIAG
++uint32_t late_log[24][9]; int late_n;   /* vsync19 */
++#endif
 +static UWORD *blankptr;
 +#define KQ 128
 +static UWORD keyq[KQ], keyqual[KQ];
@@ -3843,7 +3846,17 @@ index 0000000..4a49d03
 +			behind = (long)(t0 - due);
 +			if (behind > 200000) due = t0 + pace_us;
 +			else due += pace_us;
-+			if (behind > 0) Sys_Perf.late_frames++;
++			if (behind > 0) {
++				Sys_Perf.late_frames++;
++#ifdef LATEDIAG
++				if (Sys_RtgActive && late_n < 24) {   /* vsync19: what came before a late frame */
++					extern void rtg_x_anchor_info(uint32_t *, uint32_t *, uint32_t *, uint32_t *, uint32_t *);
++					uint32_t *L = late_log[late_n++];
++					L[0] = frames; L[1] = (uint32_t)behind; L[2] = (uint32_t)ls_off; L[3] = ls_wn ? ls_work[(ls_wn - 1) % LS_WIN] : 0;
++					rtg_x_anchor_info(&L[4], &L[5], &L[6], &L[7], &L[8]);
++				}
++#endif
++			}
 +		}
 +	} else if (lead_us()) {
 +		was_timer = 0;
@@ -5094,10 +5107,10 @@ index 0000000..eaaa6ea
 +#endif
 diff --git a/src/amiga/host_amiga.c b/src/amiga/host_amiga.c
 new file mode 100644
-index 0000000..dbf0bbc
+index 0000000..97387e7
 --- /dev/null
 +++ b/src/amiga/host_amiga.c
-@@ -0,0 +1,1561 @@
+@@ -0,0 +1,1575 @@
 +/* Arnold host for AmigaOS: implements src/cpc/host.h on top of amiga_sys.c.
 + * The core renders into an 8-bit chunky buffer (384 x 272, one byte per
 + * pixel, PaletteRemap indices); amiga_sys converts it to AGA bitplanes.
@@ -5194,7 +5207,8 @@ index 0000000..dbf0bbc
 +static long help_after;    /* test: HELPAFTER=n presses Help once after n frames (0 = off) */
 +static long help_every;    /* test: HELPEVERY=n presses Help n frames after every start or Continue (RTG pilot menu cycles) */
 +static int skip_max = 3, skip_run, refresh = 1; static int rtglock = 1;   /* sonic16: Sys_PaceLock policy (RTGLOCK=n) */
-+extern int rtg_x_pan_forbid, rtg_x_pan_lines, rtg_x_pan_mirror, rtg_x_pan_flip;   /* rtgfw.c (rtg17 tests): anchor pans under Forbid (PANFORBID=n), pan offset (PANLINES=n), page 1 mirrored (PANMIRROR=n) */
++extern int rtg_x_pan_forbid, rtg_x_pan_lines, rtg_x_pan_mirror, rtg_x_pan_flip, rtg_x_pan_lowpri, rtg_x_pan_testmiss, rtg_x_pan_backoff;   /* rtgfw.c (rtg17 tests): anchor pans under Forbid (PANFORBID=n), pan offset (PANLINES=n), page 1 mirrored (PANMIRROR=n) */
++static int pan_lowpri_arg = -1;   /* PANLOWPRI=: -1 auto (on with Sys_PaceLock) */
 +static unsigned long refresh_count;
 +static long behind_us;
 +extern int (*CPC_SkipNextFrameHook)(void);
@@ -5276,6 +5290,11 @@ index 0000000..dbf0bbc
 +	if (Sys_Perf.lag_n) fprintf(f, "perf lag_avg_us=%lu lag_min_us=%lu lag_max_us=%lu lag_frames=%lu lag_over=%lu\n", Sys_Perf.lag_sum / Sys_Perf.lag_n, Sys_Perf.lag_min, Sys_Perf.lag_max, Sys_Perf.lag_n, Sys_Perf.lag_over);
 +	if (Sys_Perf.jr_frames) fprintf(f, "perf joyreread_reads=%lu joyreread_frames=%lu joyreread_after_start_avg_us=%lu joyreread_after_start_max_us=%lu joyreread_cost_avg_us=%lu joyreread_cost_max_us=%lu lowlevel_avg_us=%lu\n", Sys_Perf.jr_reads, Sys_Perf.jr_frames, Sys_Perf.jr_gain_sum / Sys_Perf.jr_frames, Sys_Perf.jr_gain_max, Sys_Perf.jr_cost_sum / Sys_Perf.jr_reads, Sys_Perf.jr_cost_max, Sys_Perf.jr_ll_n ? Sys_Perf.jr_ll_sum / Sys_Perf.jr_ll_n : 0);
 +	if (Sys_Perf.ls_n) fprintf(f, "perf latestart_frames=%lu latestart_avg_us=%lu latestart_max_us=%lu latestart_work_max_us=%lu latestart_holds=%lu\n", Sys_Perf.ls_n, Sys_Perf.ls_off_sum / Sys_Perf.ls_n, Sys_Perf.ls_off_max, Sys_Perf.ls_work_max, Sys_Perf.ls_holds);
++#ifdef LATEDIAG
++	{ extern uint32_t late_log[24][9]; extern int late_n; int i;
++	  for (i = 0; i < late_n; i++) fprintf(f, "perf late %d: frame %lu behind %lu us, start offset %lu, last work %lu, anchors %lu, since anchor %lu us, since write %lu us, since mirror %lu us (mirror %lu us)\n", i,
++		(unsigned long)late_log[i][0], (unsigned long)late_log[i][1], (unsigned long)late_log[i][2], (unsigned long)late_log[i][3], (unsigned long)late_log[i][4], (unsigned long)late_log[i][5], (unsigned long)late_log[i][6], (unsigned long)late_log[i][7], (unsigned long)late_log[i][8]); }
++#endif
 +#ifndef NO_VSYNCCUT
 +	{ extern unsigned long CPC_VcutShifts; fprintf(f, "perf vsync_shifts=%lu\n", CPC_VcutShifts); }   /* lag18: frames that moved the phase */
 +#endif
@@ -6370,6 +6389,11 @@ index 0000000..dbf0bbc
 +	 * Paula then drops a block every ~14 s). */
 +	Sys_PaceLock = Sys_RtgActive && (rtglock == 2 || (rtglock == 1 && (!audio_open || Sys_AudioAhiOn())));
 +	if (!Sys_PaceLock) Sys_AudioLock(0);
++	/* vsync19 (John, 9 Nov 2026: the picture stopped on RTG with Paula, the music went on): the anchor pan below
++	 * the emulator only when its frames are timed to the HDMI refresh (it is then idle before each blank). Untimed,
++	 * its busy part can sit on the blank for seconds (the rates differ by ~30 us a frame) and the pan, below it,
++	 * never saw a blank: no writes until the phase drifted off. */
++	rtg_x_pan_lowpri = pan_lowpri_arg >= 0 ? pan_lowpri_arg : Sys_PaceLock;
 +	CPC_ClearKeyboard();
 +	/* and the joystick state with it: a joy key held when Help was pressed is
 +	 * released in the menu, which kept its bit in kb_joy (the real joystick's
@@ -6449,6 +6473,9 @@ index 0000000..dbf0bbc
 +			else if (!kwcmp(argv[i], "OSD")) Sys_Osd = 1;
 +			else if (!kwcmp(argv[i], "NOCD32")) Sys_NoCD32 = 1;
 +			else if (!kwncmp(argv[i], "SKIP=", 5)) skip_max = atoi(argv[i] + 5);
++			else if (!kwncmp(argv[i], "PANLOWPRI=", 10)) pan_lowpri_arg = atoi(argv[i] + 10);   /* vsync19: 0 = anchor pans at the vblank task's own priority, as 1.8; 1 = below the emulator; default: only with the HDMI lock */
++			else if (!kwncmp(argv[i], "PANBACKOFF=", 11)) rtg_x_pan_backoff = atoi(argv[i] + 11);   /* vsync19: 0 = fixed anchor intervals, as 1.8 */
++			else if (!kwncmp(argv[i], "PANMISS=", 8)) rtg_x_pan_testmiss = atoi(argv[i] + 8);   /* vsync19 test: 1 = every anchor pan misses its blank */
 +			else if (!kwncmp(argv[i], "PANFLIP=", 8)) rtg_x_pan_flip = atoi(argv[i] + 8);   /* flip18 test: 0 = anchors pan there and back, as 1.7 */
 +			else if (!kwncmp(argv[i], "PANMIRROR=", 10)) rtg_x_pan_mirror = atoi(argv[i] + 10);   /* rtg17 test: 0 = page 1 black, as 1.6 */
 +			else if (!kwncmp(argv[i], "PANLINES=", 9)) rtg_x_pan_lines = atoi(argv[i] + 9);   /* rtg17 test: -1 a page (default), 0 one pan to the same offset */

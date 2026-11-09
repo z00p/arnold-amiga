@@ -94,7 +94,8 @@ static int gx_autostart;   /* frames until the GX4000 auto-start presses f2 (0 =
 static long help_after;    /* test: HELPAFTER=n presses Help once after n frames (0 = off) */
 static long help_every;    /* test: HELPEVERY=n presses Help n frames after every start or Continue (RTG pilot menu cycles) */
 static int skip_max = 3, skip_run, refresh = 1; static int rtglock = 1;   /* sonic16: Sys_PaceLock policy (RTGLOCK=n) */
-extern int rtg_x_pan_forbid, rtg_x_pan_lines, rtg_x_pan_mirror, rtg_x_pan_flip;   /* rtgfw.c (rtg17 tests): anchor pans under Forbid (PANFORBID=n), pan offset (PANLINES=n), page 1 mirrored (PANMIRROR=n) */
+extern int rtg_x_pan_forbid, rtg_x_pan_lines, rtg_x_pan_mirror, rtg_x_pan_flip, rtg_x_pan_lowpri, rtg_x_pan_testmiss, rtg_x_pan_backoff;   /* rtgfw.c (rtg17 tests): anchor pans under Forbid (PANFORBID=n), pan offset (PANLINES=n), page 1 mirrored (PANMIRROR=n) */
+static int pan_lowpri_arg = -1;   /* PANLOWPRI=: -1 auto (on with Sys_PaceLock) */
 static unsigned long refresh_count;
 static long behind_us;
 extern int (*CPC_SkipNextFrameHook)(void);
@@ -176,6 +177,11 @@ static void perf_report(FILE *f)
 	if (Sys_Perf.lag_n) fprintf(f, "perf lag_avg_us=%lu lag_min_us=%lu lag_max_us=%lu lag_frames=%lu lag_over=%lu\n", Sys_Perf.lag_sum / Sys_Perf.lag_n, Sys_Perf.lag_min, Sys_Perf.lag_max, Sys_Perf.lag_n, Sys_Perf.lag_over);
 	if (Sys_Perf.jr_frames) fprintf(f, "perf joyreread_reads=%lu joyreread_frames=%lu joyreread_after_start_avg_us=%lu joyreread_after_start_max_us=%lu joyreread_cost_avg_us=%lu joyreread_cost_max_us=%lu lowlevel_avg_us=%lu\n", Sys_Perf.jr_reads, Sys_Perf.jr_frames, Sys_Perf.jr_gain_sum / Sys_Perf.jr_frames, Sys_Perf.jr_gain_max, Sys_Perf.jr_cost_sum / Sys_Perf.jr_reads, Sys_Perf.jr_cost_max, Sys_Perf.jr_ll_n ? Sys_Perf.jr_ll_sum / Sys_Perf.jr_ll_n : 0);
 	if (Sys_Perf.ls_n) fprintf(f, "perf latestart_frames=%lu latestart_avg_us=%lu latestart_max_us=%lu latestart_work_max_us=%lu latestart_holds=%lu\n", Sys_Perf.ls_n, Sys_Perf.ls_off_sum / Sys_Perf.ls_n, Sys_Perf.ls_off_max, Sys_Perf.ls_work_max, Sys_Perf.ls_holds);
+#ifdef LATEDIAG
+	{ extern uint32_t late_log[24][9]; extern int late_n; int i;
+	  for (i = 0; i < late_n; i++) fprintf(f, "perf late %d: frame %lu behind %lu us, start offset %lu, last work %lu, anchors %lu, since anchor %lu us, since write %lu us, since mirror %lu us (mirror %lu us)\n", i,
+		(unsigned long)late_log[i][0], (unsigned long)late_log[i][1], (unsigned long)late_log[i][2], (unsigned long)late_log[i][3], (unsigned long)late_log[i][4], (unsigned long)late_log[i][5], (unsigned long)late_log[i][6], (unsigned long)late_log[i][7], (unsigned long)late_log[i][8]); }
+#endif
 #ifndef NO_VSYNCCUT
 	{ extern unsigned long CPC_VcutShifts; fprintf(f, "perf vsync_shifts=%lu\n", CPC_VcutShifts); }   /* lag18: frames that moved the phase */
 #endif
@@ -1270,6 +1276,11 @@ static int open_emulation(void)
 	 * Paula then drops a block every ~14 s). */
 	Sys_PaceLock = Sys_RtgActive && (rtglock == 2 || (rtglock == 1 && (!audio_open || Sys_AudioAhiOn())));
 	if (!Sys_PaceLock) Sys_AudioLock(0);
+	/* vsync19 (John, 9 Nov 2026: the picture stopped on RTG with Paula, the music went on): the anchor pan below
+	 * the emulator only when its frames are timed to the HDMI refresh (it is then idle before each blank). Untimed,
+	 * its busy part can sit on the blank for seconds (the rates differ by ~30 us a frame) and the pan, below it,
+	 * never saw a blank: no writes until the phase drifted off. */
+	rtg_x_pan_lowpri = pan_lowpri_arg >= 0 ? pan_lowpri_arg : Sys_PaceLock;
 	CPC_ClearKeyboard();
 	/* and the joystick state with it: a joy key held when Help was pressed is
 	 * released in the menu, which kept its bit in kb_joy (the real joystick's
@@ -1349,6 +1360,9 @@ int main(int argc, char **argv)
 			else if (!kwcmp(argv[i], "OSD")) Sys_Osd = 1;
 			else if (!kwcmp(argv[i], "NOCD32")) Sys_NoCD32 = 1;
 			else if (!kwncmp(argv[i], "SKIP=", 5)) skip_max = atoi(argv[i] + 5);
+			else if (!kwncmp(argv[i], "PANLOWPRI=", 10)) pan_lowpri_arg = atoi(argv[i] + 10);   /* vsync19: 0 = anchor pans at the vblank task's own priority, as 1.8; 1 = below the emulator; default: only with the HDMI lock */
+			else if (!kwncmp(argv[i], "PANBACKOFF=", 11)) rtg_x_pan_backoff = atoi(argv[i] + 11);   /* vsync19: 0 = fixed anchor intervals, as 1.8 */
+			else if (!kwncmp(argv[i], "PANMISS=", 8)) rtg_x_pan_testmiss = atoi(argv[i] + 8);   /* vsync19 test: 1 = every anchor pan misses its blank */
 			else if (!kwncmp(argv[i], "PANFLIP=", 8)) rtg_x_pan_flip = atoi(argv[i] + 8);   /* flip18 test: 0 = anchors pan there and back, as 1.7 */
 			else if (!kwncmp(argv[i], "PANMIRROR=", 10)) rtg_x_pan_mirror = atoi(argv[i] + 10);   /* rtg17 test: 0 = page 1 black, as 1.6 */
 			else if (!kwncmp(argv[i], "PANLINES=", 9)) rtg_x_pan_lines = atoi(argv[i] + 9);   /* rtg17 test: -1 a page (default), 0 one pan to the same offset */

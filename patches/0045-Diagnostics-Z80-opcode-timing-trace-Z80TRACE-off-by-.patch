@@ -1,7 +1,7 @@
-From 4be6d75727b5ac56b7278e14454d4cbdf647b169 Mon Sep 17 00:00:00 2001
+From eba8d37f2cadc3d196bfc19306002479f593bdfe Mon Sep 17 00:00:00 2001
 From: John Stringer <jcec_1@yahoo.co.uk>
-Date: Mon, 9 Nov 2026 10:17:17 +0000
-Subject: [PATCH 45/48] Diagnostics: Z80 opcode-timing trace (Z80TRACE; off by
+Date: Mon, 9 Nov 2026 21:21:02 +0000
+Subject: [PATCH 45/51] Diagnostics: Z80 opcode-timing trace (Z80TRACE; off by
  default)
 
 With -DZ80TRACE (the headless host's audit build) the core calls Z80Trace

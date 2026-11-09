@@ -1,7 +1,7 @@
-From 1e38d48e5c8cddf08e75d1667322796435a8dccb Mon Sep 17 00:00:00 2001
+From 28ff21bfb55c7b7ec57ef5ab18f3d9e3ff2e6cae Mon Sep 17 00:00:00 2001
 From: John Stringer <jcec_1@yahoo.co.uk>
-Date: Mon, 9 Nov 2026 10:17:11 +0000
-Subject: [PATCH 29/48] Disk drives: an 80-track image gets an 80-track drive
+Date: Mon, 9 Nov 2026 21:20:56 +0000
+Subject: [PATCH 29/51] Disk drives: an 80-track image gets an 80-track drive
 
 Drive A is a 43-track 3" drive, so the head stopped at track 42 on 80-track
 (3.5") images: Pinball Dreams' Beat Box and Nightmare tables never loaded

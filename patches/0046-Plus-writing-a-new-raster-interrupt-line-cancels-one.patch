@@ -1,0 +1,54 @@
+From c4fb1a62078dded2ffe1617d38858abb5c42b625 Mon Sep 17 00:00:00 2001
+From: John Stringer <jcec_1@yahoo.co.uk>
+Date: Mon, 9 Nov 2026 21:21:02 +0000
+Subject: [PATCH 46/51] Plus: writing a new raster interrupt line cancels one
+ already waiting
+
+A write to the PRI register with a new non-zero line now clears a raster
+interrupt that is pending and not yet taken (the Gate Array's, which Plus mode
+marks as a raster interrupt, or an earlier PRI one), as CPCEC does: its source
+names Eerie Forest as a game that needs it. Found with an I/O test cartridge
+run in both emulators. Of 81 cartridges over 1500 frames, 9 change, all in
+their sound. NO_PRI_CLEAR keeps the interrupt pending as before.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ src/cpc/asic.c | 15 +++++++++++++++
+ 1 file changed, 15 insertions(+)
+
+diff --git a/src/cpc/asic.c b/src/cpc/asic.c
+index 5f8a77d..c540fe7 100644
+--- a/src/cpc/asic.c
++++ b/src/cpc/asic.c
+@@ -1884,6 +1884,9 @@ void    ASIC_WriteRam(int Addr,int Data)
+ 			{
+ 				case 0:
+ 				{
++#ifndef NO_PRI_CLEAR
++					unsigned char OldPRI = (unsigned char)ASIC_Data.ASIC_RasterInterruptLine;
++#endif
+ 					ASIC_Data.ASIC_RasterInterruptLine = (unsigned char)Data;
+ #ifndef NO_PRI_FIX
+ 					{
+@@ -1894,6 +1897,18 @@ void    ASIC_WriteRam(int Addr,int Data)
+ 							ASIC_SetRasterInterrupt();
+ 							ASIC_TriggerInterrupt();
+ 						}
++#ifndef NO_PRI_CLEAR
++						/* Amiga port (9 Nov 2026, the I/O test cart, tools/iotest): a new
++						 * non-zero PRI value clears a pending raster interrupt (the Gate
++						 * Array's, marked as raster in Plus mode, or a PRI one), as CPCEC
++						 * does (its source names Eerie Forest). NO_PRI_CLEAR: kept pending. */
++						else if (Data != 0 && Data != OldPRI && (ASIC_Data.InternalDCSR & 0x080))
++						{
++							ASIC_Data.InternalDCSR &= 0x07f;
++							if ((ASIC_Data.InternalDCSR & 0x0f0) == 0)
++								Z80_ClearInterruptRequest();
++						}
++#endif
+ 					}
+ #endif
+ 					return;
+-- 
+2.50.0.windows.2
+

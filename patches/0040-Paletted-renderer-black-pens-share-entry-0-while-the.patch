@@ -1,7 +1,7 @@
-From ca922125ea9c2a037ddf427f19e8e9fda3e08d53 Mon Sep 17 00:00:00 2001
+From 0f9200963e5698f27cb6f7cef18a896ffe494c28 Mon Sep 17 00:00:00 2001
 From: John Stringer <jcec_1@yahoo.co.uk>
-Date: Mon, 9 Nov 2026 10:17:15 +0000
-Subject: [PATCH 40/48] Paletted renderer: black pens share entry 0 while the
+Date: Mon, 9 Nov 2026 21:21:00 +0000
+Subject: [PATCH 40/51] Paletted renderer: black pens share entry 0 while the
  border is black
 
 Entry 0 is shown as the border colour on a host like the Amiga (colour 0

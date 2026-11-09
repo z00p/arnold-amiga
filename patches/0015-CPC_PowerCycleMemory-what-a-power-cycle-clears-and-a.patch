@@ -1,7 +1,7 @@
-From 0148abbeacb4978abdc5a6e73a1b3248e753c02f Mon Sep 17 00:00:00 2001
+From 5d5aaaec2941a2efd01a37f9a23073fa23888de1 Mon Sep 17 00:00:00 2001
 From: John Stringer <jcec_1@yahoo.co.uk>
-Date: Mon, 9 Nov 2026 10:17:07 +0000
-Subject: [PATCH 15/48] CPC_PowerCycleMemory: what a power cycle clears and a
+Date: Mon, 9 Nov 2026 21:20:51 +0000
+Subject: [PATCH 15/51] CPC_PowerCycleMemory: what a power cycle clears and a
  reset does not
 
 Clears main RAM, expansion RAM and the ASIC's RAM (to its start-up value), for

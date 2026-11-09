@@ -1,7 +1,7 @@
-From e05094cc4735be04c3134fc0c6b3b9f98673773b Mon Sep 17 00:00:00 2001
+From 65177b1129e163a13ec5dc708b8d884211320c7a Mon Sep 17 00:00:00 2001
 From: John Stringer <jcec_1@yahoo.co.uk>
-Date: Mon, 9 Nov 2026 10:17:14 +0000
-Subject: [PATCH 37/48] Speed-ups: no sprite line mask on undrawn lines; I/O
+Date: Mon, 9 Nov 2026 21:20:59 +0000
+Subject: [PATCH 37/51] Speed-ups: no sprite line mask on undrawn lines; I/O
  lead tested first
 
 Two exact speed-ups. (1) Only drawing reads the Plus sprites active on a line,

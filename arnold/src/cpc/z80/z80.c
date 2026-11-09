@@ -9835,7 +9835,19 @@ void Z80_HaltSteps(int Count)
  * was more than 8 KB away for 278 opcodes, too far for Emu68 to follow, so it
  * left the translated unit on every instruction. Same code, same order.
  * NO_Z80TAIL: break, as before. */
-#ifndef NO_Z80TAIL
+#ifdef IOT_INT_SAMPLE
+/* iotest option 2 (9 Nov 2026, impact sweep only): the interrupt check moves out of
+ * the instruction to the main loop (Z80_ExecuteStep), after the hardware has run the
+ * instruction's NOPs, so an interrupt raised during an instruction is taken at its
+ * end, not at the end of the next one. */
+#define Z80_CASE_END { return Cycles; }
+int Z80_ExecuteStep(void)
+{
+	if (ARN_UNLIKELY((R.Flags & (Z80_CHECK_INTERRUPT_FLAG | Z80_EXECUTE_INTERRUPT_HANDLER_FLAG))==(Z80_CHECK_INTERRUPT_FLAG | Z80_EXECUTE_INTERRUPT_HANDLER_FLAG)) && R.IFF1)
+		return Z80_ExecuteInterrupt();
+	return Z80_ExecuteInstruction();
+}
+#elif !defined(NO_Z80TAIL)
 #define Z80_CASE_END { if (ARN_UNLIKELY((R.Flags & (Z80_CHECK_INTERRUPT_FLAG | Z80_EXECUTE_INTERRUPT_HANDLER_FLAG))==(Z80_CHECK_INTERRUPT_FLAG | Z80_EXECUTE_INTERRUPT_HANDLER_FLAG))) Cycles+=Z80_ExecuteInterrupt(); return Cycles; }
 #else
 #define Z80_CASE_END break;
@@ -12462,10 +12474,12 @@ __assume(0);
 break;
 }
 /* check interrupts? */
+#ifndef IOT_INT_SAMPLE
 if (ARN_UNLIKELY((R.Flags & (Z80_CHECK_INTERRUPT_FLAG | Z80_EXECUTE_INTERRUPT_HANDLER_FLAG))==(Z80_CHECK_INTERRUPT_FLAG | Z80_EXECUTE_INTERRUPT_HANDLER_FLAG)))
 {
 Cycles+=Z80_ExecuteInterrupt();
 }
+#endif
 return Cycles;
 }
 /***************************************************************************/

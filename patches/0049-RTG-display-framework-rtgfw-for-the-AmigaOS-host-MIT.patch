@@ -1,7 +1,7 @@
-From b95953bf4f13cfbcd5a0ae3a6c869c6dac2959f3 Mon Sep 17 00:00:00 2001
+From 53bdd9efe13c6f0a7f934cb219192c8bffd5c162 Mon Sep 17 00:00:00 2001
 From: John Stringer <jcec_1@yahoo.co.uk>
-Date: Mon, 9 Nov 2026 10:17:17 +0000
-Subject: [PATCH 46/48] RTG display framework (rtgfw) for the AmigaOS host, MIT
+Date: Mon, 9 Nov 2026 21:21:04 +0000
+Subject: [PATCH 49/51] RTG display framework (rtgfw) for the AmigaOS host, MIT
  licence
 
 src/amiga/rtgfw: rtgfw, a small RTG (Picasso96 / CyberGraphX) display layer
@@ -15,13 +15,13 @@ the commit). Only the AmigaOS host uses it; the core does not.
 Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
 ---
  src/amiga/rtgfw/LICENSE             |   21 +
- src/amiga/rtgfw/SOURCE.txt          |    9 +
+ src/amiga/rtgfw/SOURCE.txt          |   10 +
  src/amiga/rtgfw/include/rtgfw_p96.h |  128 ++
  src/amiga/rtgfw/src/rtg_conv.c      |  418 ++++++
  src/amiga/rtgfw/src/rtg_conv.h      |   91 ++
- src/amiga/rtgfw/src/rtgfw.c         | 1982 +++++++++++++++++++++++++++
+ src/amiga/rtgfw/src/rtgfw.c         | 2016 +++++++++++++++++++++++++++
  src/amiga/rtgfw/src/rtgfw.h         |  267 ++++
- 7 files changed, 2916 insertions(+)
+ 7 files changed, 2951 insertions(+)
  create mode 100644 src/amiga/rtgfw/LICENSE
  create mode 100644 src/amiga/rtgfw/SOURCE.txt
  create mode 100644 src/amiga/rtgfw/include/rtgfw_p96.h
@@ -59,17 +59,18 @@ index 0000000..771acb8
 +SOFTWARE.
 diff --git a/src/amiga/rtgfw/SOURCE.txt b/src/amiga/rtgfw/SOURCE.txt
 new file mode 100644
-index 0000000..d1c4931
+index 0000000..0088793
 --- /dev/null
 +++ b/src/amiga/rtgfw/SOURCE.txt
-@@ -0,0 +1,9 @@
+@@ -0,0 +1,10 @@
 +rtgfw: common RTG display framework (MIT, see LICENSE; Copyright (c) 2026 Zoopster).
 +Vendored copy for Arnold for Amiga's RTG screen. Canonical source: the rtg-framework
 +repository (a separate project). Files are byte-identical copies of its src/ and include/.
 +Fix bugs there first, then copy them here again.
 +
-+Source commit: 6ed926c 2026-11-08 (master ef8b8fe) RTG_F_VBLANK anchors flip the pages (rtg_x_pan_flip)
-+(before: 6ed835f 2026-11-05 Lag tag: rtg_x_lag_tag / rtg_x_lag_last;
++Source commit: 46d0975 2026-11-09 (master 5e777df) RTG_F_VBLANK anchor pan below the caller, interval back-off
++(before: 6ed926c 2026-11-08 RTG_F_VBLANK anchors flip the pages (rtg_x_pan_flip);
++ 6ed835f 2026-11-05 Lag tag: rtg_x_lag_tag / rtg_x_lag_last;
 + 51b11dc 2026-11-04 RTG_F_VBLANK: page 1 mirrored before each anchor pan (no black frame);
 + 27f8c86 2026-11-03 RTG_F_VBLANK: robust anchors, calibration period, rtg_x_vbl_next)
 diff --git a/src/amiga/rtgfw/include/rtgfw_p96.h b/src/amiga/rtgfw/include/rtgfw_p96.h
@@ -729,10 +730,10 @@ index 0000000..67914ce
 +#endif
 diff --git a/src/amiga/rtgfw/src/rtgfw.c b/src/amiga/rtgfw/src/rtgfw.c
 new file mode 100644
-index 0000000..b84679a
+index 0000000..384753c
 --- /dev/null
 +++ b/src/amiga/rtgfw/src/rtgfw.c
-@@ -0,0 +1,1982 @@
+@@ -0,0 +1,2016 @@
 +/* rtgfw.c - common RTG display framework, v0 (see rtgfw.h and ../DESIGN.md).
 + *
 + * Written fresh for this framework (MIT, see ../LICENSE); not derived from
@@ -1460,7 +1461,9 @@ index 0000000..b84679a
 +	u64 t_run; ULONG held_at[8];   /* rtg17: the end of the calibration; when (ms after it) pans back waited (the first 8) */
 +	ULONG tag_cur, tag_pend, lag_tag, lag_seq; u64 lag_wr;   /* lag18: rtg_x_lag_tag / rtg_x_lag_last */
 +	int front;                  /* flip18: the page on show and written to (0 or 1; rtg_x_pan_flip) */
-+	ULONG flips, flip_skips;    /* flip18: anchors that flipped the pages; anchors put off (a frame waited) */
++	ULONG flips, flip_skips;
++	int anchor_iv; ULONG backoffs;   /* vsync19: seconds between anchors (1 at first, then 4; doubled after a pan that missed, up to 16) */
++	u64 t_write, t_mirror_end; ULONG mirror_us;   /* LATEDIAG (vsync19): the last write's start, the last mirror's end and length */    /* flip18: anchors that flipped the pages; anchors put off (a frame waited) */
 +} V ={ 0, 0, 0, -1, 0, 0, 0, 1 };
 +static int vt_start(void);
 +static void vt_stop(void);
@@ -1962,6 +1965,17 @@ index 0000000..b84679a
 + * one pan shows it, and that page is written to from then on (V.front). One pan, started 1.5 ms
 + * before the blank, never has to land inside it. rtg_x_pan_flip 0: the pan pair, as 1.7 (tests). */
 +int rtg_x_pan_flip = 1;
++/* vsync19 (Arnold, 9 Nov 2026): in some sessions most anchor pans miss the blank they were started
++ * for (started ~1.35 ms early, the phase right to ~20 us: the driver's blank wait misses the short
++ * 1080p50 blank, something phase-locked to it getting in the way) and wait a whole refresh (21.3 ms),
++ * at the caller's priority + 1, so the emulation lost that refresh: a late frame per miss (11-13 of
++ * 18 anchors in the bad runs). rtg_x_pan_lowpri 1: the vblank task drops below the caller for the
++ * pan, so a long wait only runs when the caller waits. rtg_x_pan_testmiss 1: every anchor pan is
++ * started just after the predicted blank, so it always waits a whole refresh (tests). */
++int rtg_x_pan_lowpri = 1;
++int rtg_x_pan_testmiss = 0;
++int rtg_x_pan_backoff = 1;   /* vsync19: 0 = anchors every 1 s, then 4 s, whatever happens (1.8) */
++ULONG rtg_x_pan_long;      /* pans over 5 ms (for the caller's log) */
 +/* the byte offset of page p in the screen bitmap */
 +static long vt_page(LONG bpr, int p) { return p ? (long)R.scr_h * bpr : 0; }
 +/* the page on show, for the screen reads (page 0 unless the vblank task has flipped) */
@@ -1998,16 +2012,23 @@ index 0000000..b84679a
 +	u64 t, t1 = eclock();
 +	ULONG d;
 +	int fb = rtg_x_pan_forbid;
++	struct Task *me = FindTask(NULL);
++	BYTE p0 = me->tc_Node.ln_Pri;
++	if (rtg_x_pan_lowpri) SetTaskPri(me, V.owner->tc_Node.ln_Pri - 1);
 +	if (fb) Forbid();
 +	vp->RasInfo->RyOffset = (WORD)(V.front ? 0 : V.pan_off);
 +	ScrollVPort(vp);
 +	t = eclock();
 +	if (fb) Permit();
++	if (rtg_x_pan_lowpri) SetTaskPri(me, p0);
 +	V.front ^= 1;
 +	V.flips++;
 +	d = ticks_us(t - t1);
 +	if (d > V.pair_max) V.pair_max = d;
-+	if (d > 5000) V.pair_long++;
++	if (d > 5000) {
++		V.pair_long++; rtg_x_pan_long++;
++		if (rtg_x_pan_backoff && V.anchor_iv < 16) { V.anchor_iv *= 2; V.backoffs++; }   /* vsync19: the phase holds; a miss costs a repeat */
++	}
 +	return t;
 +}
 +
@@ -2085,14 +2106,14 @@ index 0000000..b84679a
 +	ULONG n;
 +#ifdef RTGFW_ANCHORLOG
 +	u64 w0, w1;
-+	vt_wait_until(p - us_ticks(VT_LEAD));
++	vt_wait_until(rtg_x_pan_testmiss ? p + us_ticks(300) : p - us_ticks(VT_LEAD));
 +	w0 = eclock();
 +	r = flip ? vt_pan_flip() : vt_pan_pair();
 +	w1 = eclock();
 +	e = (int32_t)((int64_t)(r - p) * 1000000 / (int64_t)R.efreq);
 +	if (al_n < AL_N) { al[al_n].late = (long)((int64_t)(w0 - (p - us_ticks(VT_LEAD))) * 1000000 / (int64_t)R.efreq); al[al_n].pan = (long)ticks_us(w1 - w0); al[al_n].err = e; al_n++; }
 +#else
-+	vt_wait_until(p - us_ticks(VT_LEAD));
++	vt_wait_until(rtg_x_pan_testmiss ? p + us_ticks(300) : p - us_ticks(VT_LEAD));
 +	r = flip ? vt_pan_flip() : vt_pan_pair();
 +	e = (int32_t)((int64_t)(r - p) * 1000000 / (int64_t)R.efreq);
 +#endif
@@ -2118,6 +2139,7 @@ index 0000000..b84679a
 +	int lo, hi;
 +	u64 t0 = eclock();
 +	ULONG us, lw = R.conv.lines_written, bw = R.conv.bytes_written;
++	V.t_write = t0;
 +	ObtainSemaphore(&V.sem);
 +	if (V.pal_lo <= V.pal_hi) {
 +		rtgc_set_palette(&R.conv, 0, V.pal_lo, V.pal_hi - V.pal_lo + 1, &V.pal[V.pal_lo], RTG_RGB24);
@@ -2169,6 +2191,7 @@ index 0000000..b84679a
 +	LONG bpr = 0;
 +	APTR h;
 +	int lo = 1, hi = 0, done = 0;
++	{ u64 m0 = eclock();
 +	ObtainSemaphore(&V.sem);
 +	if (V.pending) { ReleaseSemaphore(&V.sem); return 0; }   /* a newer frame waits: the shown page is not what the stage holds */
 +	h = lock_bm(bm, &addr, &bpr);
@@ -2181,6 +2204,7 @@ index 0000000..b84679a
 +	}
 +	if (h) unlock_bm(bm, h);
 +	ReleaseSemaphore(&V.sem);
++	if (done) { V.t_mirror_end = eclock(); V.mirror_us = ticks_us(V.t_mirror_end - m0); } }
 +	if (R.fmt == RTG_FMT_CLUT8) load_clut(lo, hi);
 +	return done;
 +}
@@ -2200,7 +2224,7 @@ index 0000000..b84679a
 +		return;
 +	}
 +	V.go_mask = 1UL << go;
-+	V.calib_tries = 1;
++	V.calib_tries = 1; V.anchor_iv = 1; V.backoffs = 0;
 +	V.ok = vt_calibrate();
 +	if (!V.ok) { V.calib_tries++; V.ok = vt_calibrate(); }   /* one held-up reading (rtg17: 253 us seen) fails a calibration */
 +	if (!V.ok && V.pan_off == 0) {   /* no steady blank from a pan to the same place: page pans */
@@ -2227,7 +2251,8 @@ index 0000000..b84679a
 +			vt_write();
 +			/* an anchor a second for the first 10 s, then one every 4 s (3 Nov 2026): the period is
 +			 * known by then, and a pan now and then misses a blank and spins a whole refresh */
-+			if (eclock() - V.last_anchor > (u64)R.efreq * (V.nb > 500 ? 4 : 1)) {
++			if (V.nb > 500 && V.anchor_iv < 4) V.anchor_iv = 4;
++			if (eclock() - V.last_anchor > (u64)R.efreq * V.anchor_iv) {
 +				if (V.pan_off && rtg_x_pan_flip) {   /* flip18: one pan, to a page with the picture */
 +					if (vt_mirror()) vt_anchor(1);
 +					else V.flip_skips++;          /* a frame came in: after the next write */
@@ -2330,6 +2355,7 @@ index 0000000..b84679a
 +	      (unsigned long)V.st.anchors, (unsigned long)V.st.anchor_fails, (unsigned long)V.st.anchor_err_max, (unsigned long)V.st.period_us);
 +	logf_(1, "rtgfw: anchor pans: back max %lu us, %lu waited for a blank (page 1 shown), pairs max %lu us, %lu over 5 ms, Forbid %d, offset %d, %d calibs, %lu mirrored",
 +	      (unsigned long)V.pan_back_max, (unsigned long)V.pan_held, (unsigned long)V.pair_max, (unsigned long)V.pair_long, rtg_x_pan_forbid, V.pan_off, V.calib_tries, (unsigned long)V.mirrors);
++	logf_(1, "rtgfw: anchor pans below the caller's priority %d, %lu over 5 ms, %lu interval doublings (now %d s)", rtg_x_pan_lowpri, (unsigned long)V.pair_long, (unsigned long)V.backoffs, V.anchor_iv);
 +	logf_(1, "rtgfw: anchors %s: %lu flips, %lu put off a write, page %d shown at the end",
 +	      V.pan_off && rtg_x_pan_flip ? "flip the pages (one pan)" : "pan there and back", (unsigned long)V.flips, (unsigned long)V.flip_skips, V.front);
 +	logf_(1, "rtgfw: present to write avg %lu max %lu us",
@@ -2402,6 +2428,15 @@ index 0000000..b84679a
 +void rtg_x_vbl_stats(RtgVblStats *s) { if (s) { *s = V.st; if (!V.task) s->pri = 0; } }
 +/* RTG_F_VBLANK (3 Nov 2026): microseconds from now to the next predicted blank start and the
 + * refresh period, so a caller can time its frames to the display */
++/* LATEDIAG (vsync19): anchors so far, us since the last anchor's pan returned, since the last write started,
++ * since the last mirror ended, that mirror's length */
++void rtg_x_anchor_info(uint32_t *n, uint32_t *since_anchor, uint32_t *since_write, uint32_t *since_mirror, uint32_t *mirror_us)
++{
++	u64 now = eclock();
++	*n = V.st.anchors; *since_anchor = V.last_anchor ? ticks_us(now - V.last_anchor) : 0;
++	*since_write = V.t_write ? ticks_us(now - V.t_write) : 0; *since_mirror = V.t_mirror_end ? ticks_us(now - V.t_mirror_end) : 0;
++	*mirror_us = V.mirror_us;
++}
 +int32_t rtg_x_vbl_next(uint32_t *until_us, uint32_t *period_us)
 +{
 +	u64 now, b, per;

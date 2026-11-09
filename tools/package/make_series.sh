@@ -10,6 +10,7 @@ WT=${SERIES_WT:-$R/build/upstream-wt}   # SERIES_WT=<a scratch worktree at e5dce
 B13=d9af72a   # main after 1.3: the core of 1.3 (the steps below that once took HEAD take this, so 1.4 changes stay out of them)
 B14=10d2714   # main after 1.4: the core of 1.4 (the save state step takes this, so 1.5 changes stay out of it)
 B16=efd4be7   # main after 1.6: the black-pen step of 1.5 takes render5.c from here (sonic16 changes stay out of it)
+B18=0c985dc   # main after 1.8: the 1.8 steps take z80.c, arnold.c and cpc.c from here (1.9 changes stay out of them)
 cd ${SERIES_TREE:-$R}   # HEAD of this tree is what the series is made from (a release worktree: SERIES_TREE=<its path>)
 TRAILER="Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>"
 
@@ -463,7 +464,7 @@ before, and states with the values in LOOP still resume exactly. Checked both
 ways with the previous build: exact resume and round trips (32 checks)."
 
 # z80fix (8 Nov 2026): NOP counts from the opcode-timing audit
-post HEAD arnold/src/cpc/z80/z80.c
+post $B18 arnold/src/cpc/z80/z80.c
 commit "Z80: NOP counts of LD (HL),n, CPI/CPD and the repeating block instructions" "An audit ran every opcode once (conditionals both ways, block instructions
 with one repeat; 1876 tests on seven test cartridges) in Arnold and CPCEC and
 compared each instruction's NOP count and the position of each I/O access.
@@ -490,11 +491,38 @@ leaves the hook out. Also here: LAGTRACE, a test-only hook (headless builds
 with -DLAGTRACE) that logs where in the frame the game reads the row."
 
 # z80time (8 Nov 2026): the audit's trace hooks
-post HEAD arnold/src/cpc/arnold.c arnold/src/cpc/cpc.c
+post $B18 arnold/src/cpc/arnold.c arnold/src/cpc/cpc.c
 commit "Diagnostics: Z80 opcode-timing trace (Z80TRACE; off by default)" "With -DZ80TRACE (the headless host's audit build) the core calls Z80Trace
 before each instruction and Z80TraceIO at each IN and OUT, for the PC and
 NOP count traces the previous Z80 patch was checked with. Normal builds are
 unchanged."
+
+# iotest (9 Nov 2026, 1.9): the I/O test cart against CPCEC
+post HEAD arnold/src/cpc/asic.c
+commit "Plus: writing a new raster interrupt line cancels one already waiting" "A write to the PRI register with a new non-zero line now clears a raster
+interrupt that is pending and not yet taken (the Gate Array's, which Plus mode
+marks as a raster interrupt, or an earlier PRI one), as CPCEC does: its source
+names Eerie Forest as a game that needs it. Found with an I/O test cartridge
+run in both emulators. Of 81 cartridges over 1500 frames, 9 change, all in
+their sound. NO_PRI_CLEAR keeps the interrupt pending as before."
+
+post HEAD arnold/src/cpc/cpc.c
+commit "I/O timing: PPI accesses at their own I/O cycle" "Only CRTC writes were timed at the cycle of the OUT; every other port was
+handled at the start of the instruction. Reads and writes of the PPI (A11 = 0,
+&F4xx-&F7xx: the VSYNC bit, the keyboard and joystick, the tape and the sound
+chip) are now timed at their own I/O cycle as well, as on the CPC: a game
+polling the VSYNC bit saw it 4 NOPs late before. The I/O test cartridge's
+VSYNC probes now match CPCEC exactly. Game timing moves a little (62 of 81
+cartridges over 1500 frames), no speed cost measured on a PiStorm A1200.
+NO_PPI_IOTIME times only the CRTC writes, as before. IOT_PPI_IN (with
+NO_PPI_IOTIME) times only the reads, for comparison."
+
+post HEAD arnold/src/cpc/z80/z80.c arnold/src/cpc/arnold.c
+commit "Diagnostics: interrupt check before each instruction (IOT_INT_SAMPLE; off by default)" "With -DIOT_INT_SAMPLE the interrupt check moves out of the instruction to
+the main loop (Z80_ExecuteStep), after the hardware has run the instruction's
+NOPs, so an interrupt raised during an instruction is taken at its end. Kept
+as a test switch only: it moves the exit from HALT by one NOP against CPCEC.
+Normal builds are unchanged."
 
 post HEAD arnold/src/cpc
 commit "Core: remaining changes" "Small changes made after the fixes above."

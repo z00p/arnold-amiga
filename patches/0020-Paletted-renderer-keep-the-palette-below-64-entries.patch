@@ -1,7 +1,7 @@
-From 075f4f276e47c9dfbcad7e005b2999ac0ab19abc Mon Sep 17 00:00:00 2001
+From 0057be30c174b64277b048f2fd6c37dfabe5d50b Mon Sep 17 00:00:00 2001
 From: John Stringer <jcec_1@yahoo.co.uk>
-Date: Mon, 9 Nov 2026 10:17:08 +0000
-Subject: [PATCH 20/48] Paletted renderer: keep the palette below 64 entries
+Date: Mon, 9 Nov 2026 21:20:52 +0000
+Subject: [PATCH 20/51] Paletted renderer: keep the palette below 64 entries
 
 The paletted renderer freed its palette only at 224 entries, so a Plus game's
 colours spread over the whole 0-255 range and a slow host (Amiga chunky-to-

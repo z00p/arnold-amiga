@@ -1,7 +1,7 @@
-From 430b8ffc2d37c8978434a75b529de7d1b7856028 Mon Sep 17 00:00:00 2001
+From bcbbc9c0008b6f1defcb1c1125e89ff612445b02 Mon Sep 17 00:00:00 2001
 From: John Stringer <jcec_1@yahoo.co.uk>
-Date: Mon, 9 Nov 2026 10:17:16 +0000
-Subject: [PATCH 43/48] Z80: NOP counts of LD (HL),n, CPI/CPD and the repeating
+Date: Mon, 9 Nov 2026 21:21:01 +0000
+Subject: [PATCH 43/51] Z80: NOP counts of LD (HL),n, CPI/CPD and the repeating
  block instructions
 
 An audit ran every opcode once (conditionals both ways, block instructions

@@ -1,7 +1,7 @@
-From 55a4d4727b073aa0249ab56a176a13bd28df5c66 Mon Sep 17 00:00:00 2001
+From 281531377bfc023ae3d687c0eaa33c471e6a4289 Mon Sep 17 00:00:00 2001
 From: John Stringer <jcec_1@yahoo.co.uk>
-Date: Mon, 9 Nov 2026 10:17:15 +0000
-Subject: [PATCH 41/48] Frame end at the CPC's VSYNC; sound kept on the fixed
+Date: Mon, 9 Nov 2026 21:21:00 +0000
+Subject: [PATCH 41/51] Frame end at the CPC's VSYNC; sound kept on the fixed
  grid
 
 CPCEmulation_Run ended each frame a fixed 19968 cycles after the last, counted

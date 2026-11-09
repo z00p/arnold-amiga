@@ -1,7 +1,7 @@
-From 6df855c4efd41faa088653f44722de3f24d594ef Mon Sep 17 00:00:00 2001
+From aa160077a92e04c133fbdef56ecf6855a3e2e264 Mon Sep 17 00:00:00 2001
 From: John Stringer <jcec_1@yahoo.co.uk>
-Date: Mon, 9 Nov 2026 10:17:18 +0000
-Subject: [PATCH 48/48] Headless test host
+Date: Mon, 9 Nov 2026 21:21:05 +0000
+Subject: [PATCH 51/51] Headless test host
 
 src/headless: runs the core without a display (renders N frames to a buffer,
 prints a checksum, writes a PPM; optional key script, frame-skip hook test and

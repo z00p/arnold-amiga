@@ -1884,6 +1884,9 @@ void    ASIC_WriteRam(int Addr,int Data)
 			{
 				case 0:
 				{
+#ifndef NO_PRI_CLEAR
+					unsigned char OldPRI = (unsigned char)ASIC_Data.ASIC_RasterInterruptLine;
+#endif
 					ASIC_Data.ASIC_RasterInterruptLine = (unsigned char)Data;
 #ifndef NO_PRI_FIX
 					{
@@ -1894,6 +1897,18 @@ void    ASIC_WriteRam(int Addr,int Data)
 							ASIC_SetRasterInterrupt();
 							ASIC_TriggerInterrupt();
 						}
+#ifndef NO_PRI_CLEAR
+						/* Amiga port (9 Nov 2026, the I/O test cart, tools/iotest): a new
+						 * non-zero PRI value clears a pending raster interrupt (the Gate
+						 * Array's, marked as raster in Plus mode, or a PRI one), as CPCEC
+						 * does (its source names Eerie Forest). NO_PRI_CLEAR: kept pending. */
+						else if (Data != 0 && Data != OldPRI && (ASIC_Data.InternalDCSR & 0x080))
+						{
+							ASIC_Data.InternalDCSR &= 0x07f;
+							if ((ASIC_Data.InternalDCSR & 0x0f0) == 0)
+								Z80_ClearInterruptRequest();
+						}
+#endif
 					}
 #endif
 					return;

@@ -1,16 +1,16 @@
-Arnold for Amiga 1.8 - patch set and Amiga build
+Arnold for Amiga 1.9 - patch set and Amiga build
 =================================================
 9 November 2026.  Arnold (c) Kevin Thacker, GPL-2.0.  Amiga port by John Stringer.
 
 This package holds the changes made to Arnold while porting it to 68k AmigaOS 3.x (AGA),
 as patches against the upstream source, plus a ready-to-run Amiga build.
 
-  patches/   48 patches (git format-patch) against rofl0r's GitHub mirror of Arnold,
+  patches/   51 patches (git format-patch) against rofl0r's GitHub mirror of Arnold,
              https://github.com/rofl0r/arnold, master at e5dce08
              ("fix prototype of LoadFile()", 4 Sep 2026)
   amiga/     the Amiga build: drawer Arnold with the program, icons, presets, the Plus
              system cartridge and a user README
-  source/    the complete source of this build (the upstream tree with all 48 patches
+  source/    the complete source of this build (the upstream tree with all 51 patches
              applied), for the GPL
 
 
@@ -20,9 +20,9 @@ Applying the patches
   git checkout e5dce08
   git am /path/to/patches/*.patch
 
-Each patch stands on its own and builds. Patches 1-45 touch only the core (src/cpc;
-38 also adds savestate.o to src/objects.mak); 46 adds the RTG display framework
-(src/amiga/rtgfw, MIT licence), 47 adds src/amiga and 48 adds src/headless. The core changes are all marked "Amiga port"
+Each patch stands on its own and builds. Patches 1-48 touch only the core (src/cpc;
+38 also adds savestate.o to src/objects.mak); 49 adds the RTG display framework
+(src/amiga/rtgfw, MIT licence), 50 adds src/amiga and 51 adds src/headless. The core changes are all marked "Amiga port"
 in comments, and every behaviour change can be switched off with a define (below).
 
 
@@ -238,16 +238,29 @@ Monitor and tape:
        CPC_JoyReadHook (NULL by default) is called before a read of keyboard row
        9, so a host can read its stick again at the game's own read.
 
+1.9 (I/O timing):
+
+ 0046  Plus: writing a new raster interrupt line cancels one already
+       waiting                                                       NO_PRI_CLEAR
+       A PRI write with a new non-zero line clears a raster interrupt that is
+       pending and not yet taken, as CPCEC does (its source names Eerie Forest).
+ 0047  I/O timing: PPI accesses at their own I/O cycle             NO_PPI_IOTIME
+       Only CRTC writes were timed at the OUT's cycle. Reads and writes of the PPI
+       (the VSYNC bit, keyboard and joystick, tape, the sound chip) now are too: a
+       game polling the VSYNC bit saw it 4 NOPs late before.
+
 Tools:
 
  0010  Diagnostics for hardware tracing (TRACE_HW, PAL_COUNT; off by default)
  0045  Diagnostics: Z80 opcode-timing trace (Z80TRACE, off by default; with
        LAGTRACE in 0044, where the game reads the joystick row)
- 0046  RTG display framework for the AmigaOS host (src/amiga/rtgfw): rtgfw,
+ 0048  Diagnostics: interrupt check before each instruction (IOT_INT_SAMPLE, off
+       by default; a test switch, it moves the HALT exit by one NOP)
+ 0049  RTG display framework for the AmigaOS host (src/amiga/rtgfw): rtgfw,
        Copyright (c) 2026 Zoopster, under the MIT licence (its LICENSE file), not
        the GPL; a separate work vendored unchanged. Only the Amiga host uses it.
- 0047  AmigaOS host: Arnold for Amiga (src/amiga, built with bebbo's amiga-gcc)
- 0048  Headless test host (src/headless: frame checksums, PPM, key scripts, WAV,
+ 0050  AmigaOS host: Arnold for Amiga (src/amiga, built with bebbo's amiga-gcc)
+ 0051  Headless test host (src/headless: frame checksums, PPM, key scripts, WAV,
        disk insert / write-back / sector dumps)
 
 
@@ -266,6 +279,10 @@ How it was tested
 - Z80 timing (patch 43): an opcode-timing audit (seven test cartridges, 1876 tests)
   matches CPCEC on every NOP count and I/O position. A sweep of 80 cartridges over 1500
   frames showed each in a sound state.
+- I/O timing (patches 46-47): an I/O test cartridge run in Arnold and CPCEC; its
+  VSYNC probes now match exactly. Over 1500 frames, patch 46 changes 9 of 81 cartridges
+  (all in their sound) and patch 47 moves the timing of 62; both checked in play on
+  an A1200. With NO_PRI_CLEAR and NO_PPI_IOTIME the build matches 1.8 on all 81.
 - Frame end at VSYNC (patch 41): with the host hook, the same sound, registers and RAM
   at every point of the old frame grid; save states resume exactly, and states move
   between this build and 1.7 both ways (patch 42).
@@ -286,7 +303,10 @@ Amiga build
 See amiga/Arnold/README.txt. In short: CPC 6128 Plus / GX4000 cartridges (.cpr), disks
 (.dsk, with the system cartridge's BASIC and AMSDOS) and snapshots (.sna). It needs an
 AGA Amiga with a 68040 or better (PiStorm/Emu68, 68060, BigMig), with sound through Paula.
-Help opens the menu. New in 1.8: less delay from joystick to picture (on a PiStorm A1200
+Help opens the menu. New in 1.9: on the RTG screen with HDMI sound, a missed timing
+check in the frame lock no longer holds up the emulation for a whole frame (the occasional
+small hitch some sessions had every few seconds), and the I/O timing patches (0046, 0047).
+1.8 brought: less delay from joystick to picture (on a PiStorm A1200
 about 7 ms less on the RTG screen with HDMI sound, about 5 ms on AGA): the frame ends at
 the CPC's VSYNC (patch 0041), the stick is read again at the game's read (0044, JOYREREAD=)
 and on the RTG screen each frame starts as late as it safely can (LSMARGIN=); the RTG frame

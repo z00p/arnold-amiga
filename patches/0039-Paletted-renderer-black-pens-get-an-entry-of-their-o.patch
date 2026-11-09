@@ -1,7 +1,7 @@
-From 4ecaf08c512522c1f5ba8fe4e2a704c035eb41cc Mon Sep 17 00:00:00 2001
+From 8cf66375e9373adcad4b864314a3edb2eea00f75 Mon Sep 17 00:00:00 2001
 From: John Stringer <jcec_1@yahoo.co.uk>
-Date: Mon, 9 Nov 2026 10:17:15 +0000
-Subject: [PATCH 39/48] Paletted renderer: black pens get an entry of their own
+Date: Mon, 9 Nov 2026 21:20:59 +0000
+Subject: [PATCH 39/51] Paletted renderer: black pens get an entry of their own
 
 Palette_MatchColour no longer matches a pen to entry 0. Entry 0 is kept
 black for blanking (Render_PaletteIndexBlack), but a host may show it as

@@ -70,6 +70,14 @@ INIR, INDR, OTIR and OTDR now take as long as on a real CPC; an instruction-by-i
 (1876 tests) matches CPCEC on every count and I/O position. With Pad set to CD32, a plain two-button
 pad's fire 2 no longer also presses fire 1. Save states made by 1.8 load in 1.7 and 1.7.1.
 
+RTG frame lock and I/O timing (1.9): on the RTG screen with HDMI sound, some sessions had a
+small hitch every second at first and then every 4 s: a timing check of the frame lock missed the
+short gap between frames and held up the emulation for a whole frame. A missed check now waits in
+the emulation's spare time, and the checks after it are spaced further apart. Plus raster
+interrupts: writing a new interrupt line cancels one already waiting, as on a real Plus. Keyboard,
+joystick, VSYNC and sound chip accesses now happen at their exact cycle (the VSYNC bit was seen
+4 NOPs late). Save states are the same format as 1.8's.
+
 CD32 pad fix (1.7.1): with Pad set to CD32, the pad's buttons are read again. Built with
 optimisation, the read lost the write that puts the pad in CD32 mode, so the buttons never came
 through. Nothing else changed from 1.7.
@@ -158,6 +166,8 @@ upstream, one patch each, so they can be taken independently:
   track 42 (Pinball Dreams' Beat Box and Nightmare tables never loaded).
 - Z80 instruction timing: LD (HL),n, CPI/CPD and the repeating block instructions (an
   opcode-by-opcode audit against CPCEC).
+- PPI accesses (VSYNC bit, keyboard, tape, sound chip) at their I/O cycle, and a new Plus
+  raster interrupt line cancelling a pending one (an I/O test cartridge against CPCEC).
 
 Plus pixel-exact speed-ups for slow hosts (cell caching, run-based and deferred CRTC stepping,
 HALT fast-forward, a compact palette, table-driven Plus soft scroll, transparent sprite rows

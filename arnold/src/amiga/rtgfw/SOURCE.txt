@@ -3,7 +3,8 @@ Vendored copy for Arnold for Amiga's RTG screen. Canonical source: the rtg-frame
 repository (a separate project). Files are byte-identical copies of its src/ and include/.
 Fix bugs there first, then copy them here again.
 
-Source commit: 6ed926c 2026-11-08 (master ef8b8fe) RTG_F_VBLANK anchors flip the pages (rtg_x_pan_flip)
-(before: 6ed835f 2026-11-05 Lag tag: rtg_x_lag_tag / rtg_x_lag_last;
+Source commit: 46d0975 2026-11-09 (master 5e777df) RTG_F_VBLANK anchor pan below the caller, interval back-off
+(before: 6ed926c 2026-11-08 RTG_F_VBLANK anchors flip the pages (rtg_x_pan_flip);
+ 6ed835f 2026-11-05 Lag tag: rtg_x_lag_tag / rtg_x_lag_last;
  51b11dc 2026-11-04 RTG_F_VBLANK: page 1 mirrored before each anchor pan (no black frame);
  27f8c86 2026-11-03 RTG_F_VBLANK: robust anchors, calibration period, rtg_x_vbl_next)

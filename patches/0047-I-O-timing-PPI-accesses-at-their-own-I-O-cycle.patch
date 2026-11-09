@@ -1,0 +1,54 @@
+From 31cd8f61da82e7c0a0453ba36c81579aa3b7000c Mon Sep 17 00:00:00 2001
+From: John Stringer <jcec_1@yahoo.co.uk>
+Date: Mon, 9 Nov 2026 21:21:02 +0000
+Subject: [PATCH 47/51] I/O timing: PPI accesses at their own I/O cycle
+
+Only CRTC writes were timed at the cycle of the OUT; every other port was
+handled at the start of the instruction. Reads and writes of the PPI (A11 = 0,
+&F4xx-&F7xx: the VSYNC bit, the keyboard and joystick, the tape and the sound
+chip) are now timed at their own I/O cycle as well, as on the CPC: a game
+polling the VSYNC bit saw it 4 NOPs late before. The I/O test cartridge's
+VSYNC probes now match CPCEC exactly. Game timing moves a little (62 of 81
+cartridges over 1500 frames), no speed cost measured on a PiStorm A1200.
+NO_PPI_IOTIME times only the CRTC writes, as before. IOT_PPI_IN (with
+NO_PPI_IOTIME) times only the reads, for comparison.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ src/cpc/cpc.c | 16 ++++++++++++++++
+ 1 file changed, 16 insertions(+)
+
+diff --git a/src/cpc/cpc.c b/src/cpc/cpc.c
+index 02b11d2..35bf71f 100644
+--- a/src/cpc/cpc.c
++++ b/src/cpc/cpc.c
+@@ -2774,10 +2774,26 @@ void CPC_IOCatchUp(void);   /* arnold.c: run the CRTC to the I/O cycle (z80.h Z8
+ #define IOTIME_PORT_OUT(p) 1
+ #define IOTIME_PORT_IN(p) 1
+ #else
++#ifndef NO_PPI_IOTIME
++/* Amiga port (9 Nov 2026, the I/O test cart, tools/iotest): every PPI access (A11 = 0:
++ * &F4xx-&F7xx, the VSYNC bit, keyboard, tape and the PSG) timed at its own I/O cycle as
++ * well, as on the CPC (CPCEC); without it the VSYNC bit read 4 NOPs late. No speed cost
++ * measured on the A1200. NO_PPI_IOTIME: only CRTC writes timed (1.8). */
++#define IOTIME_PORT_OUT(p) ((((p) & 0x4300) == 0x0100) || (((p) & 0x0800) == 0))
++#define IOTIME_PORT_IN(p) (((p) & 0x0800) == 0)
++#else
+ #define IOTIME_PORT_OUT(p) (((p) & 0x4300) == 0x0100)
++#endif
++#if defined(IOT_PPI_IN) && defined(NO_PPI_IOTIME)
++/* iotest option 1 (9 Nov 2026, impact sweep only): reads of the PPI (A11 = 0,
++ * &F4xx-&F7xx: VSYNC bit, keyboard, tape) timed as on the CPC. The I/O test cart
++ * found them 4 NOPs late without it. */
++#define IOTIME_PORT_IN(p) (((p) & 0x0800) == 0)
++#elif defined(NO_PPI_IOTIME)
+ #define IOTIME_PORT_IN(p) 0
+ #endif
+ #endif
++#endif
+ void    Z80_DoOut(Z80_WORD Port,Z80_BYTE Data)
+ {
+ #ifdef Z80TRACE
+-- 
+2.50.0.windows.2
+

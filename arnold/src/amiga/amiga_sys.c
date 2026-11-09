@@ -28,7 +28,7 @@
 #include <stdarg.h>
 
 unsigned long __stack = 256 * 1024;   /* libnix: enlarge the stack at start */
-static const char ver[] __attribute__((used)) = "$VER: Arnold 1.8 (9.11.2026) Amiga port, GPL-2.0";
+static const char ver[] __attribute__((used)) = "$VER: Arnold 1.9 (9.11.2026) Amiga port, GPL-2.0";
 
 /* ---- diagnostic log ---- */
 static FILE *logf;
@@ -124,6 +124,9 @@ static void draw_osd(struct BitMap *bm)
 	Text(&rp, (STRPTR)t, strlen(t));
 }
 static unsigned long frames;
+#ifdef LATEDIAG
+uint32_t late_log[24][9]; int late_n;   /* vsync19 */
+#endif
 static UWORD *blankptr;
 #define KQ 128
 static UWORD keyq[KQ], keyqual[KQ];
@@ -1644,7 +1647,17 @@ long Sys_WaitFrame(void)
 			behind = (long)(t0 - due);
 			if (behind > 200000) due = t0 + pace_us;
 			else due += pace_us;
-			if (behind > 0) Sys_Perf.late_frames++;
+			if (behind > 0) {
+				Sys_Perf.late_frames++;
+#ifdef LATEDIAG
+				if (Sys_RtgActive && late_n < 24) {   /* vsync19: what came before a late frame */
+					extern void rtg_x_anchor_info(uint32_t *, uint32_t *, uint32_t *, uint32_t *, uint32_t *);
+					uint32_t *L = late_log[late_n++];
+					L[0] = frames; L[1] = (uint32_t)behind; L[2] = (uint32_t)ls_off; L[3] = ls_wn ? ls_work[(ls_wn - 1) % LS_WIN] : 0;
+					rtg_x_anchor_info(&L[4], &L[5], &L[6], &L[7], &L[8]);
+				}
+#endif
+			}
 		}
 	} else if (lead_us()) {
 		was_timer = 0;

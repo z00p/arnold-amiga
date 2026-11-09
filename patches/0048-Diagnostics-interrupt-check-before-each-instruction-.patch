@@ -1,0 +1,74 @@
+From df0016a75f4c4a0573e2f1b71bdaa32e1cada860 Mon Sep 17 00:00:00 2001
+From: John Stringer <jcec_1@yahoo.co.uk>
+Date: Mon, 9 Nov 2026 21:21:03 +0000
+Subject: [PATCH 48/51] Diagnostics: interrupt check before each instruction
+ (IOT_INT_SAMPLE; off by default)
+
+With -DIOT_INT_SAMPLE the interrupt check moves out of the instruction to
+the main loop (Z80_ExecuteStep), after the hardware has run the instruction's
+NOPs, so an interrupt raised during an instruction is taken at its end. Kept
+as a test switch only: it moves the exit from HALT by one NOP against CPCEC.
+Normal builds are unchanged.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ src/cpc/arnold.c  |  4 +++-
+ src/cpc/z80/z80.c | 16 +++++++++++++++-
+ 2 files changed, 18 insertions(+), 2 deletions(-)
+
+diff --git a/src/cpc/arnold.c b/src/cpc/arnold.c
+index 5a11a96..5c2a023 100644
+--- a/src/cpc/arnold.c
++++ b/src/cpc/arnold.c
+@@ -481,7 +481,9 @@ void	CPCEmulation_Run(void)
+ 		/* headless opcode-timing audit (tools/z80time): PC and NOP count before each instruction */
+ 		{ extern void Z80Trace(void); Z80Trace(); }
+ #endif
+-#ifdef CPC_NODEBUGGER
++#if defined(CPC_NODEBUGGER) && defined(IOT_INT_SAMPLE)
++		{ extern int Z80_ExecuteStep(void); NopCount = Z80_ExecuteStep(); }
++#elif defined(CPC_NODEBUGGER)
+ 		NopCount = Z80_ExecuteInstruction(); 
+ #else
+ 		NopCount = Debugger_Execute(); 
+diff --git a/src/cpc/z80/z80.c b/src/cpc/z80/z80.c
+index 278f69e..2438b6c 100644
+--- a/src/cpc/z80/z80.c
++++ b/src/cpc/z80/z80.c
+@@ -9835,7 +9835,19 @@ void Z80_HaltSteps(int Count)
+  * was more than 8 KB away for 278 opcodes, too far for Emu68 to follow, so it
+  * left the translated unit on every instruction. Same code, same order.
+  * NO_Z80TAIL: break, as before. */
+-#ifndef NO_Z80TAIL
++#ifdef IOT_INT_SAMPLE
++/* iotest option 2 (9 Nov 2026, impact sweep only): the interrupt check moves out of
++ * the instruction to the main loop (Z80_ExecuteStep), after the hardware has run the
++ * instruction's NOPs, so an interrupt raised during an instruction is taken at its
++ * end, not at the end of the next one. */
++#define Z80_CASE_END { return Cycles; }
++int Z80_ExecuteStep(void)
++{
++	if (ARN_UNLIKELY((R.Flags & (Z80_CHECK_INTERRUPT_FLAG | Z80_EXECUTE_INTERRUPT_HANDLER_FLAG))==(Z80_CHECK_INTERRUPT_FLAG | Z80_EXECUTE_INTERRUPT_HANDLER_FLAG)) && R.IFF1)
++		return Z80_ExecuteInterrupt();
++	return Z80_ExecuteInstruction();
++}
++#elif !defined(NO_Z80TAIL)
+ #define Z80_CASE_END { if (ARN_UNLIKELY((R.Flags & (Z80_CHECK_INTERRUPT_FLAG | Z80_EXECUTE_INTERRUPT_HANDLER_FLAG))==(Z80_CHECK_INTERRUPT_FLAG | Z80_EXECUTE_INTERRUPT_HANDLER_FLAG))) Cycles+=Z80_ExecuteInterrupt(); return Cycles; }
+ #else
+ #define Z80_CASE_END break;
+@@ -12462,10 +12474,12 @@ __assume(0);
+ break;
+ }
+ /* check interrupts? */
++#ifndef IOT_INT_SAMPLE
+ if (ARN_UNLIKELY((R.Flags & (Z80_CHECK_INTERRUPT_FLAG | Z80_EXECUTE_INTERRUPT_HANDLER_FLAG))==(Z80_CHECK_INTERRUPT_FLAG | Z80_EXECUTE_INTERRUPT_HANDLER_FLAG)))
+ {
+ Cycles+=Z80_ExecuteInterrupt();
+ }
++#endif
+ return Cycles;
+ }
+ /***************************************************************************/
+-- 
+2.50.0.windows.2
+

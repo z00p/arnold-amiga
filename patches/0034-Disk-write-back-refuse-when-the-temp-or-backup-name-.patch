@@ -1,7 +1,7 @@
-From 6a1ab12f6508f86e32ca3170b14054c7efa10778 Mon Sep 17 00:00:00 2001
+From 01b6eb2e18498459e050023f8158ea382da58180 Mon Sep 17 00:00:00 2001
 From: John Stringer <jcec_1@yahoo.co.uk>
-Date: Mon, 9 Nov 2026 10:17:13 +0000
-Subject: [PATCH 34/48] Disk write-back: refuse when the temp or backup name
+Date: Mon, 9 Nov 2026 21:20:58 +0000
+Subject: [PATCH 34/51] Disk write-back: refuse when the temp or backup name
  would clash
 
 The write-back uses <name>.tmp, <name>.bak and <name>.old. A volume that cuts

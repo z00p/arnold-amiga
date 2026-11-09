@@ -1,7 +1,7 @@
-From b090e40290ae9cd9f1228e2e76e5e2c8aaa01989 Mon Sep 17 00:00:00 2001
+From 104c382e13ec26e1ee0b7593aa75145cf25f42fb Mon Sep 17 00:00:00 2001
 From: John Stringer <jcec_1@yahoo.co.uk>
-Date: Mon, 9 Nov 2026 10:17:16 +0000
-Subject: [PATCH 42/48] Save states: the VSYNC-cut values in a chunk of their
+Date: Mon, 9 Nov 2026 21:21:01 +0000
+Subject: [PATCH 42/51] Save states: the VSYNC-cut values in a chunk of their
  own (ARNX)
 
 The previous patch stored the frame end's place on the sound grid (AudioAt,

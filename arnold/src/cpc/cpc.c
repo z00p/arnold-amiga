@@ -2774,8 +2774,24 @@ void CPC_IOCatchUp(void);   /* arnold.c: run the CRTC to the I/O cycle (z80.h Z8
 #define IOTIME_PORT_OUT(p) 1
 #define IOTIME_PORT_IN(p) 1
 #else
+#ifndef NO_PPI_IOTIME
+/* Amiga port (9 Nov 2026, the I/O test cart, tools/iotest): every PPI access (A11 = 0:
+ * &F4xx-&F7xx, the VSYNC bit, keyboard, tape and the PSG) timed at its own I/O cycle as
+ * well, as on the CPC (CPCEC); without it the VSYNC bit read 4 NOPs late. No speed cost
+ * measured on the A1200. NO_PPI_IOTIME: only CRTC writes timed (1.8). */
+#define IOTIME_PORT_OUT(p) ((((p) & 0x4300) == 0x0100) || (((p) & 0x0800) == 0))
+#define IOTIME_PORT_IN(p) (((p) & 0x0800) == 0)
+#else
 #define IOTIME_PORT_OUT(p) (((p) & 0x4300) == 0x0100)
+#endif
+#if defined(IOT_PPI_IN) && defined(NO_PPI_IOTIME)
+/* iotest option 1 (9 Nov 2026, impact sweep only): reads of the PPI (A11 = 0,
+ * &F4xx-&F7xx: VSYNC bit, keyboard, tape) timed as on the CPC. The I/O test cart
+ * found them 4 NOPs late without it. */
+#define IOTIME_PORT_IN(p) (((p) & 0x0800) == 0)
+#elif defined(NO_PPI_IOTIME)
 #define IOTIME_PORT_IN(p) 0
+#endif
 #endif
 #endif
 void    Z80_DoOut(Z80_WORD Port,Z80_BYTE Data)

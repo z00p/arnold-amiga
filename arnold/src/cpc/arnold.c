@@ -481,7 +481,9 @@ void	CPCEmulation_Run(void)
 		/* headless opcode-timing audit (tools/z80time): PC and NOP count before each instruction */
 		{ extern void Z80Trace(void); Z80Trace(); }
 #endif
-#ifdef CPC_NODEBUGGER
+#if defined(CPC_NODEBUGGER) && defined(IOT_INT_SAMPLE)
+		{ extern int Z80_ExecuteStep(void); NopCount = Z80_ExecuteStep(); }
+#elif defined(CPC_NODEBUGGER)
 		NopCount = Z80_ExecuteInstruction(); 
 #else
 		NopCount = Debugger_Execute(); 
