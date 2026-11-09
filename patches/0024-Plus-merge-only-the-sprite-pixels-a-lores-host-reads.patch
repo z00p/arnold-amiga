@@ -1,7 +1,7 @@
-From 503628c1a62cd78fc193928fc2c087f6cafdfae3 Mon Sep 17 00:00:00 2001
+From 060fc043a70f68d3b85eb8640b83f3ef6f16e4d4 Mon Sep 17 00:00:00 2001
 From: John Stringer <jcec_1@yahoo.co.uk>
-Date: Sun, 8 Nov 2026 19:33:42 +0000
-Subject: [PATCH 24/43] Plus: merge only the sprite pixels a lores host reads
+Date: Mon, 9 Nov 2026 10:17:09 +0000
+Subject: [PATCH 24/48] Plus: merge only the sprite pixels a lores host reads
 
 Two exact speed-ups of the Plus sprite merge for a host that renders every
 other pixel (PIXEL_STEP 2, e.g. an Amiga lores screen). (1) Only the 8 even

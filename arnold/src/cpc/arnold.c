@@ -64,6 +64,57 @@ int (*CPC_SkipNextFrameHook)(void) = NULL;
 static BOOL RenderNextFrame = TRUE;   /* decided one frame ahead */
 static BOOL FrameMeantToRender = TRUE;
 static int RenderOnEarlyAt = 0;       /* > 0: turn drawing on this many cycles before the frame end */
+#ifndef NO_VSYNCCUT
+/* Amiga port (lag18, 5 Nov 2026): the frame ends at the CPC's VSYNC. Before, a
+ * frame was 19968 cycles counted from power on, wherever that fell in the CPC's
+ * own frame (60 lines after the VSYNC in Sonic GX, 253 in Ghosts 'n Goblins).
+ * The host reads the joystick and shows the picture at the frame end, so where
+ * the cut fell could put the game's answer to a press a whole frame later, and
+ * the rows drawn after the VSYNC but before the cut belonged to the next CPC
+ * frame (a seam in fast vertical scrolling).
+ * Now each frame end measures how far the monitor is past its frame start (its
+ * VSYNC); if the cut is off by more than VCUT_AFTER after it or VCUT_BEFORE
+ * before it, twice in a row by about the same amount, the next frame is made
+ * shorter (or longer, if the shift is over half a frame) once, so that the
+ * frame after it ends VCUT_T cycles after the VSYNC. Frames stay 19968 cycles
+ * otherwise. A game that moves its VSYNC (R7, a frame not 312 lines) is
+ * followed the same way; with no VSYNC the monitor runs free at 312 lines and
+ * the cut locks to that.
+ * The sound is not cut at the frame end any more but on the old 19968-cycle
+ * grid (AudioAt: the LocalNopCountToDate value at which the next grid point
+ * falls), with the CRTC exactly where it was then, so the sound blocks and the
+ * CPU and CRTC stream are the same as before, cycle for cycle; only the host's
+ * frame end (the input, the picture, the 50 Hz wait) moves. The host takes the
+ * blocks through CPC_AudioFrameHook (it calls CPC_UpdateAudio); NULL (a host
+ * that doesn't set it): the frame end as before. NO_VSYNCCUT: as before. */
+void (*CPC_AudioFrameHook)(void) = NULL;
+static int AudioAt = 0;               /* > 0: the sound grid point falls in this frame at this count */
+static int VcutPrevE = -1;            /* the last frame end's distance past the monitor frame start, -1 none */
+static int EventAt = 0;               /* the larger of RenderOnEarlyAt and AudioAt (one test per instruction) */
+unsigned long CPC_VcutShifts;         /* frames lengthened or shortened (host statistics) */
+#define VCUT_T 32                     /* the frame end this many cycles after the monitor's frame start */
+#define VCUT_AFTER (4 * 64)
+#define VCUT_BEFORE (8 * 64)
+#define EVENT_UPDATE() (EventAt = (CPC_AudioFrameHook && AudioAt > RenderOnEarlyAt) ? AudioAt : RenderOnEarlyAt)
+#include "crtc.h"
+static int Vcut_FrameLength(void)
+{
+	CRTC_INTERNAL_STATE *s = CRTC_GetInternalState();
+	int e = s->Monitor_State.MonitorScanLineCount * 64 + s->Monitor_State.MonitorHorizontalCount;
+	int prev = VcutPrevE, L;
+	VcutPrevE = e;
+	if (e < VCUT_AFTER || e > NOPS_PER_MONITOR_SCREEN - VCUT_BEFORE) return NOPS_PER_MONITOR_SCREEN;   /* at the VSYNC */
+	if (prev < 0 || e - prev > 128 || prev - e > 128) return NOPS_PER_MONITOR_SCREEN;   /* not steady yet */
+	L = NOPS_PER_MONITOR_SCREEN - e + VCUT_T;
+	if (L < NOPS_PER_MONITOR_SCREEN / 2) L += NOPS_PER_MONITOR_SCREEN;
+	VcutPrevE = -1;
+	CPC_VcutShifts++;
+	return L;
+}
+#else
+#define EventAt RenderOnEarlyAt
+#define EVENT_UPDATE() ((void)0)
+#endif
 /* current frame index, compared against frame skip value */
 static int CurrentFrameIndex = 0;
 /* frame skip value */
@@ -80,7 +131,13 @@ int CPC_IOPre, CPC_IOAhead;
 void CPC_IOCatchUp(void)
 {
 	int k = CPC_IOPre - CPC_IOAhead;
+#ifndef NO_VSYNCCUT
+	/* VSYNCCUT: never past the sound grid point (the frame end it was written for), not the frame end */
+	int lim = CPC_AudioFrameHook ? NopCountToDate - AudioAt : NopCountToDate;
+	if (k > lim - CPC_IOAhead) k = lim - CPC_IOAhead;
+#else
 	if (k > NopCountToDate - CPC_IOAhead) k = NopCountToDate - CPC_IOAhead;
+#endif
 	CPC_IOPre = 0;
 	if (k > 0) { CRTC_DoCycles(k); CPC_IOAhead += k; }
 }
@@ -319,6 +376,9 @@ void	CPCEmulation_InitialiseDefaultSetup(void)
 void	CPC_ResetTiming(void)
 {
 	NopCountToDate = NOPS_PER_MONITOR_SCREEN;
+#ifndef NO_VSYNCCUT
+	AudioAt = 0; VcutPrevE = -1; EVENT_UPDATE();   /* the grid starts here, as the frames did */
+#endif
 }
 
 
@@ -402,10 +462,10 @@ void	CPCEmulation_Run(void)
 			/* batch to each event cycle in turn; an event that raises no
 			   interrupt leaves the Z80 halting, so carry on to the next one */
 			int done = 0;
-			while (NopCountToDate > RenderOnEarlyAt + 1)
+			while (NopCountToDate > EventAt + 1)
 			{
 				int k = CRTC_CyclesToEvent();
-				if (k > NopCountToDate - RenderOnEarlyAt - 1) k = NopCountToDate - RenderOnEarlyAt - 1;
+				if (k > NopCountToDate - EventAt - 1) k = NopCountToDate - EventAt - 1;
 				Z80_HaltSteps(k);
 				CPC_UpdateNopCount(k);
 				NopCountToDate -= k;
@@ -417,6 +477,10 @@ void	CPCEmulation_Run(void)
 		}
 #endif
 		/* execute the instruction */
+#ifdef Z80TRACE
+		/* headless opcode-timing audit (tools/z80time): PC and NOP count before each instruction */
+		{ extern void Z80Trace(void); Z80Trace(); }
+#endif
 #ifdef CPC_NODEBUGGER
 		NopCount = Z80_ExecuteInstruction(); 
 #else
@@ -432,15 +496,38 @@ void	CPCEmulation_Run(void)
 		LocalNopCountToDate = NopCountToDate - NopCount;
 
 		/* nop counter is used to define when we render the whole display */
-		if (ARN_UNLIKELY(LocalNopCountToDate<=RenderOnEarlyAt))
+		if (ARN_UNLIKELY(LocalNopCountToDate<=EventAt))
 		{
 			int NopsToFrameEnd;
+#ifndef NO_VSYNCCUT
+			int crtc_done = 0, grid_now = 0, VcutL = NOPS_PER_MONITOR_SCREEN;
+			if (CPC_AudioFrameHook && AudioAt > 0 && LocalNopCountToDate <= AudioAt)
+			{
+				/* VSYNCCUT: a sound grid point (the old frame end) inside the frame: the
+				   CRTC run up to it, the sound block, then the rest of the instruction,
+				   exactly as the old frame end did */
+				int n = NopCount + LocalNopCountToDate - AudioAt;
+				IO_AHEAD_TAKE(n);
+				if (n != 0) CRTC_DoCycles(n);
+				{ extern void CRTC_Flush(void); CRTC_Flush(); }
+				CPC_AudioFrameHook();
+				if (AudioAt - LocalNopCountToDate != 0) CRTC_DoCycles(AudioAt - LocalNopCountToDate);
+				AudioAt -= NOPS_PER_MONITOR_SCREEN;
+				crtc_done = 1;
+				EVENT_UPDATE();
+				if (LocalNopCountToDate > EventAt) { NopCountToDate = LocalNopCountToDate; continue; }
+			}
+#endif
 
 			if (LocalNopCountToDate > 0)
 			{
 				/* Amiga port: a skipped frame before a drawn one: drawing on now */
+#ifndef NO_VSYNCCUT
+				if (!crtc_done)
+#endif
 				{ int n = NopCount; IO_AHEAD_TAKE(n); CRTC_DoCycles(n); }
 				RenderOnEarlyAt = 0;
+				EVENT_UPDATE();
 				if (Render_IsRendererActive())
 				{
 					DontRender = FALSE;
@@ -450,13 +537,32 @@ void	CPCEmulation_Run(void)
 				continue;
 			}
 
+#ifndef NO_VSYNCCUT
+			if (CPC_AudioFrameHook)
+			{
+				/* VSYNCCUT: the frame end is off the grid: the whole instruction is run
+				   (only up to a grid point inside it, which is done below) */
+				grid_now = AudioAt <= 0 && AudioAt >= LocalNopCountToDate;
+				if (!crtc_done)
+				{
+					int n = grid_now ? NopCount + LocalNopCountToDate - AudioAt : NopCount;
+					IO_AHEAD_TAKE(n);
+					if (n != 0) CRTC_DoCycles(n);
+				}
+				{ extern void CRTC_Flush(void); CRTC_Flush(); }
+				VcutL = Vcut_FrameLength();
+			}
+			else
+#endif
+			{
 			NopsToFrameEnd = NopCount + LocalNopCountToDate;
 			IO_AHEAD_TAKE(NopsToFrameEnd);   /* CPC_IOCatchUp stops at the frame end */
 
 			/* update CRTC for NopCount cycles */
 			if (NopsToFrameEnd!=0)
-				CRTC_DoCycles(NopsToFrameEnd);	
+				CRTC_DoCycles(NopsToFrameEnd);
 			{ extern void CRTC_Flush(void); CRTC_Flush(); }   /* Amiga port: deferred cells (crtc.c) */
+			}
 		
 			/* execute functions when a frame has been completed */
 			/* Frame Skip Control code */
@@ -558,11 +664,32 @@ void	CPCEmulation_Run(void)
 	#endif
 /*			CPC_DoFrameFunc(); */
 		
+#ifndef NO_VSYNCCUT
+			if (CPC_AudioFrameHook)
+			{
+				if (grid_now)   /* the grid point in this instruction, after the frame end */
+				{
+					CPC_AudioFrameHook();
+					if(bWin) if (AudioAt - LocalNopCountToDate != 0)
+						CRTC_DoCycles(AudioAt - LocalNopCountToDate);
+					AudioAt -= NOPS_PER_MONITOR_SCREEN;
+				}
+				LocalNopCountToDate += VcutL;
+				AudioAt += VcutL;
+				EVENT_UPDATE();
+			}
+			else
+#endif
+			{
 			if(bWin) if (LocalNopCountToDate!=0)
 				CRTC_DoCycles(-LocalNopCountToDate);
-		
+
 			/* a whole screen has been timed */
 			LocalNopCountToDate += NOPS_PER_MONITOR_SCREEN;
+#ifndef NO_VSYNCCUT
+			AudioAt = 0; VcutPrevE = -1; EVENT_UPDATE();   /* no hook: the frame end is the grid */
+#endif
+			}
 
 		}
 		else //if (bWin) this doesn't work :(
@@ -642,11 +769,31 @@ void SS_Arnold(SS_IO *io)
 	SS_V(io, NopCountToDate); SS_V(io, RenderOnEarlyAt); SS_V(io, DontRender);
 	SS_V(io, FrameMeantToRender); SS_V(io, RenderNextFrame); SS_V(io, CurrentFrameIndex);
 	SS_V(io, pre); SS_V(io, ahead);
+#ifndef NO_VSYNCCUT
+	/* lag18: the sound grid against the frame end, and the last phase reading. 1.8 saves them
+	   in the ARNX chunk (SS_ArnoldExt), so a 1.7 Arnold can load the state; here they are only
+	   read from a lag18 test state that had them at the end of this section. None: the frame
+	   end was on the grid (a 1.7 state), unless ARNX (read after this) says otherwise. */
+	if (io->load && io->pos < io->end[io->depth - 1]) { SS_V(io, AudioAt); SS_V(io, VcutPrevE); }
+	else if (io->load) { AudioAt = 0; VcutPrevE = -1; }
+	if (io->load) EVENT_UPDATE();
+#endif
 	if (io->load) {
 #ifndef NO_IOTIME_FIX
 		CPC_IOPre = pre; CPC_IOAhead = ahead;
 #endif
 		if (CurrentFrameIndex > FrameSkip) CurrentFrameIndex = 0;   /* another frame skip set now */
 	}
+}
+
+/* 1.8: the ARNX chunk's section "VCUT" (savestate.c) */
+void SS_ArnoldExt(SS_IO *io)
+{
+#ifndef NO_VSYNCCUT
+	SS_V(io, AudioAt); SS_V(io, VcutPrevE);
+	if (io->load) EVENT_UPDATE();
+#else
+	if (io->load) io->pos = io->end[io->depth - 1];   /* a build without the VSYNC cut: not used */
+#endif
 }
 #endif

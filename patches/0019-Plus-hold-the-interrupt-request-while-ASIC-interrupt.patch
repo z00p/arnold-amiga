@@ -1,7 +1,7 @@
-From 981ba25d7d8124197ceb8d3b273bf25e0c8ae9be Mon Sep 17 00:00:00 2001
+From 24c6b6b7b7726e65ab1d86ff9a61f34c0eabf829 Mon Sep 17 00:00:00 2001
 From: John Stringer <jcec_1@yahoo.co.uk>
-Date: Sun, 8 Nov 2026 19:33:40 +0000
-Subject: [PATCH 19/43] Plus: hold the interrupt request while ASIC interrupts
+Date: Mon, 9 Nov 2026 10:17:08 +0000
+Subject: [PATCH 19/48] Plus: hold the interrupt request while ASIC interrupts
  are pending; stagger DMA INTs
 
 Two Plus interrupt fixes, as CPCEC models them. (1) After acknowledging one ASIC

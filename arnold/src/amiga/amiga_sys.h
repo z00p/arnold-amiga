@@ -142,7 +142,9 @@ typedef struct { unsigned long c2p_us, wait_us, c2p_lines, c2p_frames, line_byte
                  c2p_lines5, c2p_lines6, c2p_clear_planes, c2p_chip_longs,
                  vs_shifts, vs_recentres, vs_searches, vs_us,
                  audit_frames, audit_bad_frames, audit_bad_groups, audit_cop_checks, audit_cop_bad,
-                 flip_vb, flip_beam, show_vb, show_beam, tof_vb, bpu_sum; } SysPerf;   /* agaperf: VBCounter and beam line at ChangeScreenBuffer / Sys_ShowFrame entry / WaitTOF return */
+                 flip_vb, flip_beam, show_vb, show_beam, tof_vb, bpu_sum,
+                 lag_n, lag_sum, lag_min, lag_max, lag_over, ls_n, ls_off_sum, ls_off_max, ls_work_max, ls_holds, ls_rejected,
+                 jr_reads, jr_frames, jr_gain_sum, jr_gain_max, jr_cost_sum, jr_cost_max, jr_ll_sum, jr_ll_n; } SysPerf;   /* agaperf: VBCounter and beam line at ChangeScreenBuffer / Sys_ShowFrame entry / WaitTOF return */
 extern int Sys_Audit;      /* AUDIT argument: read every converted buffer back from chip RAM and check it, and the copper's plane pointer */
 extern int Sys_VShiftOn;   /* 1 when the display opened with the vertical-shift windows (NO_VSHIFT / NOVSHIFT: 0) */
 extern int Sys_WideScreen;   /* the next Sys_OpenDisplay takes the full width (menu.wide) */
@@ -164,6 +166,18 @@ extern int Sys_NoCD32;               /* NOCD32: port 2 as a plain 2-button joyst
 extern int Sys_PalAll;              /* PALALL: reload the whole palette every frame */
 extern int Sys_AllLines;            /* ALLLINES: convert every line every frame (no dirty-line tracking) */
 extern int Sys_SafeFlip;            /* SAFEFLIP: wait for the previous flip's messages before the next */
+/* lag18 (5 Nov 2026): stick sample -> picture on the screen (lag_*, us; NO_LAGLOG: not measured).
+ * Sys_LagSample: the host has just read the stick for the next frame. lag_over: frames over a whole
+ * display period (their picture missed the blank / VBlank it was made for). Late start (RTG with
+ * the lock; NO_LATESTART: off): ls_* (frames started late after the blank: count, offset sum / max,
+ * worst work seen, holds after a frame ran late). Sys_LateMarginUs: LSMARGIN= (us, default 4000), 0 = no late start. */
+void Sys_LagSample(void);
+/* 1.8 (8 Nov 2026): the stick read again when the game reads it (NO_JOYREREAD, JOYREREAD=0: off).
+ * Sys_LagReread: the host has just read it again; the frame's sample time moves to now. jr_*: reads
+ * again, frames with one, and how much later than the frame start the last one in a frame was (us). */
+void Sys_LagReread(void);
+extern int Sys_JoyPortOnly;         /* Sys_ReadJoystick: port 2 only, the USB pads as at the last full read */
+extern long Sys_LateMarginUs;
 extern int Sys_LeadUs;              /* LEAD=us: AGA frames start this long before the VBlank the frame before goes up at (-1: default) */
 extern int Sys_Osd, Sys_OsdSkip;     /* OSD: test-mode label in the picture's corner; skip value it shows */
 /* palette entry the host keeps for the label and messages (yellow). 127, not 255 (29 Oct 2026):

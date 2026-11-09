@@ -1,16 +1,16 @@
-Arnold for Amiga 1.7.1 - patch set and Amiga build
-===================================================
-8 November 2026.  Arnold (c) Kevin Thacker, GPL-2.0.  Amiga port by John Stringer.
+Arnold for Amiga 1.8 - patch set and Amiga build
+=================================================
+9 November 2026.  Arnold (c) Kevin Thacker, GPL-2.0.  Amiga port by John Stringer.
 
 This package holds the changes made to Arnold while porting it to 68k AmigaOS 3.x (AGA),
 as patches against the upstream source, plus a ready-to-run Amiga build.
 
-  patches/   43 patches (git format-patch) against rofl0r's GitHub mirror of Arnold,
+  patches/   48 patches (git format-patch) against rofl0r's GitHub mirror of Arnold,
              https://github.com/rofl0r/arnold, master at e5dce08
              ("fix prototype of LoadFile()", 4 Sep 2026)
   amiga/     the Amiga build: drawer Arnold with the program, icons, presets, the Plus
              system cartridge and a user README
-  source/    the complete source of this build (the upstream tree with all 43 patches
+  source/    the complete source of this build (the upstream tree with all 48 patches
              applied), for the GPL
 
 
@@ -20,9 +20,9 @@ Applying the patches
   git checkout e5dce08
   git am /path/to/patches/*.patch
 
-Each patch stands on its own and builds. Patches 1-40 touch only the core (src/cpc;
-38 also adds savestate.o to src/objects.mak); 41 adds the RTG display framework
-(src/amiga/rtgfw, MIT licence), 42 adds src/amiga and 43 adds src/headless. The core changes are all marked "Amiga port"
+Each patch stands on its own and builds. Patches 1-45 touch only the core (src/cpc;
+38 also adds savestate.o to src/objects.mak); 46 adds the RTG display framework
+(src/amiga/rtgfw, MIT licence), 47 adds src/amiga and 48 adds src/headless. The core changes are all marked "Amiga port"
 in comments, and every behaviour change can be switched off with a define (below).
 
 
@@ -216,14 +216,38 @@ Monitor and tape:
        host is told to show entry 0 black for the rest of that frame. Palette
        numbering only: RGB output identical.
 
+1.8 (less controller lag, Z80 timing):
+
+ 0041  Frame end at the CPC's VSYNC; sound kept on the fixed grid     NO_VSYNCCUT
+       Each frame ended a fixed 19968 cycles after the last, wherever that fell in
+       the CPC's own frame, so a game that reads the joystick before the cut and
+       draws the answer below it showed it a frame late. Frames now end 32 cycles
+       after the monitor's VSYNC (followed as a game moves it); the CPU, the sound
+       and the machine at each point of the old fixed grid are unchanged, for a
+       host that sets CPC_AudioFrameHook. Without the hook: the old fixed frames.
+ 0042  Save states: the VSYNC-cut values in a chunk of their own (ARNX)
+       The two values 0041 adds to a state go in a new chunk that older builds
+       skip, so a state from this build loads in 1.7 and 1.7.1.
+ 0043  Z80: NOP counts of LD (HL),n, CPI/CPD and the repeating block
+       instructions                                                NO_Z80TIME_FIX
+       An audit of every opcode (1876 tests) against CPCEC found 15 counts that
+       differed: LD (HL),n 3 (was 2); CPI/CPD 4 (was 5); CPIR/CPDR 6 a repeat, 4
+       the last pass; INIR/INDR/OTIR/OTDR 6 a repeat, 5 the last (were swapped).
+       All 1876 now match, and every I/O position already did.
+ 0044  Joystick: a host hook at the game's read of the joystick row  NO_JOYREREAD
+       CPC_JoyReadHook (NULL by default) is called before a read of keyboard row
+       9, so a host can read its stick again at the game's own read.
+
 Tools:
 
  0010  Diagnostics for hardware tracing (TRACE_HW, PAL_COUNT; off by default)
- 0041  RTG display framework for the AmigaOS host (src/amiga/rtgfw): rtgfw,
+ 0045  Diagnostics: Z80 opcode-timing trace (Z80TRACE, off by default; with
+       LAGTRACE in 0044, where the game reads the joystick row)
+ 0046  RTG display framework for the AmigaOS host (src/amiga/rtgfw): rtgfw,
        Copyright (c) 2026 Zoopster, under the MIT licence (its LICENSE file), not
        the GPL; a separate work vendored unchanged. Only the Amiga host uses it.
- 0042  AmigaOS host: Arnold for Amiga (src/amiga, built with bebbo's amiga-gcc)
- 0043  Headless test host (src/headless: frame checksums, PPM, key scripts, WAV,
+ 0047  AmigaOS host: Arnold for Amiga (src/amiga, built with bebbo's amiga-gcc)
+ 0048  Headless test host (src/headless: frame checksums, PPM, key scripts, WAV,
        disk insert / write-back / sector dumps)
 
 
@@ -239,6 +263,12 @@ How it was tested
   unformatted track, 42 tracks and two sides. A Z80 probe on the disk checks the FDC
   directly. Also tested: SAVE and FORMAT with the written-back image checked, and
   13 real disks compared with CPCEC. Clean under AddressSanitizer.
+- Z80 timing (patch 43): an opcode-timing audit (seven test cartridges, 1876 tests)
+  matches CPCEC on every NOP count and I/O position. A sweep of 80 cartridges over 1500
+  frames showed each in a sound state.
+- Frame end at VSYNC (patch 41): with the host hook, the same sound, registers and RAM
+  at every point of the old frame grid; save states resume exactly, and states move
+  between this build and 1.7 both ways (patch 42).
 - Puzzle Bobble (patch 13) now matches CPCEC frame for frame into play. Seven other
   homebrew carts change slightly in timing with it; all were checked against CPCEC.
   Patch 14 changes only palette numbering: RGB output identical on every affected cart.
@@ -256,8 +286,12 @@ Amiga build
 See amiga/Arnold/README.txt. In short: CPC 6128 Plus / GX4000 cartridges (.cpr), disks
 (.dsk, with the system cartridge's BASIC and AMSDOS) and snapshots (.sna). It needs an
 AGA Amiga with a 68040 or better (PiStorm/Emu68, 68060, BigMig), with sound through Paula.
-Help opens the menu. New in 1.7.1: the CD32 pad's buttons are read again (the Amiga host
-code only; the patches are 1.7's). New in 1.7: on the RTG screen with HDMI sound (or no sound) each frame is
+Help opens the menu. New in 1.8: less delay from joystick to picture (on a PiStorm A1200
+about 7 ms less on the RTG screen with HDMI sound, about 5 ms on AGA): the frame ends at
+the CPC's VSYNC (patch 0041), the stick is read again at the game's read (0044, JOYREREAD=)
+and on the RTG screen each frame starts as late as it safely can (LSMARGIN=); the RTG frame
+lock flips between two pages; the Z80 timing fix (0043); 1.8 states load in 1.7 (0042).
+1.7.1 read the CD32 pad's buttons again (host code only). 1.7 brought: on the RTG screen with HDMI sound (or no sound) each frame is
 timed to the display's refresh (RTGLOCK=), so none is dropped or shown twice, and an occasional
 black frame is gone; on the AGA screen heavy frames get 4 ms more time (LEAD=) and black pens
 share entry 0 again (patch 0040); Sound tone (Bright, Soft or Warm, Soft by default) for Paula

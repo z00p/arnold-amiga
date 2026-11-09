@@ -28,7 +28,7 @@
 #include <stdarg.h>
 
 unsigned long __stack = 256 * 1024;   /* libnix: enlarge the stack at start */
-static const char ver[] __attribute__((used)) = "$VER: Arnold 1.7.1 (8.11.2026) Amiga port, GPL-2.0";
+static const char ver[] __attribute__((used)) = "$VER: Arnold 1.8 (9.11.2026) Amiga port, GPL-2.0";
 
 /* ---- diagnostic log ---- */
 static FILE *logf;
@@ -707,6 +707,102 @@ static int rtg_open_display(int cw, int ch, int hires)
 	return 1;
 }
 
+/* ---- lag18 (5 Nov 2026): stick sample -> picture (NO_LAGLOG), RTG late start (NO_LATESTART) ----
+ * Sys_LagSample: the host reads the stick for the next frame now. Its time goes with the frame:
+ * RTG: as the present's tag (rtg_x_lag_tag), and the vblank task notes when it writes that frame
+ * (the blank it goes up at); collected at the next sample. AGA: the VBlank after the flip (the
+ * flip's beam line + the lines left). A frame "over" took longer than a display period (+ the lead):
+ * its picture missed the blank / VBlank it was made for. */
+static int beam_lines;
+static int lead_us(void);
+static unsigned long lag_ts;          /* the sample for the frame being made (Sys_Micros; 0 none yet) */
+static unsigned long lag_t0;          /* the frame start's sample (lag_ts moves on with a read again) */
+static int lag_rr;                    /* the stick was read again in this frame */
+#define SYS_LOCK_US 500                /* (as below, with the lock) */
+long Sys_LateMarginUs = 4000;         /* LSMARGIN=us (0: no late start) */
+#ifndef NO_LATESTART
+/* Late start (RTG with the lock): each frame starts ls_off us after the blank instead of SYS_LOCK_US,
+ * ls_off = period - (the slowest of the last LS_WIN frames' work + Sys_LateMarginUs), so the stick is
+ * read later and the picture still makes the next blank. Later only 500 us a frame at a time; earlier
+ * at once. Not until LS_WIN frames are measured; a frame that presents within 300 us of its blank
+ * (or after it) puts the start back to SYS_LOCK_US for LS_HOLD frames. */
+#define LS_WIN 32
+#define LS_HOLD 50
+static long ls_per = 20000;           /* the HDMI period (the lock's) */
+static unsigned long ls_work[LS_WIN], ls_wn; static int ls_hold;
+static long ls_off;                   /* this frame's start after the blank (0: SYS_LOCK_US) */
+static unsigned long ls_t0;           /* this frame's start (its sample) */
+static void ls_present(unsigned long now)
+{
+	unsigned long w = now - ls_t0;
+	if (!ls_t0 || w > 100000) return;
+	ls_work[ls_wn++ % LS_WIN] = w;
+	if (w > Sys_Perf.ls_work_max) Sys_Perf.ls_work_max = w;
+	if (Sys_PaceLock && ls_off && (long)w > ls_per - ls_off - 300) { ls_hold = LS_HOLD; Sys_Perf.ls_holds++; }
+}
+static long ls_next(long per)
+{
+	long cur = ls_off ? ls_off : SYS_LOCK_US, tgt = SYS_LOCK_US;
+	ls_per = per;
+	if (ls_hold) ls_hold--;
+	else if (Sys_LateMarginUs > 0 && ls_wn >= LS_WIN) {
+		unsigned long mx = 0; int i;
+		for (i = 0; i < LS_WIN; i++) if (ls_work[i] > mx) mx = ls_work[i];
+		tgt = per - (long)mx - Sys_LateMarginUs;
+		if (tgt < SYS_LOCK_US) tgt = SYS_LOCK_US;
+		if (tgt > per - 2000) tgt = per - 2000;
+	}
+	if (tgt > cur + 500) tgt = cur + 500;
+	ls_off = tgt;
+	if (tgt > SYS_LOCK_US) { Sys_Perf.ls_n++; Sys_Perf.ls_off_sum += tgt; if ((unsigned long)tgt > Sys_Perf.ls_off_max) Sys_Perf.ls_off_max = tgt; }
+	return tgt;
+}
+#endif
+#ifndef NO_LAGLOG
+static uint32_t lag_seq;
+static void lag_add(unsigned long us)
+{
+	/* RTG: the HDMI's 50 Hz (Sys_DisplayFrameUs is not its period); AGA: the VBlank interval */
+	unsigned long per = !Sys_RtgActive && Sys_DisplayFrameUs > 10000 && Sys_DisplayFrameUs < 40000 ? Sys_DisplayFrameUs : 20000;
+	if (us > 200000) return;              /* the menu, a pause: not a frame's lag */
+	if (!Sys_Perf.lag_n || us < Sys_Perf.lag_min) Sys_Perf.lag_min = us;
+	if (us > Sys_Perf.lag_max) Sys_Perf.lag_max = us;
+	Sys_Perf.lag_sum += us; Sys_Perf.lag_n++;
+	if (us > per + (unsigned long)lead_us() + 2000) Sys_Perf.lag_over++;
+}
+#endif
+void Sys_LagSample(void)
+{
+	unsigned long now = Sys_Micros();
+#ifndef NO_LAGLOG
+	if (Sys_RtgActive) {
+		uint32_t tag, wr, n = rtg_x_lag_last(&tag, &wr);
+		if (n != lag_seq) { lag_seq = n; if (tag) lag_add(wr - tag); }
+	}
+#endif
+#ifndef NO_LATESTART
+	ls_t0 = now;
+#endif
+	lag_ts = now;
+	lag_t0 = now;
+	lag_rr = 0;
+}
+
+void Sys_LagReread(void)
+{
+	unsigned long now = Sys_Micros();
+	if (lag_t0) {
+		unsigned long g = now - lag_t0;
+		if (!lag_rr) Sys_Perf.jr_frames++;
+		else Sys_Perf.jr_gain_sum -= lag_ts - lag_t0;   /* only the frame's last read counts */
+		Sys_Perf.jr_gain_sum += g;
+		if (g > Sys_Perf.jr_gain_max) Sys_Perf.jr_gain_max = g;
+	}
+	Sys_Perf.jr_reads++;
+	lag_rr = 1;
+	lag_ts = now;
+}
+
 static void rtg_show(const unsigned char *chunky, int pitch)
 {
 	static ULONG rgb[256];
@@ -725,6 +821,12 @@ static void rtg_show(const unsigned char *chunky, int pitch)
 		pal_dirty = 0;
 		Sys_Perf.palette_loads++;
 	}
+#ifndef NO_LATESTART
+	ls_present(Sys_Micros());
+#endif
+#ifndef NO_LAGLOG
+	rtg_x_lag_tag(lag_ts);
+#endif
 	e = rtg_present(chunky, pitch, Sys_AllLines ? NULL : line_dirty);
 	memset(line_dirty, 0, CH);            /* a skipped frame's lines stay owed inside rtgfw */
 	if (e != RTG_OK && rtg_errs++ < 10) Sys_Log("rtg: present: %s (frame %lu)", rtg_error_text(e), frames);
@@ -1342,6 +1444,14 @@ void Sys_ShowFrame(const unsigned char *chunky, int pitch)
 	lead_flip_wait();
 	bpu_fit(next); Sys_Perf.flip_vb = GfxBase->VBCounter; Sys_Perf.flip_beam = ((custom.vposr & 1) << 8) | (custom.vhposr >> 8); if (!ChangeScreenBuffer(scr, sb[next])) hb_refused++;
 	else {
+#ifndef NO_LAGLOG
+		{	/* lag18: shown from the next VBlank: the flip's line + the lines left of this frame */
+			int bl = beam_lines >= 200 ? beam_lines : 313;
+			unsigned long lu = (Sys_DisplayFrameUs > 10000 && Sys_DisplayFrameUs < 40000 ? Sys_DisplayFrameUs : 20000) / bl;
+			long left = bl - (long)Sys_Perf.flip_beam;
+			if (lag_ts) lag_add(Sys_Micros() + (unsigned long)(left > 0 ? left : 0) * lu - lag_ts);
+		}
+#endif
 		safe_for[next] = shown;          /* this change's SafeMessage frees the old one */
 		buf_safe[shown] = 0;
 		buf_safe[next] = 0;
@@ -1513,9 +1623,15 @@ long Sys_WaitFrame(void)
 			int ok = rtg_x_vbl_next(&u, &per) == RTG_OK && per > 19000 && per < 21000;
 			Sys_AudioLock(ok ? per : 0);
 			if (ok) {
-				long x = (long)(due - (t1 + u + SYS_LOCK_US)) % (long)per;   /* due against blank + SYS_LOCK_US */
+#ifndef NO_LATESTART
+				long off0 = ls_off ? ls_off : SYS_LOCK_US, off1 = ls_next((long)per);
+#else
+				long off0 = SYS_LOCK_US, off1 = SYS_LOCK_US;
+#endif
+				long x = (long)(due - (t1 + u + off0)) % (long)per;   /* due against blank + the start offset */
 				if (x > (long)per / 2) x -= per; else if (x <= -(long)per / 2) x += per;
 				if (x > 1000 || x < -1000) lock_snaps++;
+				x -= off1 - off0;   /* lag18: a new offset moves due by the difference (never a wrap to another blank) */
 				due -= x;
 				if (!lock_frames++) Sys_Log("pacing: frames timed to the HDMI refresh (%lu us a frame), each due %d us after a blank", (unsigned long)per, SYS_LOCK_US);
 			}
@@ -1596,6 +1712,12 @@ void Sys_TimerClose(void)
 {
 	if (lock_frames) Sys_Log("pacing: %lu frames timed to the HDMI refresh, %lu moved more than 1 ms", lock_frames, lock_snaps);
 	if (lead_frames) Sys_Log("pacing: %lu frames with a lead, %lu missed their VBlank, %lu flips waited for the one before", lead_frames, lead_late, lead_flip_waits);
+	if (Sys_Perf.lag_n) Sys_Log("lag: stick sample to picture avg %lu min %lu max %lu us over %lu frames, %lu over a display period",
+		Sys_Perf.lag_sum / Sys_Perf.lag_n, Sys_Perf.lag_min, Sys_Perf.lag_max, Sys_Perf.lag_n, Sys_Perf.lag_over);
+	if (Sys_Perf.ls_n) Sys_Log("lag: late start in %lu frames, offset avg %lu max %lu us after the blank, work max %lu us, %lu holds",
+		Sys_Perf.ls_n, Sys_Perf.ls_off_sum / Sys_Perf.ls_n, Sys_Perf.ls_off_max, Sys_Perf.ls_work_max, Sys_Perf.ls_holds);
+	if (Sys_Perf.jr_frames) Sys_Log("lag: stick read again at the game's read %lu times in %lu frames, the last %lu us (avg) / %lu us (max) after the frame start",
+		Sys_Perf.jr_reads, Sys_Perf.jr_frames, Sys_Perf.jr_gain_sum / Sys_Perf.jr_frames, Sys_Perf.jr_gain_max);
 	lock_frames = lock_snaps = 0;
 	timer_close();
 	/* the E-clock request Sys_Micros opened (it was never closed) */

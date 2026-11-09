@@ -208,6 +208,13 @@ unsigned char Joystick_ReadJoystickPort(void)
 	return KeyboardData[9];
 }
 
+#ifndef NO_JOYREREAD
+/* Amiga port, 1.8 (8 Nov 2026): called when the game reads keyboard row 9 (the joystick), before
+ * the read, so a host can read its stick again then and the game sees it as it is at its own read,
+ * as on a real CPC. NULL (the headless host): the row as the frame start left it. */
+void (*CPC_JoyReadHook)(void);
+#endif
+
 unsigned char Keyboard_Read(void)
 {
     if (SelectedKeyboardLine!=9)
@@ -219,6 +226,9 @@ unsigned char Keyboard_Read(void)
     {
 		unsigned char Data = 0x07f;
 
+#ifndef NO_JOYREREAD
+		if (CPC_JoyReadHook) CPC_JoyReadHook();
+#endif
 		switch (CPC_HardwareConnectedToJoystickPort)
 		{
 //			case JOYSTICK_HARDWARE_AMX_MOUSE:
@@ -237,6 +247,10 @@ unsigned char Keyboard_Read(void)
 				Data = Joystick_ReadJoystickPort();
 				break;
 		}
+#ifdef LAGTRACE
+		/* lag18 (test builds only, headless): where in the frame the game reads row 9 */
+		{ extern void LagTrace_Row9(unsigned char v); LagTrace_Row9(KeyboardData[9]); }
+#endif
 		return (unsigned char)((Data & 0x07f) | (KeyboardData[9] & 0x080));
 
 	}
@@ -2766,6 +2780,9 @@ void CPC_IOCatchUp(void);   /* arnold.c: run the CRTC to the I/O cycle (z80.h Z8
 #endif
 void    Z80_DoOut(Z80_WORD Port,Z80_BYTE Data)
 {
+#ifdef Z80TRACE
+	{ extern void Z80TraceIO(int, unsigned); Z80TraceIO('O', Port); }
+#endif
 #ifndef NO_IOTIME_FIX
 	if (IOTIME_PORT_OUT(Port)) CPC_IOCatchUp();
 #endif
@@ -3109,6 +3126,9 @@ Z80_BYTE        KCCompact_In(Z80_WORD Port)
 
 Z80_BYTE        Z80_DoIn(Z80_WORD Port)
 {
+#ifdef Z80TRACE
+	{ extern void Z80TraceIO(int, unsigned); Z80TraceIO('I', Port); }
+#endif
 #ifndef NO_IOTIME_FIX
 	if (IOTIME_PORT_IN(Port)) CPC_IOCatchUp();
 #endif

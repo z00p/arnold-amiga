@@ -1,7 +1,7 @@
-From ff43245f2a205fef99998c754627671d135764b7 Mon Sep 17 00:00:00 2001
+From 88a29e87d0ccd823eade27f0b4e60130803585e2 Mon Sep 17 00:00:00 2001
 From: John Stringer <jcec_1@yahoo.co.uk>
-Date: Sun, 8 Nov 2026 19:33:45 +0000
-Subject: [PATCH 33/43] Disk write-back: read a track's sector IDs only inside
+Date: Mon, 9 Nov 2026 10:17:12 +0000
+Subject: [PATCH 33/48] Disk write-back: read a track's sector IDs only inside
  its block
 
 An extended track may claim 30-61 sectors in a 256-byte track block (the loader

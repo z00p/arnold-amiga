@@ -1,0 +1,59 @@
+From 4be6d75727b5ac56b7278e14454d4cbdf647b169 Mon Sep 17 00:00:00 2001
+From: John Stringer <jcec_1@yahoo.co.uk>
+Date: Mon, 9 Nov 2026 10:17:17 +0000
+Subject: [PATCH 45/48] Diagnostics: Z80 opcode-timing trace (Z80TRACE; off by
+ default)
+
+With -DZ80TRACE (the headless host's audit build) the core calls Z80Trace
+before each instruction and Z80TraceIO at each IN and OUT, for the PC and
+NOP count traces the previous Z80 patch was checked with. Normal builds are
+unchanged.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ src/cpc/arnold.c | 4 ++++
+ src/cpc/cpc.c    | 6 ++++++
+ 2 files changed, 10 insertions(+)
+
+diff --git a/src/cpc/arnold.c b/src/cpc/arnold.c
+index 2305128..5a11a96 100644
+--- a/src/cpc/arnold.c
++++ b/src/cpc/arnold.c
+@@ -477,6 +477,10 @@ void	CPCEmulation_Run(void)
+ 		}
+ #endif
+ 		/* execute the instruction */
++#ifdef Z80TRACE
++		/* headless opcode-timing audit (tools/z80time): PC and NOP count before each instruction */
++		{ extern void Z80Trace(void); Z80Trace(); }
++#endif
+ #ifdef CPC_NODEBUGGER
+ 		NopCount = Z80_ExecuteInstruction(); 
+ #else
+diff --git a/src/cpc/cpc.c b/src/cpc/cpc.c
+index 5b6823d..02b11d2 100644
+--- a/src/cpc/cpc.c
++++ b/src/cpc/cpc.c
+@@ -2780,6 +2780,9 @@ void CPC_IOCatchUp(void);   /* arnold.c: run the CRTC to the I/O cycle (z80.h Z8
+ #endif
+ void    Z80_DoOut(Z80_WORD Port,Z80_BYTE Data)
+ {
++#ifdef Z80TRACE
++	{ extern void Z80TraceIO(int, unsigned); Z80TraceIO('O', Port); }
++#endif
+ #ifndef NO_IOTIME_FIX
+ 	if (IOTIME_PORT_OUT(Port)) CPC_IOCatchUp();
+ #endif
+@@ -3123,6 +3126,9 @@ Z80_BYTE        KCCompact_In(Z80_WORD Port)
+ 
+ Z80_BYTE        Z80_DoIn(Z80_WORD Port)
+ {
++#ifdef Z80TRACE
++	{ extern void Z80TraceIO(int, unsigned); Z80TraceIO('I', Port); }
++#endif
+ #ifndef NO_IOTIME_FIX
+ 	if (IOTIME_PORT_IN(Port)) CPC_IOCatchUp();
+ #endif
+-- 
+2.50.0.windows.2
+

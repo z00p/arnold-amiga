@@ -1,7 +1,7 @@
-From f8d800a93e4f24429195c9ec2d70b51538559645 Mon Sep 17 00:00:00 2001
+From 6df855c4efd41faa088653f44722de3f24d594ef Mon Sep 17 00:00:00 2001
 From: John Stringer <jcec_1@yahoo.co.uk>
-Date: Sun, 8 Nov 2026 19:33:51 +0000
-Subject: [PATCH 43/43] Headless test host
+Date: Mon, 9 Nov 2026 10:17:18 +0000
+Subject: [PATCH 48/48] Headless test host
 
 src/headless: runs the core without a display (renders N frames to a buffer,
 prints a checksum, writes a PPM; optional key script, frame-skip hook test and
@@ -9,16 +9,16 @@ WAV output). Used for the pixel-exact checks of every change above.
 
 Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
 ---
- src/headless/host_headless.c | 651 +++++++++++++++++++++++++++++++++++
- 1 file changed, 651 insertions(+)
+ src/headless/host_headless.c | 778 +++++++++++++++++++++++++++++++++++
+ 1 file changed, 778 insertions(+)
  create mode 100644 src/headless/host_headless.c
 
 diff --git a/src/headless/host_headless.c b/src/headless/host_headless.c
 new file mode 100644
-index 0000000..4586dfe
+index 0000000..69e6652
 --- /dev/null
 +++ b/src/headless/host_headless.c
-@@ -0,0 +1,651 @@
+@@ -0,0 +1,778 @@
 +/* Headless host for Arnold: renders N frames to an 8-bit chunky buffer and
 + * dumps a PPM. Used to validate the core on big-endian m68k before writing
 + * the AmigaOS (AGA) host. Same shape an Amiga backend will have. */
@@ -86,7 +86,82 @@ index 0000000..4586dfe
 +	if (on && &Render_Black0Used && Render_Black0Used && (pal[b][0] | pal[b][1] | pal[b][2]))
 +		printf("col0hold %d border %d rgb %d %d %d\n", frames, b, pal[b][0], pal[b][1], pal[b][2]);
 +}
-+void Host_SwapGraphicsBuffers(void) { frames++; col0_latch(); if (depth == 8) { Palette_Set(); col0_log(); } if (getenv("FRAMESUM")) framesum(); if (getenv("UNDRAWN")) undrawn(); }
++/* lag18 (5 Nov 2026), a -DLAGTRACE build: for each frame end the monitor line (lines after the
++ * monitor's VSYNC: where Arnold's fixed 19968-cycle frame cut falls against the CPC frame) and
++ * the CRTC's VCC/RA; for each frame the first read of keyboard row 9 (the joystick) as us
++ * after the frame start, and every read whose value changed. Off without LAGTRACE=1. */
++#ifdef LAGTRACE
++#include "../cpc/crtc.h"
++extern unsigned long CPC_NopCount;
++static unsigned long lt_frame0; static int lt_on = -1, lt_read; static unsigned char lt_last = 0xff;
++static void lt_frame_end(void)
++{
++	CRTC_INTERNAL_STATE *s = CRTC_GetInternalState();
++	if (lt_on < 0) lt_on = getenv("LAGTRACE") != NULL;
++	if (lt_on) printf("lagtrace end %d mline %d vcc %d ra %d\n", frames, s->Monitor_State.MonitorScanLineCount, s->LineCounter, s->RasterCounter);
++	lt_frame0 = CPC_NopCount; lt_read = 0;
++}
++void LagTrace_Row9(unsigned char v)
++{
++	if (lt_on < 0) lt_on = getenv("LAGTRACE") != NULL;
++	if (!lt_on) return;
++	if (!lt_read++ || v != lt_last)
++		printf("lagtrace read %d +%lu us %02x%s\n", frames + 1, CPC_NopCount - lt_frame0, v, v != lt_last ? " changed" : "");
++	lt_last = v;
++}
++#else
++static void lt_frame_end(void) {}
++#endif
++#ifndef NO_VSYNCCUT
++/* FRAMEDUMP=a-b (lag18): every drawn frame a..b as <out>.f<frame>.ppm, at the frame end */
++static unsigned long dump_to(const char *name);
++static void framedump(void)
++{
++	const char *e = getenv("FRAMEDUMP"); long a, b; char n[1024];
++	if (!e || sscanf(e, "%ld-%ld", &a, &b) != 2 || frames < a || frames > b) return;
++	snprintf(n, sizeof n, "%s.f%d.ppm", outname, frames); dump_to(n);
++}
++#else
++static void framedump(void) {}
++#endif
++/* RAMTRACE=a-b:file (8 Nov 2026, Puzzle Bobble's dial): the base 64 KB RAM at each frame end a..b,
++ * appended to file (64 KB a frame), to find a game's variables and follow them frame by frame */
++static void ramtrace(void)
++{
++	static FILE *f; static int done;
++	const char *e = getenv("RAMTRACE"); long a, b; int k = 0;
++	extern unsigned char *Z80MemoryBase;
++	if (!e || done || sscanf(e, "%ld-%ld:%n", &a, &b, &k) < 2 || !k || frames < a) return;
++	if (frames > b) { if (f) fclose(f); f = NULL; done = 1; return; }
++	if (!f && !(f = fopen(e + k, "wb"))) { done = 1; return; }
++	fwrite(Z80MemoryBase, 1, 65536, f);
++}
++#ifdef Z80TRACE
++/* Z80TRACE=file (build with -DZ80TRACE; 8 Nov 2026, tools/z80time): "PC nopcount" before every instruction
++ * whose PC is below Z80TRACE_HI (hex, default 4000: the cartridge's page 0), for the opcode-timing audit,
++ * and "O|I port nopcount" for each OUT/IN: the instruction's start count plus its Z80_IO_AT NOPs */
++static FILE *z80t_f; static unsigned z80t_hi = 0x4000;
++static FILE *z80t_file(void)
++{
++	static int tried;
++	if (!tried) { tried = 1; if (getenv("Z80TRACE")) z80t_f = fopen(getenv("Z80TRACE"), "w");
++	  if (getenv("Z80TRACE_HI")) z80t_hi = (unsigned)strtoul(getenv("Z80TRACE_HI"), NULL, 16); }
++	return z80t_f;
++}
++void Z80Trace(void)
++{
++	extern unsigned long CPC_NopCount; unsigned pc;
++	if (!z80t_file()) return;
++	pc = (unsigned)Z80_GetReg(Z80_PC) & 0xffff;
++	if (pc < z80t_hi) fprintf(z80t_f, "%04X %lu\n", pc, CPC_NopCount);
++}
++void Z80TraceIO(int k, unsigned port)
++{
++	extern unsigned long CPC_NopCount; extern int CPC_IOPre;
++	if (z80t_file()) fprintf(z80t_f, "%c %04X %lu\n", k, port & 0xffff, CPC_NopCount + CPC_IOPre);
++}
++#endif
++void Host_SwapGraphicsBuffers(void) { frames++; col0_latch(); if (depth == 8) { Palette_Set(); col0_log(); } if (getenv("FRAMESUM")) framesum(); if (getenv("UNDRAWN")) undrawn(); lt_frame_end(); framedump(); ramtrace(); }
 +void Host_SetPaletteEntry(int i, unsigned char r, unsigned char g, unsigned char b)
 +{
 +	pal[i & 255][0] = r; pal[i & 255][1] = g; pal[i & 255][2] = b;
@@ -139,7 +214,32 @@ index 0000000..4586dfe
 +	memcpy(h + 36, "data", 4); PUT32(40, wav_bytes);
 +	fseek(wav, 0, SEEK_SET); fwrite(h, 1, 44, wav);
 +}
++#ifndef NO_VSYNCCUT
++/* lag18 (5 Nov 2026): frames end at the CPC's VSYNC, the sound stays on the old
++ * 19968-cycle grid through this hook (see arnold.c). NOVCUT=1: the old frame cut.
++ * Proof aids: GRIDSTATE=1 prints the machine at each grid point (the hook here, or
++ * Host_Throttle with NOVCUT=1, the same CPU cycle); KEYGRID=1 applies the key
++ * script at the grid instead of the frame end, so the CPU input is as NOVCUT's. */
++extern void (*CPC_AudioFrameHook)(void);
++static int keygrid;
++static void gridstate(void)
++{
++	static int on = -1; static long n;
++	extern unsigned long CPC_NopCount; extern int Z80_GetReg(int); extern unsigned char *Z80MemoryBase;
++	unsigned long h = 2166136261u; int i;
++	if (on < 0) on = getenv("GRIDSTATE") != NULL;
++	if (!on) return;
++	for (i = 0; i < 65536; i++) h = (h ^ Z80MemoryBase[i]) * 16777619u;
++	printf("grid %ld nop %lu", n++, CPC_NopCount);
++	for (i = 0; i <= 12; i++) printf(" %x", Z80_GetReg(i) & 0xffff);
++	printf(" ram %08lx\n", h & 0xffffffffUL);
++}
++static void keygrid_frame(void);
++static void hd_audio(void) { gridstate(); if (wav) CPC_UpdateAudio(); if (keygrid) keygrid_frame(); }
++void Host_Throttle(void) { if (!CPC_AudioFrameHook) { gridstate(); if (wav) CPC_UpdateAudio(); } }
++#else
 +void Host_Throttle(void) { if (wav) CPC_UpdateAudio(); }
++#endif
 +void Host_DoDriveLEDIndicator(int Drive, BOOL State) {}
 +void Host_SetDirectory(char *d) {}
 +unsigned long Host_GetCurrentTimeInMilliseconds(void) { return (unsigned long)(clock() / (CLOCKS_PER_SEC / 1000)); }
@@ -218,6 +318,22 @@ index 0000000..4586dfe
 +#include "../amiga/tapeauto.c"
 +#define HAVE_TAPEAUTO
 +#endif
++#endif
++#ifndef NO_VSYNCCUT
++/* KEYGRID=1: the key script and the tape auto-start's typing at the sound grid */
++static int keygrid_quit;
++static void keygrid_frame(void)
++{
++	if (script_on) {
++		int ks = KeyScript_Frame(script_frame, script_setkey);
++		if (ks & KS_SNAP) snap(script_frame);
++		script_frame++;
++		if (ks & KS_QUIT) keygrid_quit = 1;
++	}
++#ifdef HAVE_TAPEAUTO
++	TapeAuto_Frame(script_setkey);
++#endif
++}
 +#endif
 +#ifdef HAVE_TAPEAUTO
 +#define TA_GET(v) TapeAuto_GetState(v)
@@ -370,6 +486,10 @@ index 0000000..4586dfe
 +		extern int Z80_GetReg(int);
 +		fprintf(stderr, "frame %ld PC %04x SP %04x AF %04x HL %04x IFF1 %d IM %d\n", pf, Z80_GetReg(0) & 0xffff,
 +			Z80_GetReg(1) & 0xffff, Z80_GetReg(6) & 0xffff, Z80_GetReg(9) & 0xffff, Z80_GetReg(10), Z80_GetReg(12)); } }
++#ifndef NO_VSYNCCUT
++	if (keygrid && CPC_AudioFrameHook) { if (keygrid_quit) ss_quit = 1; }
++	else
++#endif
 +	if (script_on) {
 +		int ks = KeyScript_Frame(script_frame, script_setkey);
 +		if (ks & KS_SNAP) snap(script_frame);   /* SNAP: dump the last drawn frame as <out>.<frame>.ppm */
@@ -377,6 +497,9 @@ index 0000000..4586dfe
 +		if (ks & KS_QUIT) ss_quit = 1;
 +	}
 +#ifdef HAVE_TAPEAUTO
++#ifndef NO_VSYNCCUT
++	if (!(keygrid && CPC_AudioFrameHook))
++#endif
 +	TapeAuto_Frame(script_setkey);
 +#endif
 +	if (!ss_quit) ss_quit = hook_mode ? ++emu_frames >= maxframes : frames >= maxframes;
@@ -610,6 +733,10 @@ index 0000000..4586dfe
 +	dump_disk(0, "DISKDUMP");
 +	Render_SetDisplayWindowed();
 +	if (argc > 7 && argv[7][0] != '-') { wav = fopen(argv[7], "wb"); if (wav) { fseek(wav, 44, SEEK_SET); CPC_SetAudioActive(TRUE); } }
++#ifndef NO_VSYNCCUT
++	if (!getenv("NOVCUT") || !atoi(getenv("NOVCUT"))) CPC_AudioFrameHook = hd_audio;
++	keygrid = getenv("KEYGRID") && atoi(getenv("KEYGRID"));
++#endif
 +	ss_setup();
 +	if (getenv("SS_LOAD")) {
 +		unsigned char *d; unsigned long l;

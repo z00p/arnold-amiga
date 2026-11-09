@@ -6,6 +6,9 @@
  *     "ARNS" <length, 4 bytes little-endian, as every SNA/RIFF chunk>
  *     "ArnoldSS" <format> <flags> <payload length> <CRC-32 of the payload>
  *     payload: sections "TAG " <length> <data>, all numbers big-endian
+ * and (1.8, 8 Nov 2026) the chunk "ARNX", the same layout with "ArnoldSX" and its own format:
+ * values a 1.7 Arnold doesn't know (1.7 skips the chunk and loads the state; a state without
+ * it, from 1.7, loads in 1.8 as before). Format 1: section "VCUT" (the VSYNC cut, arnold.c).
  * Integers are written as 1, 2 or 8 bytes (C types of 4 and 8 bytes both as 8,
  * since long is 4 bytes on the Amiga and 8 on the 64-bit PC). Pointers are not
  * stored: they become offsets or indices, or are worked out again on load.
@@ -415,6 +418,31 @@ static void ss_stream(SS_IO *io, SS_MEDIA *md, const SAVESTATE_INFO *info, const
 	if (!io->err && io->load && io->pos != io->len) SS_Fail(io, "The state is damaged (data after the end)");
 }
 
+/* 1.8: the ARNX payload */
+#define SS_EXT_FORMAT 1
+static void ss_ext_stream(SS_IO *io)
+{
+	SS_Begin(io, "VCUT"); SS_ArnoldExt(io); SS_End(io);
+	if (!io->err && io->load && io->pos != io->len) SS_Fail(io, "The state is damaged (data after the end of ARNX)");
+}
+
+static int ss_build_ext(SS_IO *io)
+{
+	memset(io, 0, sizeof *io);
+	ss_ext_stream(io);
+	return !io->err;
+}
+
+/* a chunk "<id>" <length LE> "<magic>" <format> <flags 0> <payload length> <CRC> <payload> at p (32 + n bytes) */
+static void ss_put_chunk(unsigned char *p, const char *id, const char *magic, unsigned long format, const SS_IO *io)
+{
+	memcpy(p, id, 4); put32le(p + 4, 24 + io->pos);
+	memcpy(p + 8, magic, 8);
+	put32be(p + 16, format); put32be(p + 20, 0);
+	put32be(p + 24, io->pos); put32be(p + 28, SaveState_Crc32(0, io->buf, io->pos));
+	memcpy(p + 32, io->buf, io->pos);
+}
+
 static void ss_copymsg(char *msg, int msglen, const char *m)
 {
 	if (msg && msglen > 0) { strncpy(msg, m, msglen - 1); msg[msglen - 1] = 0; }
@@ -436,38 +464,39 @@ static int ss_build(SS_IO *io, const SAVESTATE_INFO *info, int embed_all)
 
 int SaveState_Save(unsigned char **pData, unsigned long *pLen, const SAVESTATE_INFO *info, char *msg, int msglen)
 {
-	SS_IO io;
+	SS_IO io, x;
 	SS_MACHINE m;
 	unsigned long snalen, total;
 	unsigned char *b, *p;
 	int memk;
 	*pData = NULL; *pLen = 0;
 	if (!ss_build(&io, info, 0)) { ss_copymsg(msg, msglen, io.msg); free(io.buf); return 0; }
+	if (!ss_build_ext(&x)) { ss_copymsg(msg, msglen, x.msg); free(io.buf); free(x.buf); return 0; }
 	SS_GetMachine(&m);
 	memk = m.ramexp ? 128 : 64;
 	snalen = Snapshot_CalculateOutputSize(memk, 3);
-	total = snalen + 8 + 24 + io.pos;
+	total = snalen + 32 + io.pos + 32 + x.pos;
 	b = (unsigned char *)malloc(total);
-	if (!b) { ss_copymsg(msg, msglen, "Not enough memory for the state"); free(io.buf); return 0; }
+	if (!b) { ss_copymsg(msg, msglen, "Not enough memory for the state"); free(io.buf); free(x.buf); return 0; }
 	memset(b, 0, snalen);
 	Snapshot_GenerateOutputData(b, memk, 3);
 	p = b + snalen;
-	memcpy(p, "ARNS", 4); put32le(p + 4, 24 + io.pos);
-	memcpy(p + 8, "ArnoldSS", 8);
-	put32be(p + 16, SAVESTATE_FORMAT); put32be(p + 20, 0);
-	put32be(p + 24, io.pos); put32be(p + 28, SaveState_Crc32(0, io.buf, io.pos));
-	memcpy(p + 32, io.buf, io.pos);
-	free(io.buf);
+	ss_put_chunk(p, "ARNS", "ArnoldSS", SAVESTATE_FORMAT, &io);
+	ss_put_chunk(p + 32 + io.pos, "ARNX", "ArnoldSX", SS_EXT_FORMAT, &x);
+	free(io.buf); free(x.buf);
 	*pData = b; *pLen = total;
 	ss_copymsg(msg, msglen, "");
 	return 1;
 }
 
-/* finds the ARNS payload: 1 = found and sound, 2 = a plain SNA (no ARNS), 0 = refused */
-static int ss_find(const unsigned char *d, unsigned long len, const unsigned char **pay, unsigned long *paylen, char *m)
+/* finds the ARNS payload (and ARNX's, NULL if none): 1 = found and sound, 2 = a plain SNA (no
+ * ARNS), 0 = refused */
+static int ss_find(const unsigned char *d, unsigned long len, const unsigned char **pay, unsigned long *paylen,
+                   const unsigned char **xpay, unsigned long *xpaylen, char *m)
 {
 	unsigned long memsize, pos;
-	int version;
+	int version, found = 0;
+	*xpay = NULL; *xpaylen = 0;
 	if (!d || len < 256 || memcmp(d, "MV - SNA", 8)) { strcpy(m, "Not a CPC snapshot (.sna)"); return 0; }
 	version = d[0x10];
 	if (version < 1 || version > 3) { sprintf(m, "Snapshot version %d is not supported", version); return 0; }
@@ -489,11 +518,20 @@ static int ss_find(const unsigned char *d, unsigned long len, const unsigned cha
 			if (l != cl - 24) { strcpy(m, "The save state is damaged (wrong length)"); return 0; }
 			if (SaveState_Crc32(0, h + 24, l) != get32be(h + 20)) { strcpy(m, "The save state is damaged (CRC error)"); return 0; }
 			*pay = h + 24; *paylen = l;
-			return 1;
+			found = 1;
+		} else if (!memcmp(d + pos, "ARNX", 4)) {   /* 1.8 */
+			const unsigned char *h = d + pos + 8;
+			unsigned long f, l;
+			if (cl < 24 || memcmp(h, "ArnoldSX", 8)) { strcpy(m, "The save state is damaged (bad ARNX chunk)"); return 0; }
+			f = get32be(h + 8); l = get32be(h + 16);
+			if (f != SS_EXT_FORMAT) { sprintf(m, "This save state was made by another version of Arnold (ARNX format %lu, this one reads %d)", f, SS_EXT_FORMAT); return 0; }
+			if (l != cl - 24) { strcpy(m, "The save state is damaged (wrong ARNX length)"); return 0; }
+			if (SaveState_Crc32(0, h + 24, l) != get32be(h + 20)) { strcpy(m, "The save state is damaged (ARNX CRC error)"); return 0; }
+			*xpay = h + 24; *xpaylen = l;
 		}
 		pos += 8 + cl;
 	}
-	return 2;
+	return found ? 1 : 2;
 }
 
 /* the start of the payload: machine and media, without touching anything */
@@ -521,10 +559,10 @@ static int ss_plain_ok(unsigned long len, char *m)
 
 int SaveState_Check(const unsigned char *data, unsigned long len, char *msg, int msglen)
 {
-	const unsigned char *pay; unsigned long paylen;
+	const unsigned char *pay, *xpay; unsigned long paylen, xpaylen;
 	char m[300];
 	SS_MEDIA md;
-	int r = ss_find(data, len, &pay, &paylen, m);
+	int r = ss_find(data, len, &pay, &paylen, &xpay, &xpaylen, m);
 	if (r == 2) { if (!ss_plain_ok(len, m)) { ss_copymsg(msg, msglen, m); return 0; } ss_copymsg(msg, msglen, ""); return 2; }
 	if (r == 0 || !ss_peek(pay, paylen, &md, m) || !ss_compatible(&md, m, sizeof m)) { ss_copymsg(msg, msglen, m); return 0; }
 	ss_copymsg(msg, msglen, "");
@@ -533,12 +571,12 @@ int SaveState_Check(const unsigned char *data, unsigned long len, char *msg, int
 
 int SaveState_Load(const unsigned char *data, unsigned long len, char *msg, int msglen, SAVESTATE_LOADED *out)
 {
-	const unsigned char *pay; unsigned long paylen;
+	const unsigned char *pay, *xpay; unsigned long paylen, xpaylen;
 	char m[300];
 	SS_MEDIA md, keep, before;
-	SS_IO backup, io;
+	SS_IO backup, xbackup, io;
 	const unsigned char *host = NULL; unsigned long hostlen = 0;
-	int r = ss_find(data, len, &pay, &paylen, m), d;
+	int r = ss_find(data, len, &pay, &paylen, &xpay, &xpaylen, m), d;
 	if (out) memset(out, 0, sizeof *out);
 	if (r == 2) {
 		if (!ss_plain_ok(len, m)) { ss_copymsg(msg, msglen, m); return SAVESTATE_REFUSED; }
@@ -549,10 +587,18 @@ int SaveState_Load(const unsigned char *data, unsigned long len, char *msg, int 
 	if (r == 0 || !ss_peek(pay, paylen, &md, m) || !ss_compatible(&md, m, sizeof m)) { ss_copymsg(msg, msglen, m); return SAVESTATE_REFUSED; }
 	/* keep the running machine (with all its media) to put back if this fails */
 	if (!ss_build(&backup, NULL, 1)) { ss_copymsg(msg, msglen, backup.msg); free(backup.buf); return SAVESTATE_REFUSED; }
+	if (!ss_build_ext(&xbackup)) { ss_copymsg(msg, msglen, xbackup.msg); free(backup.buf); free(xbackup.buf); return SAVESTATE_REFUSED; }
 	ss_gather(&before, NULL, 0);
 	memset(&io, 0, sizeof io);
 	io.load = 1; io.buf = (unsigned char *)pay; io.len = paylen;
 	ss_stream(&io, &md, NULL, &host, &hostlen);
+	if (!io.err && xpay) {   /* 1.8: after the payload, which sets what a state without ARNX needs */
+		SS_IO xio;
+		memset(&xio, 0, sizeof xio);
+		xio.load = 1; xio.buf = (unsigned char *)xpay; xio.len = xpaylen;
+		ss_ext_stream(&xio);
+		if (xio.err) { io.err = 1; strcpy(io.msg, xio.msg); }
+	}
 	if (io.err) {
 		SS_IO back;
 		memset(&back, 0, sizeof back);
@@ -560,13 +606,18 @@ int SaveState_Load(const unsigned char *data, unsigned long len, char *msg, int 
 		ss_restoring = 1;
 		if (ss_peek(backup.buf, backup.pos, &keep, m)) ss_stream(&back, &keep, NULL, NULL, NULL);
 		else back.err = 1;
+		if (!back.err) {
+			memset(&back, 0, sizeof back);
+			back.load = 1; back.buf = xbackup.buf; back.len = xbackup.pos;
+			ss_ext_stream(&back);
+		}
 		ss_restoring = 0;
 		sprintf(m, "%.150s%s", io.msg, back.err ? " (and the machine could not be put back: Power ON)" : " (nothing changed)");
-		free(backup.buf);
+		free(backup.buf); free(xbackup.buf);
 		ss_copymsg(msg, msglen, m);
 		return SAVESTATE_REFUSED;
 	}
-	free(backup.buf);
+	free(backup.buf); free(xbackup.buf);
 	if (out) {
 		out->host = host; out->hostlen = hostlen;
 		for (d = 0; d < 2; d++) {

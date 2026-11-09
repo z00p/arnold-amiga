@@ -94,7 +94,7 @@ static int gx_autostart;   /* frames until the GX4000 auto-start presses f2 (0 =
 static long help_after;    /* test: HELPAFTER=n presses Help once after n frames (0 = off) */
 static long help_every;    /* test: HELPEVERY=n presses Help n frames after every start or Continue (RTG pilot menu cycles) */
 static int skip_max = 3, skip_run, refresh = 1; static int rtglock = 1;   /* sonic16: Sys_PaceLock policy (RTGLOCK=n) */
-extern int rtg_x_pan_forbid, rtg_x_pan_lines, rtg_x_pan_mirror;   /* rtgfw.c (rtg17 tests): anchor pans under Forbid (PANFORBID=n), pan offset (PANLINES=n), page 1 mirrored (PANMIRROR=n) */
+extern int rtg_x_pan_forbid, rtg_x_pan_lines, rtg_x_pan_mirror, rtg_x_pan_flip;   /* rtgfw.c (rtg17 tests): anchor pans under Forbid (PANFORBID=n), pan offset (PANLINES=n), page 1 mirrored (PANMIRROR=n) */
 static unsigned long refresh_count;
 static long behind_us;
 extern int (*CPC_SkipNextFrameHook)(void);
@@ -173,6 +173,12 @@ static void perf_report(FILE *f)
 	fprintf(f, "perf late_frames=%lu palette_us_per_frame=%lu palette_loads=%lu\n", Sys_Perf.late_frames, Sys_Perf.pal_us / n, Sys_Perf.palette_loads);
 	fprintf(f, "perf skipped_frames=%lu skip_max=%d refresh=%d shown_fps_x10=%lu\n", Sys_Perf.skipped_frames, skip_max, refresh, Sys_Perf.c2p_frames * 10000UL / (total / 1000 ? total / 1000 : 1));
 	fprintf(f, "perf sound=%d audio_underruns=%lu audio_drops=%lu\n", audio_open, Sys_Perf.aud_underruns, Sys_Perf.aud_drops);
+	if (Sys_Perf.lag_n) fprintf(f, "perf lag_avg_us=%lu lag_min_us=%lu lag_max_us=%lu lag_frames=%lu lag_over=%lu\n", Sys_Perf.lag_sum / Sys_Perf.lag_n, Sys_Perf.lag_min, Sys_Perf.lag_max, Sys_Perf.lag_n, Sys_Perf.lag_over);
+	if (Sys_Perf.jr_frames) fprintf(f, "perf joyreread_reads=%lu joyreread_frames=%lu joyreread_after_start_avg_us=%lu joyreread_after_start_max_us=%lu joyreread_cost_avg_us=%lu joyreread_cost_max_us=%lu lowlevel_avg_us=%lu\n", Sys_Perf.jr_reads, Sys_Perf.jr_frames, Sys_Perf.jr_gain_sum / Sys_Perf.jr_frames, Sys_Perf.jr_gain_max, Sys_Perf.jr_cost_sum / Sys_Perf.jr_reads, Sys_Perf.jr_cost_max, Sys_Perf.jr_ll_n ? Sys_Perf.jr_ll_sum / Sys_Perf.jr_ll_n : 0);
+	if (Sys_Perf.ls_n) fprintf(f, "perf latestart_frames=%lu latestart_avg_us=%lu latestart_max_us=%lu latestart_work_max_us=%lu latestart_holds=%lu\n", Sys_Perf.ls_n, Sys_Perf.ls_off_sum / Sys_Perf.ls_n, Sys_Perf.ls_off_max, Sys_Perf.ls_work_max, Sys_Perf.ls_holds);
+#ifndef NO_VSYNCCUT
+	{ extern unsigned long CPC_VcutShifts; fprintf(f, "perf vsync_shifts=%lu\n", CPC_VcutShifts); }   /* lag18: frames that moved the phase */
+#endif
 	fprintf(f, "perf c2p_lines5=%lu c2p_lines6=%lu c2p_clear_planes=%lu chip_bytes_per_shown_frame_est=%lu\n", Sys_Perf.c2p_lines5, Sys_Perf.c2p_lines6, Sys_Perf.c2p_clear_planes,
 		((Sys_Perf.c2p_lines - Sys_Perf.c2p_lines5 - Sys_Perf.c2p_lines6) * 8 + Sys_Perf.c2p_lines5 * 5 + Sys_Perf.c2p_lines6 * 6 + Sys_Perf.c2p_clear_planes) * (Sys_Perf.line_bytes / 8) / cf);
 	if (Sys_Perf.bpu_sum) fprintf(f, "perf planes_shown_x10=%lu\n", Sys_Perf.bpu_sum * 10 / cf); if (Sys_Perf.c2p_chip_longs) fprintf(f, "perf chip_bytes_written_per_shown_frame=%lu\n", Sys_Perf.c2p_chip_longs * 4 / cf);
@@ -326,6 +332,16 @@ void Host_UnLockAudioBuffer(void)
 	Sys_AudioQueue(audio_tmp, audio_tmp_len / 4);
 }
 
+#ifndef NO_VSYNCCUT
+/* lag18 (5 Nov 2026): frames end at the CPC's VSYNC (cpc/arnold.c); the sound stays on
+ * the old 19968-cycle grid, so its blocks are exactly as before. vsynccut=0 in the
+ * prefs or VSYNCCUT=0: the old fixed frame cut. */
+extern void (*CPC_AudioFrameHook)(void);
+static int vsynccut = 1;
+static int vc_blocks;   /* sound grid points since the last frame end: 1, or 0 / 2 in the frame that moves the phase */
+static void audio_frame(void) { vc_blocks++; if (audio_open) CPC_UpdateAudio(); }
+#endif
+
 /* Once a frame: the core mixes the frame's sound (Host_LockAudioBuffer /
  * Host_UnLockAudioBuffer queue it for Paula), then the 50 Hz wait. The Windows
  * host does the same; without the CPC_UpdateAudio call there is no sound. */
@@ -365,7 +381,22 @@ void Host_Throttle(void)
 		TapeAudio_On = menu.tapesound && audio_open && tape_in[0] && !fast;
 		if (TapeAudio_On && !(++ts_frames % 500)) Sys_Log("tape sound: %lu frames mixed, %lu level changes", ts_frames, TapeAudio_Changes);
 	}
+#ifndef NO_VSYNCCUT
+	if (audio_open && !CPC_AudioFrameHook) CPC_UpdateAudio();   /* VSYNC cut: audio_frame below */
+#else
 	if (audio_open) CPC_UpdateAudio();
+#endif
+#ifndef NO_VSYNCCUT
+	if (CPC_AudioFrameHook) {   /* VSYNC cut: one 50 Hz wait per sound block, so the frame that moves the
+	                               phase (0 or 2 blocks) keeps the sound queue and the pace in step */
+		int n = vc_blocks;
+		vc_blocks = 0;
+		if (fast) { behind_us = 0; if (ffwd_on) ffwd_frames++; else tape_fast_frames++; return; }
+		behind_us = 0;
+		if (!turbo) while (n-- > 0) behind_us = Sys_WaitFrame();
+		return;
+	}
+#endif
 	if (fast) { behind_us = 0; if (ffwd_on) ffwd_frames++; else tape_fast_frames++; return; }   /* fast tape / fast-forward: no 50 Hz wait */
 	behind_us = turbo ? 0 : Sys_WaitFrame();   /* TURBO: run flat out */
 }
@@ -517,15 +548,51 @@ static void host_key(int code, int down, int qual)
 	}
 }
 
-BOOL Host_ProcessSystemEvents(void)
+/* The stick (port 2, lowlevel's pads, keys as joystick) into CPC joystick 0's keys: only the
+ * bits that changed, so a key script's own presses stay as they are. */
+static void joy_apply(void)
 {
-	int code, down, qual;
-	unsigned joy, diff;
 	static const struct { unsigned bit; int key; } jk[] = {
 		{SYS_JOY_UP, CPC_KEY_JOY_UP}, {SYS_JOY_DOWN, CPC_KEY_JOY_DOWN},
 		{SYS_JOY_LEFT, CPC_KEY_JOY_LEFT}, {SYS_JOY_RIGHT, CPC_KEY_JOY_RIGHT},
 		{SYS_JOY_FIRE1, CPC_KEY_JOY_FIRE1}, {SYS_JOY_FIRE2, CPC_KEY_JOY_FIRE2} };
+	unsigned joy = Sys_ReadJoystick() | kb_joy, diff = joy ^ joy_prev;
 	int i;
+	if (keylog && diff) { fprintf(keylog, "joy %02x raw %08lx\n", joy, Sys_JoyRaw(1)); fflush(keylog); }
+	for (i = 0; i < 6; i++)
+		if (diff & jk[i].bit) { if (joy & jk[i].bit) CPC_SetKey(jk[i].key); else CPC_ClearKey(jk[i].key); }
+	joy_prev = joy;
+}
+
+#ifndef NO_JOYREREAD
+/* 1.8 (8 Nov 2026): the stick is read again when the game reads it (the core's CPC_JoyReadHook at
+ * keyboard row 9), not only at the frame start, so the game sees it as it is at its own read, as
+ * on a real CPC. A frame is emulated in less than a display period, so the read comes that much
+ * later in real time: up to the frame's whole work time. At most JR_MAX reads a frame and JR_GAP
+ * CPC cycles apart (about 2 ms of CPC time), so a game polling the row in a loop costs nothing
+ * more; a CD32 read takes about 0.5 ms with interrupts off. JOYREREAD=0 or joyreread=0 in the
+ * prefs: once a frame, as 1.7. */
+extern void (*CPC_JoyReadHook)(void);
+static int joyreread = 1;
+#define JR_GAP 2000
+#define JR_MAX 4
+static unsigned long jr_last;
+static int jr_n;
+static void joy_reread(void)
+{
+	unsigned long n = CPC_GetNopCount();
+	if (jr_n >= JR_MAX || n - jr_last < JR_GAP) return;
+	jr_last = n; jr_n++;
+	Sys_LagReread();
+	{ unsigned long t0 = Sys_Micros(), t;
+	  Sys_JoyPortOnly = 1; joy_apply(); Sys_JoyPortOnly = 0;   /* not the USB pads: 0.4 ms (amiga_joy.c) */
+	  t = Sys_Micros() - t0; Sys_Perf.jr_cost_sum += t; if (t > Sys_Perf.jr_cost_max) Sys_Perf.jr_cost_max = t; }
+}
+#endif
+
+BOOL Host_ProcessSystemEvents(void)
+{
+	int code, down, qual;
 
 	if (script_on) {
 		int fl = KeyScript_Frame(script_frame, script_setkey);
@@ -549,12 +616,11 @@ BOOL Host_ProcessSystemEvents(void)
 	if (help_after > 0 && --help_after == 0) { Sys_RequestQuit(); help_after = help_every; }
 	if (Sys_Poll()) return TRUE;
 	while (Sys_GetKey(&code, &down, &qual)) host_key(code, down, qual);
-	joy = Sys_ReadJoystick() | kb_joy;
-	diff = joy ^ joy_prev;
-	if (keylog && diff) { fprintf(keylog, "joy %02x raw %08lx\n", joy, Sys_JoyRaw(1)); fflush(keylog); }
-	for (i = 0; i < 6; i++)
-		if (diff & jk[i].bit) { if (joy & jk[i].bit) CPC_SetKey(jk[i].key); else CPC_ClearKey(jk[i].key); }
-	joy_prev = joy;
+	Sys_LagSample();   /* lag18: the stick is sampled for the next frame now */
+	joy_apply();
+#ifndef NO_JOYREREAD
+	jr_n = 0; jr_last = CPC_GetNopCount();   /* 1.8: and again at the game's own read (joy_reread) */
+#endif
 	return Sys_Poll() || hk_request;
 }
 
@@ -621,6 +687,13 @@ static void prefs_load(void)
 		else if (!strcmp(line, "hdmisound")) menu.hdmisound = atoi(v) ? 1 : 0;
 		else if (!strcmp(line, "tone")) { int k = Sys_ParseTone(v); if (k >= 0) menu.tone = k; }
 		else if (!strcmp(line, "rtglock")) rtglock = atoi(v);   /* sonic16 test setting, as RTGLOCK=n */
+		else if (!strcmp(line, "lsmargin")) Sys_LateMarginUs = atol(v);   /* lag18 test setting, as LSMARGIN=us (0: no late start) */
+#ifndef NO_VSYNCCUT
+		else if (!strcmp(line, "vsynccut")) vsynccut = atoi(v) ? 1 : 0;   /* lag18 test setting, as VSYNCCUT=0/1 */
+#ifndef NO_JOYREREAD
+		else if (!strcmp(line, "joyreread")) joyreread = atoi(v) ? 1 : 0;   /* 1.8, as JOYREREAD=0/1 */
+#endif
+#endif
 		else if (!strcmp(line, "scanlines")) { int k = Sys_ParseScan(v); if (k >= 0) menu.scan = k; }
 		else if (!strcmp(line, "tape")) strncpy(menu.tape, v, SYS_PATH - 1);
 	}
@@ -645,6 +718,13 @@ static void prefs_save(void)
 	fprintf(f, "hdmisound=%d\n", menu.hdmisound);
 	fprintf(f, "tone=%s\n", Sys_ToneWords[menu.tone >= 0 && menu.tone <= 2 ? menu.tone : 1]);
 	if (rtglock != 1) fprintf(f, "rtglock=%d\n", rtglock);
+	if (Sys_LateMarginUs != 4000) fprintf(f, "lsmargin=%ld\n", Sys_LateMarginUs);
+#ifndef NO_VSYNCCUT
+	if (!vsynccut) fprintf(f, "vsynccut=0\n");
+#ifndef NO_JOYREREAD
+	if (!joyreread) fprintf(f, "joyreread=0\n");
+#endif
+#endif
 	fprintf(f, "scanlines=%s\n", Sys_ScanWords[global_scan > 0 && global_scan < SYS_SCANS ? global_scan : 0]);
 	if (global_remap[0]) fprintf(f, "remap=%s\n", global_remap);
 	fclose(f);
@@ -1269,10 +1349,18 @@ int main(int argc, char **argv)
 			else if (!kwcmp(argv[i], "OSD")) Sys_Osd = 1;
 			else if (!kwcmp(argv[i], "NOCD32")) Sys_NoCD32 = 1;
 			else if (!kwncmp(argv[i], "SKIP=", 5)) skip_max = atoi(argv[i] + 5);
+			else if (!kwncmp(argv[i], "PANFLIP=", 8)) rtg_x_pan_flip = atoi(argv[i] + 8);   /* flip18 test: 0 = anchors pan there and back, as 1.7 */
 			else if (!kwncmp(argv[i], "PANMIRROR=", 10)) rtg_x_pan_mirror = atoi(argv[i] + 10);   /* rtg17 test: 0 = page 1 black, as 1.6 */
 			else if (!kwncmp(argv[i], "PANLINES=", 9)) rtg_x_pan_lines = atoi(argv[i] + 9);   /* rtg17 test: -1 a page (default), 0 one pan to the same offset */
 			else if (!kwncmp(argv[i], "PANFORBID=", 10)) rtg_x_pan_forbid = atoi(argv[i] + 10);   /* rtg17 test: 0 = anchor pans without Forbid */
 			else if (!kwncmp(argv[i], "LEAD=", 5)) Sys_LeadUs = atoi(argv[i] + 5);   /* sonic16: frame lead, us (0 = off) */
+			else if (!kwncmp(argv[i], "LSMARGIN=", 9)) Sys_LateMarginUs = atol(argv[i] + 9);   /* lag18: RTG late start margin, us (0 = off) */
+#ifndef NO_VSYNCCUT
+			else if (!kwncmp(argv[i], "VSYNCCUT=", 9)) vsynccut = atoi(argv[i] + 9) ? 1 : 0;   /* lag18: frames end at the CPC VSYNC (0 = as 1.7) */
+#ifndef NO_JOYREREAD
+			else if (!kwncmp(argv[i], "JOYREREAD=", 10)) joyreread = atoi(argv[i] + 10) ? 1 : 0;   /* 1.8: the stick again at the game's read (0 = once a frame) */
+#endif
+#endif
 			else if (!kwncmp(argv[i], "REFRESH=", 8)) refresh = atoi(argv[i] + 8);
 			else if (!kwncmp(argv[i], "JOYKEYS=", 8)) joykeys = atoi(argv[i] + 8);
 			else if (!kwncmp(argv[i], "REMAP=", 6)) remap_parse(argv[i] + 6);
@@ -1410,6 +1498,12 @@ int main(int argc, char **argv)
 			if (action == SYS_MENU_RESET) { if (tape_in[0] && TapeImage_GetCurrentBlock() == 0) tape_autostart("reset"); else TapeAuto_Stop(); }   /* a tape at its start loads again */
 		}
 		{ int ok = open_emulation(); Sys_MenuClose(); if (!ok) { want_menu = 1; pending_load = 0; continue; } }
+#ifndef NO_VSYNCCUT
+		{ static int said; CPC_AudioFrameHook = vsynccut ? audio_frame : NULL; if (!said++) Sys_Log("frame end: %s", vsynccut ? "at the CPC VSYNC" : "fixed (as 1.7)"); }
+#ifndef NO_JOYREREAD
+		{ static int said; CPC_JoyReadHook = joyreread ? joy_reread : NULL; if (!said++) Sys_Log("joystick: %s", joyreread ? "read again at the game's read (up to 4 a frame)" : "read once a frame (as 1.7)"); }
+#endif   /* before a state load: its sound grid phase needs the hook */
+#endif
 		if (pending_load) {
 			int slot = pending_load;
 			pending_load = 0;

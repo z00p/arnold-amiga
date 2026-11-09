@@ -423,6 +423,79 @@ the border and a black pen part way down the frame), and identical with entry
 0 shown as the border colour (AMIGACOL0 in the headless host).
 NO_BLACK0_SHARE restores the previous patch."
 
+# lag18 (5 Nov 2026): the frame ends at the CPC's VSYNC (arnold.c had no other change since $B14; HEAD's
+# arnold.c also holds the ARNX and Z80TRACE changes below, so this step takes 58ff451's)
+post 58ff451 arnold/src/cpc/arnold.c
+commit "Frame end at the CPC's VSYNC; sound kept on the fixed grid" "CPCEmulation_Run ended each frame a fixed 19968 cycles after the last, counted
+from power on, so where the cut fell in the CPC's own frame depended on how a
+game set up the CRTC. Rows above the cut then belonged to the next CPC frame
+(a seam in fast vertical scrolling), and a game that reads the joystick before
+the cut and draws the answer below it showed it a whole frame late.
+
+Frames stay 19968 cycles, but once the cut has sat at the same place (within 2
+lines) for two frames, more than 4 lines after or 8 lines before the monitor's
+VSYNC, one frame is made shorter (or longer) so the following cuts fall 32
+cycles after the VSYNC. A game that moves its VSYNC is followed the same way;
+with no VSYNC the monitor runs free at 312 lines and the cut locks to that.
+
+The cut no longer splits an instruction (the whole instruction runs, then the
+frame ends). Sound and the I/O lead stay exactly as before: a host that sets
+CPC_AudioFrameHook gets it called at the old frame ends (the sound grid), with
+the CRTC run up to that cycle as the old frame end did, and calls
+CPC_UpdateAudio there instead of in Host_Throttle. The CPU, the sound and the
+machine at each grid point are unchanged (headless: the same WAV, the same
+registers and RAM at every grid point, with the key script applied at the grid);
+each picture is one whole CPC frame, and every old picture is the top of one
+new picture over the bottom of the one before. A host that does not set the hook
+gets the old fixed frames. Save states carry the grid's place (two more LOOP
+values; a state without them had its frame end on the grid). NO_VSYNCCUT
+builds the old loop."
+
+# joy18 (8 Nov 2026): the VSYNC-cut values move to their own chunk, so 1.7 loads 1.8's states
+post 82f7a2a arnold/src/cpc/arnold.c arnold/src/cpc/savestate.c arnold/src/cpc/savestate.h
+commit "Save states: the VSYNC-cut values in a chunk of their own (ARNX)" "The previous patch stored the frame end's place on the sound grid (AudioAt,
+VcutPrevE) at the end of the LOOP section. A build without it (1.7) then
+refused such a state, its LOOP section 16 bytes longer than expected. The two
+values now go in a new chunk, ARNX, after ARNS; a build that does not know the
+chunk skips it, so a state from this build loads there (frame end on the grid,
+as before). Older states, with neither the chunk nor the values, load here as
+before, and states with the values in LOOP still resume exactly. Checked both
+ways with the previous build: exact resume and round trips (32 checks)."
+
+# z80fix (8 Nov 2026): NOP counts from the opcode-timing audit
+post HEAD arnold/src/cpc/z80/z80.c
+commit "Z80: NOP counts of LD (HL),n, CPI/CPD and the repeating block instructions" "An audit ran every opcode once (conditionals both ways, block instructions
+with one repeat; 1876 tests on seven test cartridges) in Arnold and CPCEC and
+compared each instruction's NOP count and the position of each I/O access.
+Every I/O position matched; 15 counts differed, now CPCEC's:
+  LD (HL),n          3 (was 2)
+  CPI, CPD           4 (was 5)
+  CPIR, CPDR         6 a repeat, 4 the last pass (were 5 and 6)
+  INIR, INDR,
+  OTIR, OTDR         6 a repeat, 5 the last pass (were 5 and 6: swapped)
+After the change all 1876 match. Constants only, no speed cost. Most games'
+timing moves a little (LD (HL),n is everywhere); a sweep of 80 cartridges
+over 1500 frames showed every one in a sound state, and in the raster-heavy
+titles traced the Plus split-screen writes land on the same lines. NO_Z80TIME_FIX
+keeps the old counts."
+
+# joy18 (8 Nov 2026): a host hook at the game's joystick read (cpc.c at 2c287c8 also has lag18's LAGTRACE hook)
+post 2c287c8 arnold/src/cpc/cpc.c
+commit "Joystick: a host hook at the game's read of the joystick row" "CPC_JoyReadHook (NULL by default: unchanged behaviour) is called when the
+game reads keyboard row 9, before the read, so a host can read its stick
+again there and the game sees it as it is at its own read, as on a real CPC,
+not as it was at the start of the emulated frame. The Amiga host uses it to
+take several milliseconds off the delay from stick to picture. NO_JOYREREAD
+leaves the hook out. Also here: LAGTRACE, a test-only hook (headless builds
+with -DLAGTRACE) that logs where in the frame the game reads the row."
+
+# z80time (8 Nov 2026): the audit's trace hooks
+post HEAD arnold/src/cpc/arnold.c arnold/src/cpc/cpc.c
+commit "Diagnostics: Z80 opcode-timing trace (Z80TRACE; off by default)" "With -DZ80TRACE (the headless host's audit build) the core calls Z80Trace
+before each instruction and Z80TraceIO at each IN and OUT, for the PC and
+NOP count traces the previous Z80 patch was checked with. Normal builds are
+unchanged."
+
 post HEAD arnold/src/cpc
 commit "Core: remaining changes" "Small changes made after the fixes above."
 

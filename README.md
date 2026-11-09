@@ -59,6 +59,17 @@ default): after Power ON Arnold types the load command (`RUN"` on a 464, `|TAPE`
 a 664 or 6128, f1 first on the Plus) and presses a key at "Press PLAY then any key". Saving to
 tape is not supported, and only .cdt images load (no .wav, .voc or .csw samples).
 
+Less controller lag (1.8): Arnold reads the joystick again when the game reads it (`JOYREREAD=0|1`,
+port 2, up to 4 times a frame) and ends each CPC frame at the CPC's own vertical sync
+(`VSYNCCUT=0|1`); on the RTG screen each frame starts as late as it safely can (`LSMARGIN=us`,
+4000 by default). On a PiStorm A1200 in Sonic GX, stick to picture fell from about 19 to 11-12 ms on
+the RTG screen with HDMI sound and from about 24 to 19 ms on AGA; the CPC and its sound run exactly
+the same either way. The RTG frame lock now flips between two pages instead of panning there and
+back (`PANFLIP=0` for the old way). CPU timing: LD (HL),n, CPI/CPD and the repeating CPIR, CPDR,
+INIR, INDR, OTIR and OTDR now take as long as on a real CPC; an instruction-by-instruction audit
+(1876 tests) matches CPCEC on every count and I/O position. With Pad set to CD32, a plain two-button
+pad's fire 2 no longer also presses fire 1. Save states made by 1.8 load in 1.7 and 1.7.1.
+
 CD32 pad fix (1.7.1): with Pad set to CD32, the pad's buttons are read again. Built with
 optimisation, the read lost the write that puts the pad in CD32 mode, so the buttons never came
 through. Nothing else changed from 1.7.
@@ -145,6 +156,8 @@ upstream, one patch each, so they can be taken independently:
 - Plus timing: ASIC register writes at their write cycle, DMA at the start of HSYNC.
 - 80-track disk images: drive A was always a 43-track 3" drive, so 3.5" images stopped at
   track 42 (Pinball Dreams' Beat Box and Nightmare tables never loaded).
+- Z80 instruction timing: LD (HL),n, CPI/CPD and the repeating block instructions (an
+  opcode-by-opcode audit against CPCEC).
 
 Plus pixel-exact speed-ups for slow hosts (cell caching, run-based and deferred CRTC stepping,
 HALT fast-forward, a compact palette, table-driven Plus soft scroll, transparent sprite rows

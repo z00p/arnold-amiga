@@ -1,0 +1,61 @@
+From 957385982f3fa9bec43cdcb8c82ac67e524b6de5 Mon Sep 17 00:00:00 2001
+From: John Stringer <jcec_1@yahoo.co.uk>
+Date: Mon, 9 Nov 2026 10:17:16 +0000
+Subject: [PATCH 44/48] Joystick: a host hook at the game's read of the
+ joystick row
+
+CPC_JoyReadHook (NULL by default: unchanged behaviour) is called when the
+game reads keyboard row 9, before the read, so a host can read its stick
+again there and the game sees it as it is at its own read, as on a real CPC,
+not as it was at the start of the emulated frame. The Amiga host uses it to
+take several milliseconds off the delay from stick to picture. NO_JOYREREAD
+leaves the hook out. Also here: LAGTRACE, a test-only hook (headless builds
+with -DLAGTRACE) that logs where in the frame the game reads the row.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ src/cpc/cpc.c | 14 ++++++++++++++
+ 1 file changed, 14 insertions(+)
+
+diff --git a/src/cpc/cpc.c b/src/cpc/cpc.c
+index 060a6d4..5b6823d 100644
+--- a/src/cpc/cpc.c
++++ b/src/cpc/cpc.c
+@@ -208,6 +208,13 @@ unsigned char Joystick_ReadJoystickPort(void)
+ 	return KeyboardData[9];
+ }
+ 
++#ifndef NO_JOYREREAD
++/* Amiga port, 1.8 (8 Nov 2026): called when the game reads keyboard row 9 (the joystick), before
++ * the read, so a host can read its stick again then and the game sees it as it is at its own read,
++ * as on a real CPC. NULL (the headless host): the row as the frame start left it. */
++void (*CPC_JoyReadHook)(void);
++#endif
++
+ unsigned char Keyboard_Read(void)
+ {
+     if (SelectedKeyboardLine!=9)
+@@ -219,6 +226,9 @@ unsigned char Keyboard_Read(void)
+     {
+ 		unsigned char Data = 0x07f;
+ 
++#ifndef NO_JOYREREAD
++		if (CPC_JoyReadHook) CPC_JoyReadHook();
++#endif
+ 		switch (CPC_HardwareConnectedToJoystickPort)
+ 		{
+ //			case JOYSTICK_HARDWARE_AMX_MOUSE:
+@@ -237,6 +247,10 @@ unsigned char Keyboard_Read(void)
+ 				Data = Joystick_ReadJoystickPort();
+ 				break;
+ 		}
++#ifdef LAGTRACE
++		/* lag18 (test builds only, headless): where in the frame the game reads row 9 */
++		{ extern void LagTrace_Row9(unsigned char v); LagTrace_Row9(KeyboardData[9]); }
++#endif
+ 		return (unsigned char)((Data & 0x07f) | (KeyboardData[9] & 0x080));
+ 
+ 	}
+-- 
+2.50.0.windows.2
+

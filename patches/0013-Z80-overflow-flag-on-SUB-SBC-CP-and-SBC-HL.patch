@@ -1,7 +1,7 @@
-From 5c6e0aca3cc39439a8b72d3c0c857da9e52cc312 Mon Sep 17 00:00:00 2001
+From 5e79cab81b4e1bb53839e24764985aa90ff90e25 Mon Sep 17 00:00:00 2001
 From: John Stringer <jcec_1@yahoo.co.uk>
-Date: Sun, 8 Nov 2026 19:33:36 +0000
-Subject: [PATCH 13/43] Z80: overflow flag on SUB, SBC, CP and SBC HL
+Date: Mon, 9 Nov 2026 10:17:06 +0000
+Subject: [PATCH 13/48] Z80: overflow flag on SUB, SBC, CP and SBC HL
 
 For A - r the overflow flag must be (A^r)&(A^result)&0x80; the core used
 (r^A)&(r^result), the exact opposite whenever the operands' signs differ, so V

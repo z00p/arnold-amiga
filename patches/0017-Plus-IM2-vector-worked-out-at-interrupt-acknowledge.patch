@@ -1,7 +1,7 @@
-From e998416ebba8b69543bee6daa13ce648b3343b59 Mon Sep 17 00:00:00 2001
+From 8150f3c3d7d6d3eea15c2e3a836e41457cd0921e Mon Sep 17 00:00:00 2001
 From: John Stringer <jcec_1@yahoo.co.uk>
-Date: Sun, 8 Nov 2026 19:33:39 +0000
-Subject: [PATCH 17/43] Plus: IM2 vector worked out at interrupt acknowledge
+Date: Mon, 9 Nov 2026 10:17:07 +0000
+Subject: [PATCH 17/48] Plus: IM2 vector worked out at interrupt acknowledge
 
 On the Plus the ASIC puts the vector of the interrupt being acknowledged on the
 bus (raster/PRI or the Gate Array's 52-line interrupt, else DMA 2/1/0). Arnold

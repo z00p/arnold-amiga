@@ -255,8 +255,13 @@ void        rtg_x_vbl_stats(RtgVblStats *s);
 int32_t     rtg_x_vbl_sync(uint32_t timeout_us);      /* wait until the last presented frame is written (grabs) */
 void        rtg_x_set_vbl_pri(int rel);                 /* vblank task priority relative to the caller's (default +1) */
 int32_t     rtg_x_vbl_next(uint32_t *until_us, uint32_t *period_us);
+/* lag18 (Arnold, 5 Nov 2026): a caller tag (e.g. its input sample time) goes with each present; rtg_x_lag_last
+ * gives the tag of the frame the vblank task wrote last, the write's start (us, the rtg_x_micros clock) and a count of such writes */
+void        rtg_x_lag_tag(uint32_t tag);
+uint32_t    rtg_x_lag_last(uint32_t *tag, uint32_t *write_us);
 extern int  rtg_x_pan_lines;    /* RTG_F_VBLANK anchors: pan RyOffset (-1 a page; 0 one pan, same offset; tests) */
 extern int  rtg_x_pan_forbid;
+extern int  rtg_x_pan_flip;     /* RTG_F_VBLANK anchors: one pan to the other page, which is then written to (default 1; 0 = the pan pair, tests) */
 extern int  rtg_x_pan_mirror;   /* RTG_F_VBLANK anchors: page 1 gets the picture first (default 1; 0 = black page 1, tests) */   /* RTG_F_VBLANK anchors: pan pair under Forbid (default 1; 0 = as before, tests) */   /* us to the next predicted blank, the period (RTG_E_NOTOPEN: not running) */
 
 #endif

@@ -53,6 +53,15 @@ static __inline__ void Z80_WR_MEM_Inline(Z80_WORD Addr, Z80_BYTE Data)
 #define Z80_RD_MEM(Addr) Z80_RD_MEM_Inline((Z80_WORD)(Addr))
 #define Z80_WR_MEM(Addr, Data) Z80_WR_MEM_Inline((Z80_WORD)(Addr), (Z80_BYTE)(Data))
 
+/* Amiga port (z80time, 8 Nov 2026): NOP counts fixed by the opcode-timing audit (Docs/agent_notes/
+ * z80time.md; tools/z80time traces vs CPCEC, the Quasar table and the cpctech cheat sheet): LD (HL),n 3;
+ * CPI/CPD 4; CPIR/CPDR 6 a repeat, 4 the last pass; INIR/INDR/OTIR/OTDR 6 a repeat, 5 the last (were
+ * swapped). NO_Z80TIME_FIX: the upstream counts. */
+#ifndef NO_Z80TIME_FIX
+#define ZT(fixed, old) (fixed)
+#else
+#define ZT(fixed, old) (old)
+#endif
 /***************************************************************************/
 INLINE static int Z80_FD_CB_ExecuteInstruction(void)
 {
@@ -8071,7 +8080,7 @@ case 0x0a1:
 {
 CPI();
 		R.PC.W.l+=2; R.Flags |= Z80_CHECK_INTERRUPT_FLAG;
-Cycles = 5;
+Cycles = ZT(4, 5);
 }
 break;
 case 0x0a2:
@@ -8099,7 +8108,7 @@ case 0x0a9:
 {
 CPD();
 		R.PC.W.l+=2; R.Flags |= Z80_CHECK_INTERRUPT_FLAG;
-Cycles = 5;
+Cycles = ZT(4, 5);
 }
 break;
 case 0x0aa:
@@ -8135,11 +8144,11 @@ case 0x0b1:
 CPI();
 if ((Z80_FLAGS_REG & (Z80_PARITY_FLAG | Z80_ZERO_FLAG))==Z80_PARITY_FLAG)
 {
-Cycles=5;
+Cycles=ZT(6, 5);
 }
 else
 {
-		R.PC.W.l+=2; Cycles=6;
+		R.PC.W.l+=2; Cycles=ZT(4, 6);
 }
 R.Flags |= Z80_CHECK_INTERRUPT_FLAG;
 }
@@ -8149,11 +8158,11 @@ case 0x0b2:
 INI();
 if (Z80_TEST_ZERO_SET)
 {
-		R.PC.W.l+=2; Cycles=6;
+		R.PC.W.l+=2; Cycles=ZT(5, 6);
 }
 else
 {
-Cycles=5;
+Cycles=ZT(6, 5);
 }
 R.Flags |= Z80_CHECK_INTERRUPT_FLAG;
 }
@@ -8163,11 +8172,11 @@ case 0x0b3:
 OUTI();
 if (Z80_TEST_ZERO_SET)
 {
-		R.PC.W.l+=2; Cycles=6;
+		R.PC.W.l+=2; Cycles=ZT(5, 6);
 }
 else
 {
-Cycles=5;
+Cycles=ZT(6, 5);
 }
 R.Flags |= Z80_CHECK_INTERRUPT_FLAG;
 }
@@ -8191,11 +8200,11 @@ case 0x0b9:
 CPD();
 if ((Z80_FLAGS_REG & (Z80_PARITY_FLAG | Z80_ZERO_FLAG))==Z80_PARITY_FLAG)
 {
-Cycles=5;
+Cycles=ZT(6, 5);
 }
 else
 {
-		R.PC.W.l+=2; Cycles=6;
+		R.PC.W.l+=2; Cycles=ZT(4, 6);
 }
 R.Flags |= Z80_CHECK_INTERRUPT_FLAG;
 }
@@ -8205,11 +8214,11 @@ case 0x0ba:
 IND();
 if (Z80_TEST_ZERO_SET)
 {
-		R.PC.W.l+=2; Cycles=6;
+		R.PC.W.l+=2; Cycles=ZT(5, 6);
 }
 else
 {
-Cycles=5;
+Cycles=ZT(6, 5);
 }
 R.Flags |= Z80_CHECK_INTERRUPT_FLAG;
 }
@@ -8219,11 +8228,11 @@ case 0x0bb:
 OUTD();
 if (Z80_TEST_ZERO_SET)
 {
-		R.PC.W.l+=2; Cycles=6;
+		R.PC.W.l+=2; Cycles=ZT(5, 6);
 }
 else
 {
-Cycles=5;
+Cycles=ZT(6, 5);
 }
 R.Flags |= Z80_CHECK_INTERRUPT_FLAG;
 }
@@ -10380,7 +10389,7 @@ R.TempByte = Z80_RD_OPCODE_BYTE(1);
 Z80_WR_BYTE(R.HL.W,R.TempByte);
         R.R+=1;
  		R.PC.W.l+=2; R.Flags |= Z80_CHECK_INTERRUPT_FLAG;
-Cycles = 2;
+Cycles = ZT(3, 2);
 }
 Z80_CASE_END
 case 0x037:

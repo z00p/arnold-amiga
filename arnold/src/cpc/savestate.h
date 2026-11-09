@@ -95,6 +95,10 @@ void SS_Printer(SS_IO *io);
 void SS_Tape(SS_IO *io);
 void SS_Render(SS_IO *io);
 void SS_Arnold(SS_IO *io);
+/* 1.8 (8 Nov 2026): values a 1.7 Arnold doesn't know go in the chunk "ARNX" after ARNS (1.7
+ * skips it and loads the state); SS_ArnoldExt streams them. A state without ARNX keeps what
+ * SS_Arnold set. */
+void SS_ArnoldExt(SS_IO *io);
 void SS_DiskImage(SS_IO *io, int drive);                   /* a drive's whole disk (the MEDI section) */
 int  SS_DiskImageFlags(int drive, int *type, int set, int flags, int ntype);   /* the unit's flags/type */
 

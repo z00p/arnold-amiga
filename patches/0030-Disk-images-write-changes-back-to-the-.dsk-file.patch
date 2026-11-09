@@ -1,7 +1,7 @@
-From d8230e8c6597817c812af0450674cd4fad17618e Mon Sep 17 00:00:00 2001
+From 7a0ff799ac82aa85c8b56d57ccbd07bfa3f45296 Mon Sep 17 00:00:00 2001
 From: John Stringer <jcec_1@yahoo.co.uk>
-Date: Sun, 8 Nov 2026 19:33:44 +0000
-Subject: [PATCH 30/43] Disk images: write changes back to the .dsk file
+Date: Mon, 9 Nov 2026 10:17:11 +0000
+Subject: [PATCH 30/48] Disk images: write changes back to the .dsk file
 
 dskwrite.c builds a new image for a drive from the file it was loaded from and
 the drive's changes: unchanged tracks are copied from the file byte for byte
