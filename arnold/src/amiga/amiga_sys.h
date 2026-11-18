@@ -104,6 +104,15 @@ int Sys_ParseVideo(const char *v);   /* "AUTO" "PAL" "NTSC" or 0-2 -> 0-2, -1 if
 int Sys_ParseSpeed(const char *v);   /* "50" or 0 -> 0, "DISPLAY" or 1 -> 1, -1 if not one */
 extern const char *Sys_ModelNames[SYS_MODELS], *Sys_VideoNames[3], *Sys_SpeedNames[2];   /* prefs words */
 int  Sys_WBStart(int argc, char **argv, struct SysStart *st);
+#ifndef NO_LUPA
+/* Lupa launch contract (15 Nov 2026, Lupa's game list spec): the words
+ * ROM AGA RTG PROFILE= PREFS= ONEGAME MENU, return codes 0/5/10/20. NO_LUPA: as 1.9. */
+extern int  Sys_LupaOneGame;         /* ONEGAME ToolType (Arnold's icon, a preset or the game's own icon) */
+extern char Sys_LupaProfile[16];     /* PROFILE ToolType, "" if none */
+int  Sys_EnvDisplay(void);           /* ENV:AmiEmu/Display: 0 AGA, 1 RTG, 2 AUTO, -1 not set or not one */
+int  Sys_Rerun060(int argc, char **argv);   /* on a 68060: PROGDIR:Arnold-060 with the same words, its rc; -1 not done */
+int  Sys_Rerun060WB(const struct SysStart *st);   /* the same from Workbench: the icons' settings as words; closes the log first */
+#endif
 
 unsigned long Sys_Millis(void);
 

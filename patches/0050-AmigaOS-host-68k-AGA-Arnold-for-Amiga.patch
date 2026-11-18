@@ -1,6 +1,6 @@
-From 6ec6ac26968e506997e5f381c64c5d8f0addc6ed Mon Sep 17 00:00:00 2001
+From 0d7bc59c7ad161f3d9564659ec67a80ffe998513 Mon Sep 17 00:00:00 2001
 From: John Stringer <jcec_1@yahoo.co.uk>
-Date: Mon, 9 Nov 2026 21:21:04 +0000
+Date: Wed, 18 Nov 2026 21:50:13 +0000
 Subject: [PATCH 50/51] AmigaOS host (68k AGA): Arnold for Amiga
 
 src/amiga: the AmigaOS 3.x host (AGA screen with chunky-to-planar and triple
@@ -16,20 +16,20 @@ Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
  src/amiga/Makefile         |   50 +
  src/amiga/amiga_audio.c    |  534 +++++++++
  src/amiga/amiga_iff.c      |  103 ++
- src/amiga/amiga_joy.c      |  152 +++
+ src/amiga/amiga_joy.c      |  196 ++++
  src/amiga/amiga_keymap.c   |  239 ++++
  src/amiga/amiga_logo.c     |  153 +++
  src/amiga/amiga_logo.h     |    6 +
- src/amiga/amiga_menu.c     |  837 ++++++++++++++
+ src/amiga/amiga_menu.c     |  854 +++++++++++++++
  src/amiga/amiga_sys.c      | 2106 ++++++++++++++++++++++++++++++++++++
- src/amiga/amiga_sys.h      |  198 ++++
+ src/amiga/amiga_sys.h      |  207 ++++
  src/amiga/amiga_sys_priv.h |   11 +
- src/amiga/amiga_wb.c       |  258 +++++
+ src/amiga/amiga_wb.c       |  394 +++++++
  src/amiga/audio_conv.h     |   46 +
  src/amiga/c2p_sh.h         |   48 +
  src/amiga/gamedb.c         |  157 +++
  src/amiga/gamedb.h         |   42 +
- src/amiga/host_amiga.c     | 1575 +++++++++++++++++++++++++++
+ src/amiga/host_amiga.c     | 1656 ++++++++++++++++++++++++++++
  src/amiga/host_file.c      |   29 +
  src/amiga/keymaplogic.c    |  135 +++
  src/amiga/keymaplogic.h    |   34 +
@@ -40,7 +40,7 @@ Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
  src/amiga/screenshot.h     |    7 +
  src/amiga/tapeauto.c       |   82 ++
  src/amiga/tapeauto.h       |   18 +
- 27 files changed, 7230 insertions(+)
+ 27 files changed, 7517 insertions(+)
  create mode 100644 src/amiga/Makefile
  create mode 100644 src/amiga/amiga_audio.c
  create mode 100644 src/amiga/amiga_iff.c
@@ -776,10 +776,10 @@ index 0000000..224f1af
 +}
 diff --git a/src/amiga/amiga_joy.c b/src/amiga/amiga_joy.c
 new file mode 100644
-index 0000000..dc5ddf2
+index 0000000..f9c25c7
 --- /dev/null
 +++ b/src/amiga/amiga_joy.c
-@@ -0,0 +1,152 @@
+@@ -0,0 +1,196 @@
 +/* Arnold on AmigaOS: the joystick port (hardware registers, a CD32 pad read by
 + * hand) and the pads lowlevel.library reports on ports 2-3. Split off amiga_sys.c
 + * (split16, 30 Oct 2026). */
@@ -819,6 +819,41 @@ index 0000000..dc5ddf2
 + * low = pressed). Each step waits on CIA reads, which run at real Amiga
 + * speed whatever the CPU. Order: blue, red, yellow, green, forward, reverse,
 + * play. Returns the 7 button bits (bit set = pressed). */
++#ifndef NO_CD32KIT
++/* 2.0 (NO_CD32KIT: as 1.9): the read of emu-dev-docs CD32 kit 2 (kits/cd32pad/cd32read.s, from FAmiga by
++ * Afrotechmods): pin 6 is written from a copy of the port byte (the image clock: WinUAE and FS-UAE follow
++ * it), a 35-read latch wait, 3 + 3 CIA reads a clock pulse, the nine bits read before each pulse. Two
++ * clocks, chosen in the menu: "CD32 pad" (pin 6 idles high, each pulse goes low then high) and "KTRL
++ * CD32+" (lowclk: the low clock, pin 6 idles low, each pulse goes high then low). FAmiga's tests: the
++ * first KTRL CD32 right with the first, the KTRL CD32+ and the Mega Multi adapter right with the second. */
++static unsigned read_cd32_buttons(int lowclk)
++{
++	volatile UBYTE *pra = &ciaa.ciapra, *ddra = &ciaa.ciaddra;
++	unsigned bits = 0;
++	int i, d;
++	UBYTE img, dummy;
++	Disable();
++	img = *pra | 0x80;              /* pin 6 at its idle level: high, or low for the low clock */
++	if (lowclk) img &= ~0x80;
++	*pra = img;
++	*ddra |= 0x80;                 /* an output, held there while pin 5 falls (no clock edge) */
++	*pra = img;                    /* again now it is an output (UAE takes its first level from this write) */
++	CUSTOM->potgo = 0x6f00;        /* port 2: pin 5 low (CD32 mode, the pad latches), pin 9 input */
++	for (d = 0; d < 35; d++) dummy = *pra;
++	for (i = 0; i < 9; i++) {
++		if (!(CUSTOM->potinp & 0x4000)) bits |= 1u << i;
++		img ^= 0x80; *pra = img;      /* the pulse's first half */
++		for (d = 0; d < 3; d++) dummy = *pra;
++		img ^= 0x80; *pra = img;      /* back to idle: the next bit */
++		for (d = 0; d < 3; d++) dummy = *pra;
++	}
++	CUSTOM->potgo = 0xff00;        /* pin 5 high again: 2-button mode */
++	*ddra &= ~0x80;                /* fire line back to input */
++	Enable();
++	(void)dummy;
++	return bits;
++}
++#else
 +static unsigned read_cd32_buttons(void)
 +{
 +	/* Returns 9 bits, set = low on pin 9: the 7 buttons, then the pad's ID
@@ -851,6 +886,7 @@ index 0000000..dc5ddf2
 +	(void)dummy;
 +	return bits;
 +}
++#endif
 +
 +/* Joystick port 2 (lowlevel.library port 1). No auto-detection (John's
 + * decision, 17 Oct 2026, after AmiMSX: lowlevel.library's CD32 detection was
@@ -884,14 +920,22 @@ index 0000000..dc5ddf2
 +	if (Sys_NoCD32) Sys_PadType = 0;
 +	if (pad_logged != Sys_PadType) {
 +		pad_logged = Sys_PadType;
++#ifndef NO_CD32KIT
++		Sys_Log("joystick: port 2 read as %s", Sys_PadType == 2 ? "a CD32 pad, the low clock (KTRL CD32+)" : Sys_PadType ? "a CD32 pad" : "a standard 2-button joystick");
++#else
 +		Sys_Log("joystick: port 2 read as %s", Sys_PadType ? "a CD32 pad" : "a standard 2-button joystick");
++#endif
 +	}
 +	if (j & 0x0002) m |= SYS_JOY_RIGHT;
 +	if (j & 0x0200) m |= SYS_JOY_LEFT;
 +	if (((j >> 1) ^ j) & 0x0001) m |= SYS_JOY_DOWN;
 +	if (((j >> 9) ^ (j >> 8)) & 0x0001) m |= SYS_JOY_UP;
 +	if (Sys_PadType) {
++#ifndef NO_CD32KIT
++		unsigned b = read_cd32_buttons(Sys_PadType == 2);
++#else
 +		unsigned b = read_cd32_buttons();
++#endif
 +		joy_last_raw[1] = b;
 +#ifndef NO_CD32PLAIN
 +		/* 1.8 (emu-dev-docs cross-review, as AmiMSX): a plain pad answers every clock with the
@@ -1350,10 +1394,10 @@ index 0000000..b22b3c7
 +#endif
 diff --git a/src/amiga/amiga_menu.c b/src/amiga/amiga_menu.c
 new file mode 100644
-index 0000000..6eda01d
+index 0000000..ea74073
 --- /dev/null
 +++ b/src/amiga/amiga_menu.c
-@@ -0,0 +1,837 @@
+@@ -0,0 +1,854 @@
 +/* Arnold on AmigaOS: the menu screen (GadTools), styled after the OS 3.2 prefs
 + * editors. 17 Oct 2026 (John): the settings live in pull-down menus (Options,
 + * Controls, Display) and the window keeps what changes from game to game.
@@ -1399,7 +1443,11 @@ index 0000000..6eda01d
 +/* menu item ids (nm_UserData) */
 +enum { M_NONE, M_LOADCART, M_LOADA, M_LOADB, M_EJECTALL, M_KEYS, M_SHOT, M_SAVE, M_SAVEGAME, M_FORGETGAME, M_QUIT,
 +       M_SOUND, M_HIRES, M_SKIP0, M_SKIP1, M_SKIP2, M_SKIP3, M_SKIP5, M_REF1, M_REF2, M_REF3, M_REF4,
-+       M_JOY0, M_JOY1, M_JOY2, M_JOY3, M_PAD0, M_PAD1, M_SPEED50, M_SPEEDDISP,
++       M_JOY0, M_JOY1, M_JOY2, M_JOY3, M_PAD0, M_PAD1,
++#ifndef NO_CD32KIT
++       M_PAD2,
++#endif
++       M_SPEED50, M_SPEEDDISP,
 +       M_VIDAUTO, M_VIDPAL, M_VIDNTSC, M_TALL, M_WIDE, M_DISKWRITE, M_MODEL464, M_MODEL664, M_MODEL6128, M_MODELPLUS, M_MODELGX,
 +       M_LOADTAPE, M_REWIND, M_FASTTAPE, M_TAPESOUND, M_KEYEDIT, M_KEYMAPSUB, M_RTG,
 +       M_SCAN0, M_SCAN1, M_SCAN2, M_SCAN3, M_SCAN4, M_SCAN5, M_SCAN6,
@@ -1440,7 +1488,13 @@ index 0000000..6eda01d
 +static const char *skip_short[] = { "off", "1", "2", "3", "5" };
 +static const char *refresh_short[] = { "all", "1/2", "1/3", "1/4" };
 +static const char *joykey_short[] = { "off", "cursors", "QAOP", "cursors X" };
++#ifndef NO_CD32KIT
++static const char *pad_short[] = { "normal", "CD32", "CD32+" };
++#define PAD_IX(m) ((m)->pad >= 0 && (m)->pad <= 2 ? (m)->pad : 0)
++#else
 +static const char *pad_short[] = { "normal", "CD32" };
++#define PAD_IX(m) ((m)->pad ? 1 : 0)
++#endif
 +/* the cycle gadgets' choices (NULL-terminated for GadTools) */
 +static STRPTR model_labels[] = { (STRPTR)"CPC 464", (STRPTR)"CPC 664", (STRPTR)"CPC 6128", (STRPTR)"CPC 6128 Plus", (STRPTR)"GX4000", NULL };
 +static STRPTR video_labels[] = { (STRPTR)"Auto (as Workbench)", (STRPTR)"PAL", (STRPTR)"NTSC", NULL };
@@ -1518,6 +1572,9 @@ index 0000000..6eda01d
 +	{ NM_ITEM, (STRPTR)"Pad in port 2", NULL, 0, 0, NULL },
 +	{ NM_SUB, (STRPTR)"Normal joystick / 2-button pad", NULL, CHECKIT, X(0), (APTR)M_PAD0 },
 +	{ NM_SUB, (STRPTR)"CD32 pad", NULL, CHECKIT, X(1), (APTR)M_PAD1 },
++#ifndef NO_CD32KIT
++	{ NM_SUB, (STRPTR)"KTRL CD32+ (try if buttons flicker)", NULL, CHECKIT, X(2), (APTR)M_PAD2 },
++#endif
 +	{ NM_ITEM, (STRPTR)"Key map", NULL, 0, 0, (APTR)M_KEYMAPSUB },   /* sub-items: the presets, added by build_menu_table */
 +	{ NM_ITEM, (STRPTR)"Edit key map...", (STRPTR)"E", 0, 0, (APTR)M_KEYEDIT },
 +	{ NM_TITLE, (STRPTR)"Display", NULL, 0, 0, NULL },
@@ -1645,13 +1702,13 @@ index 0000000..6eda01d
 +	const char *snd = !m->sound ? "off" : (m->hdmisound && m->rtg && !m->hdmifail ? "HDMI" : "Paula");   /* HDMI only on the RTG screen, and if the driver opened */
 +	sprintf(l, "Sound %s  Screen %s  Skip %s  Refresh %s  Joykeys %s  Pad %s",
 +		snd, scrn, skip_short[skip_index(m->skip)],
-+		refresh_short[rf], joykey_short[jk], pad_short[m->pad ? 1 : 0]);
++		refresh_short[rf], joykey_short[jk], pad_short[PAD_IX(m)]);
 +	sprintf(mid, "Sound %s  Screen %s  Skip %s  Ref %s  Joy %s  Pad %s",
 +		snd, scrn, skip_short[skip_index(m->skip)],
-+		refresh_short[rf], joykey_short[jk], pad_short[m->pad ? 1 : 0]);
++		refresh_short[rf], joykey_short[jk], pad_short[PAD_IX(m)]);
 +	sprintf(comp, "Snd %s Scr %s Skip %s Ref %s Joy %s Pad %s",
 +		snd, scrn, skip_short[skip_index(m->skip)],
-+		refresh_short[rf], joykey_short[jk], pad_short[m->pad ? 1 : 0]);
++		refresh_short[rf], joykey_short[jk], pad_short[PAD_IX(m)]);
 +	KeyMap_FitLine(out, 74, l, mid, comp, m->remap);   /* 74 chars: the window ends at 8 px per char from x 20 */   /* adds "Keys: RShift=M" (or "Keys: 3 remapped") */
 +	for (n = strlen(out); n < 74; n++) out[n] = ' ';
 +	out[n] = 0;
@@ -1773,7 +1830,7 @@ index 0000000..6eda01d
 +{
 +	int i;
 +	int on[] = { M_SKIP0 + skip_index(m->skip), M_REF1 + refresh_index(m->refresh),
-+	             M_JOY0 + (m->joykeys >= 0 && m->joykeys <= 3 ? m->joykeys : 0), M_PAD0 + (m->pad ? 1 : 0),
++	             M_JOY0 + (m->joykeys >= 0 && m->joykeys <= 3 ? m->joykeys : 0), M_PAD0 + PAD_IX(m),
 +	             M_SPEED50 + (m->speed ? 1 : 0), M_VIDAUTO + video_of(m), M_MODEL464 + model_of(m),
 +	             M_SCAN0 + (m->scan > 0 && m->scan < SYS_SCANS ? m->scan : 0),
 +	             M_TONE0 + (m->tone > 0 && m->tone <= 2 ? m->tone : 0) };
@@ -1910,7 +1967,7 @@ index 0000000..6eda01d
 +	if (!g) { close_menu(); return 0; }
 +	if (!make_menus(m)) { close_menu(); return 0; }
 +	/* version, credit and build time (date and hh:mm) in the title bar */
-+	sprintf(wintitle, "Arnold v1.9 for Amiga - core: Kevin Thacker - built %.6s %.4s %.5s", __DATE__, __DATE__ + 7, __TIME__);
++	sprintf(wintitle, "Arnold v2.0 for Amiga - core: Kevin Thacker - built %.6s %.4s %.5s", __DATE__, __DATE__ + 7, __TIME__);
 +	mwin = OpenWindowTags(NULL, WA_CustomScreen, (ULONG)mscr, WA_Left, wl, WA_Top, wt,
 +		WA_Width, 640, WA_Height, wh,
 +		WA_Title, (ULONG)wintitle,
@@ -2078,7 +2135,11 @@ index 0000000..6eda01d
 +	case M_SKIP0: case M_SKIP1: case M_SKIP2: case M_SKIP3: case M_SKIP5: m->skip = skip_values[id - M_SKIP0]; break;
 +	case M_REF1: case M_REF2: case M_REF3: case M_REF4: m->refresh = id - M_REF1 + 1; break;
 +	case M_JOY0: case M_JOY1: case M_JOY2: case M_JOY3: m->joykeys = id - M_JOY0; break;
++#ifndef NO_CD32KIT
++	case M_PAD0: case M_PAD1: case M_PAD2: m->pad = id - M_PAD0; break;
++#else
 +	case M_PAD0: case M_PAD1: m->pad = id - M_PAD0; break;
++#endif
 +	case M_SPEED50: case M_SPEEDDISP: m->speed = id - M_SPEED50; set_cycle(G_SPEED, m->speed); break;
 +	case M_VIDAUTO: case M_VIDPAL: case M_VIDNTSC:
 +		if (m->video != id - M_VIDAUTO) { m->video = id - M_VIDAUTO; if (menu_rtg) { set_cycle(G_VIDEO, m->video); break; } return MENU_REOPEN; }
@@ -2193,7 +2254,7 @@ index 0000000..6eda01d
 +}
 diff --git a/src/amiga/amiga_sys.c b/src/amiga/amiga_sys.c
 new file mode 100644
-index 0000000..4140aad
+index 0000000..412548d
 --- /dev/null
 +++ b/src/amiga/amiga_sys.c
 @@ -0,0 +1,2106 @@
@@ -2227,7 +2288,7 @@ index 0000000..4140aad
 +#include <stdarg.h>
 +
 +unsigned long __stack = 256 * 1024;   /* libnix: enlarge the stack at start */
-+static const char ver[] __attribute__((used)) = "$VER: Arnold 1.9 (9.11.2026) Amiga port, GPL-2.0";
++static const char ver[] __attribute__((used)) = "$VER: Arnold 2.0 (15.11.2026) Amiga port, GPL-2.0";
 +
 +/* ---- diagnostic log ---- */
 +static FILE *logf;
@@ -4305,10 +4366,10 @@ index 0000000..4140aad
 +void Sys_PacingRestart(void) { pace_restart = 1; }
 diff --git a/src/amiga/amiga_sys.h b/src/amiga/amiga_sys.h
 new file mode 100644
-index 0000000..e9d8cee
+index 0000000..8267730
 --- /dev/null
 +++ b/src/amiga/amiga_sys.h
-@@ -0,0 +1,198 @@
+@@ -0,0 +1,207 @@
 +/* Arnold on AmigaOS: the OS-facing half of the host. No Arnold headers here
 + * (cpcglob.h has its own BOOL, which clashes with exec/types.h), so
 + * host_amiga.c talks to the Amiga through this small interface only. */
@@ -4415,6 +4476,15 @@ index 0000000..e9d8cee
 +int Sys_ParseSpeed(const char *v);   /* "50" or 0 -> 0, "DISPLAY" or 1 -> 1, -1 if not one */
 +extern const char *Sys_ModelNames[SYS_MODELS], *Sys_VideoNames[3], *Sys_SpeedNames[2];   /* prefs words */
 +int  Sys_WBStart(int argc, char **argv, struct SysStart *st);
++#ifndef NO_LUPA
++/* Lupa launch contract (15 Nov 2026, Lupa's game list spec): the words
++ * ROM AGA RTG PROFILE= PREFS= ONEGAME MENU, return codes 0/5/10/20. NO_LUPA: as 1.9. */
++extern int  Sys_LupaOneGame;         /* ONEGAME ToolType (Arnold's icon, a preset or the game's own icon) */
++extern char Sys_LupaProfile[16];     /* PROFILE ToolType, "" if none */
++int  Sys_EnvDisplay(void);           /* ENV:AmiEmu/Display: 0 AGA, 1 RTG, 2 AUTO, -1 not set or not one */
++int  Sys_Rerun060(int argc, char **argv);   /* on a 68060: PROGDIR:Arnold-060 with the same words, its rc; -1 not done */
++int  Sys_Rerun060WB(const struct SysStart *st);   /* the same from Workbench: the icons' settings as words; closes the log first */
++#endif
 +
 +unsigned long Sys_Millis(void);
 +
@@ -4526,10 +4596,10 @@ index 0000000..d316dd0
 +#endif
 diff --git a/src/amiga/amiga_wb.c b/src/amiga/amiga_wb.c
 new file mode 100644
-index 0000000..627e0b0
+index 0000000..310463d
 --- /dev/null
 +++ b/src/amiga/amiga_wb.c
-@@ -0,0 +1,258 @@
+@@ -0,0 +1,394 @@
 +/* Arnold on AmigaOS: Workbench start. With libnix, main() gets argc == 0 and
 + * argv == the WBStartup message. We read the PREFS ToolType from the icon we
 + * were started from (Arnold's own, or a preset project icon) and take a project icon
@@ -4547,6 +4617,12 @@ index 0000000..627e0b0
 +#include <string.h>
 +#include <stdlib.h>
 +#include "amiga_sys.h"
++#ifndef NO_LUPA
++#include <exec/execbase.h>
++#include <dos/var.h>
++#include <dos/dostags.h>
++#include <stdio.h>
++#endif
 +
 +struct Library *IconBase;
 +
@@ -4573,7 +4649,11 @@ index 0000000..627e0b0
 +	tt = (char *)FindToolType((STRPTR *)dobj->do_ToolTypes, (STRPTR)"REMAP");
 +	if (tt) strncpy(st->remap, tt, sizeof st->remap - 1);   /* REMAP=RSHIFT:M,... (key remap) */
 +	tt = (char *)FindToolType((STRPTR *)dobj->do_ToolTypes, (STRPTR)"PAD");
++#ifndef NO_CD32KIT
++	if (tt) st->pad = !strcmp(tt, "KTRL") || !strcmp(tt, "CD32+") || atoi(tt) == 2 ? 2 : !strcmp(tt, "CD32") || atoi(tt) == 1;   /* PAD=KTRL: the low clock */
++#else
 +	if (tt) st->pad = !strcmp(tt, "CD32") || atoi(tt) == 1;
++#endif
 +	tt = (char *)FindToolType((STRPTR *)dobj->do_ToolTypes, (STRPTR)"SPEED");
 +	if (tt) st->speed = Sys_ParseSpeed(tt);   /* SPEED=50 or SPEED=DISPLAY */
 +	tt = (char *)FindToolType((STRPTR *)dobj->do_ToolTypes, (STRPTR)"VIDEO");
@@ -4602,6 +4682,12 @@ index 0000000..627e0b0
 +	if (tt) st->scan = Sys_ParseScan(tt);   /* SCANLINES=OFF|25|50|75|BLENDLIGHT|BLEND|BLENDSTRONG (RTG screen, 1.2) */
 +	tt = (char *)FindToolType((STRPTR *)dobj->do_ToolTypes, (STRPTR)"TAPE");
 +	if (tt) strncpy(st->tape, tt, SYS_PATH - 1);   /* TAPE=<file.cdt> */
++#ifndef NO_LUPA
++	if (FindToolType((STRPTR *)dobj->do_ToolTypes, (STRPTR)"ONEGAME")) Sys_LupaOneGame = 1;   /* Lupa: Help quits to Workbench */
++	if (FindToolType((STRPTR *)dobj->do_ToolTypes, (STRPTR)"AGA")) st->rtg = 0;               /* Lupa: the AGA screen */
++	tt = (char *)FindToolType((STRPTR *)dobj->do_ToolTypes, (STRPTR)"PROFILE");
++	if (tt) strncpy(Sys_LupaProfile, tt, sizeof Sys_LupaProfile - 1);   /* Lupa: AUTO|FAST|030 */
++#endif
 +	FreeDiskObject(dobj);
 +	return 1;
 +}
@@ -4728,12 +4814,132 @@ index 0000000..627e0b0
 +			if (pre.rtg >= 0) st->rtg = pre.rtg;
 +			if (pre.scan >= 0) st->scan = pre.scan;
 +			if (pre.tape[0]) strcpy(st->tape, pre.tape);
-+		} else if (NameFromLock(wa[1].wa_Lock, (STRPTR)st->media, SYS_PATH))
++		} else if (NameFromLock(wa[1].wa_Lock, (STRPTR)st->media, SYS_PATH)) {
 +			AddPart((STRPTR)st->media, wa[1].wa_Name, SYS_PATH);
++#ifndef NO_LUPA
++			if (pre.rtg >= 0) st->rtg = pre.rtg;   /* Lupa: RTG / AGA on the game's own icon */
++#endif
++		}
 +		CurrentDir(old);
 +	}
 +	return 1;
 +}
++
++#ifndef NO_LUPA
++int  Sys_LupaOneGame;
++char Sys_LupaProfile[16];
++
++/* ENV:AmiEmu/Display (the machine-wide display choice, framework section 2.3 step 3) */
++int Sys_EnvDisplay(void)
++{
++	char v[16];
++	int i;
++	if (GetVar((STRPTR)"AmiEmu/Display", (STRPTR)v, sizeof v, GVF_GLOBAL_ONLY) <= 0) return -1;
++	for (i = 0; v[i]; i++) { if (v[i] >= 'a' && v[i] <= 'z') v[i] -= 32; if (v[i] == ' ' || v[i] == '\t' || v[i] == '\n') { v[i] = 0; break; } }
++	return !strcmp(v, "AGA") ? 0 : !strcmp(v, "RTG") ? 1 : !strcmp(v, "AUTO") ? 2 : -1;
++}
++
++/* PROFILE=AUTO on a 68060: Arnold-060 (built for it) runs instead, with the same words, from
++ * this program's drawer; we wait and hand back its return code. Shell starts only. */
++#if !defined(__mc68060__)
++/* a 68060 and PROGDIR:Arnold-060 there: its full name in dir */
++static int find060(char *dir)
++{
++	BPTR l;
++	if (!(SysBase->AttnFlags & (1 << 7))) return 0;   /* AFB_68060 */
++	if (!NameFromLock(GetProgramDir(), (STRPTR)dir, SYS_PATH) || !AddPart((STRPTR)dir, (STRPTR)"Arnold-060", SYS_PATH)) return 0;
++	if (!(l = Lock((STRPTR)dir, SHARED_LOCK))) return 0;
++	UnLock(l);
++	return 1;
++}
++
++/* one more word for the command line, quoted; 0 if it doesn't fit or has a quote */
++static int add_word(char *cmd, int *n, int size, const char *w)
++{
++	if (strchr(w, '"') || *n + (int)strlen(w) + 4 >= size) return 0;
++	*n += sprintf(cmd + *n, " \"%s\"", w);
++	return 1;
++}
++#endif
++
++/* Workbench: the icons' settings (as Sys_WBStart read them) become the words of a Shell start of
++ * Arnold-060; input and output NIL:. A bare preset icon (no game) opens the menu, as here. */
++int Sys_Rerun060WB(const struct SysStart *st)
++{
++#if defined(__mc68060__)
++	(void)st;
++	return -1;
++#else
++	static char cmd[2400];
++	char dir[SYS_PATH], w[SYS_PATH + 16];
++	int n, ok = 1;
++	BPTR in, out;
++	LONG r;
++	if (!find060(dir)) return -1;
++	n = sprintf(cmd, "\"%s\"", dir);
++#define W(...) do { sprintf(w, __VA_ARGS__); ok &= add_word(cmd, &n, sizeof cmd, w); } while (0)
++	if (st->prefs[0]) W("PREFS=%s", st->prefs);
++	if (st->media[0]) W("%s", st->media);
++	if (st->menu || !st->media[0]) W("MENU");
++	if (st->hires) W("HIRES");
++	if (st->tall) W("TALL");
++	if (st->wide) W("WIDE");
++	if (st->nosound) W("NOSOUND");
++	if (st->skip >= 0) W("SKIP=%d", st->skip);
++	if (st->refresh > 0) W("REFRESH=%d", st->refresh);
++	if (st->joykeys >= 0) W("JOYKEYS=%d", st->joykeys);
++	if (st->remap[0]) W("REMAP=%s", st->remap);
++	if (st->pad >= 0) W("PAD=%d", st->pad);
++	if (st->speed >= 0) W("SPEED=%d", st->speed);
++	if (st->video >= 0) W("VIDEO=%d", st->video);
++	if (st->model >= 0 && st->model < SYS_MODELS) W("MODEL=%s", Sys_ModelNames[st->model]);
++	if (st->diskwrite >= 0) W("DISKWRITE=%d", st->diskwrite);
++	if (st->fasttape >= 0) W("FASTTAPE=%d", st->fasttape);
++	if (st->tapesound >= 0) W("TAPESOUND=%d", st->tapesound);
++	if (st->autotape >= 0) W("AUTOTAPE=%d", st->autotape);
++	if (st->hdmisound >= 0) W("HDMISOUND=%d", st->hdmisound);
++	if (st->rtglock >= 0) W("RTGLOCK=%d", st->rtglock);
++	if (st->tone >= 0) W("TONE=%d", st->tone);
++	if (st->rtg >= 0) W("RTG=%d", st->rtg);
++	if (st->scan >= 0 && st->scan < SYS_SCANS) W("SCANLINES=%s", Sys_ScanWords[st->scan]);
++	if (st->tape[0]) W("TAPE=%s", st->tape);
++	if (Sys_RtgVblank) W("RTGVBL=1");
++	if (Sys_LupaOneGame) W("ONEGAME");
++#undef W
++	if (!ok) return -1;
++	in = Open((STRPTR)"NIL:", MODE_OLDFILE);
++	out = Open((STRPTR)"NIL:", MODE_NEWFILE);
++	if (!in || !out) { if (in) Close(in); if (out) Close(out); return -1; }
++	Sys_Log("68060: running %s", cmd);
++	Sys_LogClose();                     /* Arnold-060 writes the log */
++	r = SystemTags((STRPTR)cmd, SYS_Input, (ULONG)in, SYS_Output, (ULONG)out, TAG_DONE);
++	Close(in); Close(out);
++	if (r < 0) { Sys_LogOpen(); Sys_Log("68060: Arnold-060 didn't start, running here"); return -1; }
++	return (int)r;
++#endif
++}
++
++int Sys_Rerun060(int argc, char **argv)
++{
++#if defined(__mc68060__)
++	(void)argc; (void)argv;
++	return -1;                          /* this is Arnold-060 */
++#else
++	static char cmd[1200];
++	char dir[SYS_PATH];
++	int i, n;
++	LONG r;
++	if (!find060(dir)) return -1;
++	n = sprintf(cmd, "\"%s\"", dir);
++	for (i = 1; i < argc; i++) {
++		if (strchr(argv[i], '"') || n + strlen(argv[i]) + 4 >= sizeof cmd) return -1;
++		n += sprintf(cmd + n, " \"%s\"", argv[i]);
++	}
++	r = SystemTagList((STRPTR)cmd, NULL);   /* our own Input() and Output(), waits */
++	return r < 0 ? -1 : (int)r;
++#endif
++}
++#endif
 +
 +/* ---- setting words shared by prefs, arguments and ToolTypes ---- */
 +const char *Sys_ModelNames[SYS_MODELS] = { "464", "664", "6128", "PLUS", "GX4000" };
@@ -5107,10 +5313,10 @@ index 0000000..eaaa6ea
 +#endif
 diff --git a/src/amiga/host_amiga.c b/src/amiga/host_amiga.c
 new file mode 100644
-index 0000000..97387e7
+index 0000000..f49a0db
 --- /dev/null
 +++ b/src/amiga/host_amiga.c
-@@ -0,0 +1,1575 @@
+@@ -0,0 +1,1656 @@
 +/* Arnold host for AmigaOS: implements src/cpc/host.h on top of amiga_sys.c.
 + * The core renders into an 8-bit chunky buffer (384 x 272, one byte per
 + * pixel, PaletteRemap indices); amiga_sys converts it to AGA bitplanes.
@@ -5775,6 +5981,9 @@ index 0000000..97387e7
 +
 +/* Prefs: a text file of key=value lines. PREFS=<file> ToolType or P=<file>
 + * argument names it; default PROGDIR:Arnold.prefs. Save Prefs writes it. */
++#ifndef NO_LUPA
++static int prefs_rtg_seen;            /* Lupa: the prefs file set rtg= (it comes before ENV:AmiEmu/Display) */
++#endif
 +static void prefs_load(void)
 +{
 +	FILE *f = fopen(menu.prefs, "r");
@@ -5791,7 +6000,11 @@ index 0000000..97387e7
 +		else if (!strcmp(line, "refresh")) refresh = atoi(v);
 +		else if (!strcmp(line, "joykeys")) joykeys = atoi(v);
 +		else if (!strcmp(line, "remap")) remap_parse(v);
++#ifndef NO_CD32KIT
++		else if (!strcmp(line, "pad")) Sys_PadType = atoi(v) == 1 ? 1 : atoi(v) == 2 ? 2 : 0;   /* 2: KTRL CD32+ (2.0) */
++#else
 +		else if (!strcmp(line, "pad")) Sys_PadType = atoi(v) == 1;
++#endif
 +		else if (!strcmp(line, "speed")) { int k = Sys_ParseSpeed(v); if (k >= 0) menu.speed = k; }
 +		else if (!strcmp(line, "video")) { int k = Sys_ParseVideo(v); if (k >= 0) menu.video = k; }
 +		else if (!strcmp(line, "model")) { int k = Sys_ParseModel(v); if (k >= 0) menu.model = k; }
@@ -5802,7 +6015,11 @@ index 0000000..97387e7
 +		else if (!strcmp(line, "fasttape")) menu.fasttape = atoi(v) ? 1 : 0;
 +		else if (!strcmp(line, "tapesound")) menu.tapesound = atoi(v) ? 1 : 0;
 +		else if (!strcmp(line, "autotape")) menu.autotape = atoi(v) ? 1 : 0;
++#ifndef NO_LUPA
++		else if (!strcmp(line, "rtg")) { menu.rtg = atoi(v) ? 1 : 0; prefs_rtg_seen = 1; }
++#else
 +		else if (!strcmp(line, "rtg")) menu.rtg = atoi(v) ? 1 : 0;
++#endif
 +		else if (!strcmp(line, "hdmisound")) menu.hdmisound = atoi(v) ? 1 : 0;
 +		else if (!strcmp(line, "tone")) { int k = Sys_ParseTone(v); if (k >= 0) menu.tone = k; }
 +		else if (!strcmp(line, "rtglock")) rtglock = atoi(v);   /* sonic16 test setting, as RTGLOCK=n */
@@ -6408,6 +6625,14 @@ index 0000000..97387e7
 +	return 1;
 +}
 +
++#ifndef NO_LUPA
++/* PROFILE=: 0 AUTO, 1 FAST, 2 030 (Arnold has one profile: it runs FAST, rc 5), -1 not a profile word (rc 5) */
++static int lupa_profile(const char *v)
++{
++	return !kwcmp(v, "AUTO") ? 0 : !kwcmp(v, "FAST") ? 1 : !kwcmp(v, "030") ? 2 : -1;
++}
++#endif
++
 +int main(int argc, char **argv)
 +{
 +	unsigned char *data; unsigned long len;
@@ -6415,6 +6640,15 @@ index 0000000..97387e7
 +	int i, want_menu = 0, ndisk = 0, action, nosound = 0, hires = 0, tall = 0, wide = 0, media_given = 0, rtg = -1, scan = -1;
 +	int load_slot = 0, pending_load = 0;
 +	struct SysStart st;
++#ifndef NO_LUPA
++	int onegame = 0, profile = 0, rc = 0;   /* Lupa: ONEGAME, PROFILE=, the return code */
++
++	for (i = 1; i < argc; i++) {          /* Shell, PROFILE=AUTO (the default) on a 68060: Arnold-060 runs instead */
++		if (!kwncmp(argv[i], "PROFILE=", 8)) profile = lupa_profile(argv[i] + 8);
++		else if (!kwcmp(argv[i], "PROFILE") && i + 1 < argc) profile = lupa_profile(argv[++i]);
++	}
++	if (argc > 0 && profile == 0) { int r = Sys_Rerun060(argc, argv); if (r >= 0) return r; }
++#endif
 +
 +	KeyScript_AmigaKey = amiga_key_code;   /* before KEYS= loads a script */
 +	strcpy(menu.cart, "PROGDIR:roms/system.cpr");
@@ -6428,6 +6662,9 @@ index 0000000..97387e7
 +	Sys_LogStart(argc);
 +	for (i = 1; i < argc; i++) Sys_Log("arg %d: %s", i, argv[i]);
 +	if (Sys_WBStart(argc, argv, &st)) {
++#ifndef NO_LUPA
++		if (!Sys_LupaProfile[0] || !kwcmp(Sys_LupaProfile, "AUTO")) { int r = Sys_Rerun060WB(&st); if (r >= 0) return r; }   /* a 68060: Arnold-060 */
++#endif
 +		Sys_Log("wb start: prefs '%s' media '%s' menu %d skip %d", st.prefs, st.media, st.menu, st.skip);
 +		if (st.prefs[0]) strncpy(menu.prefs, st.prefs, SYS_PATH - 1);
 +		want_menu = st.menu; nosound = st.nosound; hires = st.hires;
@@ -6451,6 +6688,10 @@ index 0000000..97387e7
 +		if (st.tone >= 0) menu.tone = st.tone;   /* hdmifilt: TONE ToolType */
 +		if (st.scan >= 0) scan = st.scan;
 +		if (st.rtg >= 0) rtg = st.rtg;
++#ifndef NO_LUPA
++		onegame = Sys_LupaOneGame;
++		if (Sys_LupaProfile[0]) profile = lupa_profile(Sys_LupaProfile);
++#endif
 +		if (st.tape[0]) strncpy(menu.tape, st.tape, SYS_PATH - 1);
 +		if (has_ext(st.media, ".cpr")) { strncpy(menu.cart, st.media, SYS_PATH - 1); media_given = 1; }
 +		else if (has_ext(st.media, ".dsk")) { strncpy(menu.diska, st.media, SYS_PATH - 1); menu.diskb[0] = 0; media_given = 1; }
@@ -6460,6 +6701,10 @@ index 0000000..97387e7
 +	} else {
 +		for (i = 1; i < argc; i++)
 +			if (!kwncmp(argv[i], "P=", 2)) strncpy(menu.prefs, argv[i] + 2, SYS_PATH - 1);
++#ifndef NO_LUPA
++			else if (!kwncmp(argv[i], "PREFS=", 6)) strncpy(menu.prefs, argv[i] + 6, SYS_PATH - 1);   /* Lupa: PREFS= = P= */
++			else if (!kwcmp(argv[i], "PREFS") && i + 1 < argc) strncpy(menu.prefs, argv[++i], SYS_PATH - 1);
++#endif
 +		prefs_load();
 +		for (i = 1; i < argc; i++) {
 +			if (!kwcmp(argv[i], "NOSOUND")) nosound = 1;
@@ -6493,6 +6738,9 @@ index 0000000..97387e7
 +			else if (!kwncmp(argv[i], "REMAP=", 6)) remap_parse(argv[i] + 6);
 +			else if (!kwcmp(argv[i], "CD32") || !kwcmp(argv[i], "PAD=CD32") || !kwcmp(argv[i], "PAD=1")) Sys_PadType = 1;
 +			else if (!kwcmp(argv[i], "PAD=0") || !kwcmp(argv[i], "PAD=STANDARD")) Sys_PadType = 0;
++#ifndef NO_CD32KIT
++			else if (!kwcmp(argv[i], "PAD=KTRL") || !kwcmp(argv[i], "PAD=CD32+") || !kwcmp(argv[i], "PAD=2")) Sys_PadType = 2;   /* the low clock */
++#endif
 +			else if (!kwncmp(argv[i], "SPEED=", 6)) { int k = Sys_ParseSpeed(argv[i] + 6); if (k >= 0) menu.speed = k; }
 +			else if (!kwncmp(argv[i], "VIDEO=", 6)) { int k = Sys_ParseVideo(argv[i] + 6); if (k >= 0) menu.video = k; }
 +			else if (!kwncmp(argv[i], "MODEL=", 6)) { int k = Sys_ParseModel(argv[i] + 6); if (k >= 0) menu.model = k; }
@@ -6534,12 +6782,31 @@ index 0000000..97387e7
 +			else if (!kwncmp(argv[i], "HELPAFTER=", 10)) help_after = atol(argv[i] + 10);
 +			else if (!kwncmp(argv[i], "HELPEVERY=", 10)) help_after = help_every = atol(argv[i] + 10);
 +			else if (!kwncmp(argv[i], "P=", 2)) ;
++#ifndef NO_LUPA
++			else if (!kwcmp(argv[i], "AGA")) rtg = 0;                        /* Lupa contract (15 Nov 2026) */
++			else if (!kwcmp(argv[i], "ONEGAME")) onegame = 1;
++			else if (!kwncmp(argv[i], "PROFILE=", 8)) ;                      /* read before the start */
++			else if (!kwcmp(argv[i], "PROFILE") && i + 1 < argc) i++;
++			else if (!kwncmp(argv[i], "PREFS=", 6)) ;
++			else if (!kwcmp(argv[i], "PREFS") && i + 1 < argc) i++;
++			else if (!kwncmp(argv[i], "RTGMODE=", 8)) Sys_Log("RTGMODE= not supported yet: the automatic mode");
++			else if (!kwcmp(argv[i], "RTGMODE") && i + 1 < argc) { i++; Sys_Log("RTGMODE not supported yet: the automatic mode"); }
++#endif
 +			else if (has_ext(argv[i], ".cpr")) { strncpy(menu.cart, argv[i], SYS_PATH - 1); media_given = 1; }
 +			else if (has_ext(argv[i], ".dsk")) { if (!ndisk) menu.diskb[0] = 0; strncpy(ndisk++ ? menu.diskb : menu.diska, argv[i], SYS_PATH - 1); media_given = 1; }
 +			else if (has_ext(argv[i], ".sna")) { sna = argv[i]; media_given = 1; }
 +			else if (has_ext(argv[i], ".cdt")) { strncpy(menu.tape, argv[i], SYS_PATH - 1); media_given = 1; }
 +		}
 +	}
++#ifndef NO_LUPA
++	if (rtg < 0 && !prefs_rtg_seen) {      /* no word, ToolType or prefs line: ENV:AmiEmu/Display (AUTO: RTG if there is a board) */
++		int d = Sys_EnvDisplay();
++		if (d == 2) d = Sys_RtgAvailable() ? 1 : 0;
++		if (d >= 0) { rtg = d; Sys_Log("display from ENV:AmiEmu/Display: %s", d ? "RTG" : "AGA"); }
++	}
++	if (profile < 0 || profile == 2) { rc = 5; Sys_Log("profile: %s, Arnold has one profile (rc 5)", profile == 2 ? "030" : "not a profile word"); }
++	if (onegame) Sys_Log("ONEGAME: Help quits");
++#endif
 +	Sys_Log("prefs '%s': sound %d hires %d skip %d refresh %d model %s video %s speed %s cart '%s' fasttape %d tapesound %d", menu.prefs, menu.sound, menu.hires, skip_max, refresh,
 +		Sys_ModelNames[menu.model], Sys_VideoNames[menu.video], Sys_SpeedNames[menu.speed], menu.cart, menu.fasttape, menu.tapesound);
 +	Sys_VideoMode = menu.video;
@@ -6564,7 +6831,11 @@ index 0000000..97387e7
 +	CPC_SkipNextFrameHook = skip_hook;
 +
 +	action = want_menu ? SYS_MENU_QUIT : SYS_MENU_POWER;
++#ifndef NO_LUPA
++	if (!want_menu && !power_on()) { if (onegame) { rc = 10; goto lupa_exit; } want_menu = 1; }   /* the requester was on Workbench */
++#else
 +	if (!want_menu && !power_on()) want_menu = 1;
++#endif
 +	if (!want_menu && sna && load_media("snapshot", sna, &data, &len)) {
 +		/* an Arnold save state resumes exactly; any other .sna loads as before (upstream, lossy) */
 +		char msg[300];
@@ -6624,7 +6895,11 @@ index 0000000..97387e7
 +			if (action == SYS_MENU_CONTINUE || action == SYS_MENU_RESET) { apply_disks(); apply_tape(0); }   /* disk swap, tape change or rewind */
 +			if (action == SYS_MENU_RESET) { if (tape_in[0] && TapeImage_GetCurrentBlock() == 0) tape_autostart("reset"); else TapeAuto_Stop(); }   /* a tape at its start loads again */
 +		}
++#ifndef NO_LUPA
++		{ int ok = open_emulation(); Sys_MenuClose(); if (!ok && onegame) { rc = 20; break; } if (!ok) { want_menu = 1; pending_load = 0; continue; } }
++#else
 +		{ int ok = open_emulation(); Sys_MenuClose(); if (!ok) { want_menu = 1; pending_load = 0; continue; } }
++#endif
 +#ifndef NO_VSYNCCUT
 +		{ static int said; CPC_AudioFrameHook = vsynccut ? audio_frame : NULL; if (!said++) Sys_Log("frame end: %s", vsynccut ? "at the CPC VSYNC" : "fixed (as 1.7)"); }
 +#ifndef NO_JOYREREAD
@@ -6677,14 +6952,26 @@ index 0000000..97387e7
 +			perf_report(stdout);
 +			break;
 +		}
++#ifndef NO_LUPA
++		if (onegame) break;               /* Lupa: Help leaves to Workbench (changed disks are written below) */
++#endif
 +		want_menu = 1;
 +	}
++#ifndef NO_LUPA
++lupa_exit:
++	if (Sys_RtgDead && rc < 5) rc = 5;    /* RTG was asked for and AGA was used */
++	Sys_Log("return code %d", rc);
++#endif
 +	flush_disks("exit");
 +	if (audio_open) Sys_AudioClose();
 +	if (display_open) Sys_CloseDisplay();
 +	Sys_Log("exit");
 +	Sys_LogClose();
++#ifndef NO_LUPA
++	return rc;
++#else
 +	return 0;
++#endif
 +}
 diff --git a/src/amiga/host_file.c b/src/amiga/host_file.c
 new file mode 100644

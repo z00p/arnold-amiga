@@ -1,6 +1,6 @@
-From 9336952a4da7a9267dfd906bdef91d1504dd1ece Mon Sep 17 00:00:00 2001
+From d7f357cd1d706b56b2b6a4ac0af146ddb4ec6cc1 Mon Sep 17 00:00:00 2001
 From: John Stringer <jcec_1@yahoo.co.uk>
-Date: Mon, 9 Nov 2026 21:20:59 +0000
+Date: Wed, 18 Nov 2026 21:50:06 +0000
 Subject: [PATCH 38/51] Save states: save and load the whole machine exactly
 
 cpc/savestate.c: SaveState_Save / SaveState_Load / SaveState_Check for a host,

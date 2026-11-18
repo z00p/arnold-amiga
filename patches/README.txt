@@ -1,6 +1,6 @@
-Arnold for Amiga 1.9 - patch set and Amiga build
+Arnold for Amiga 2.0 - patch set and Amiga build
 =================================================
-9 November 2026.  Arnold (c) Kevin Thacker, GPL-2.0.  Amiga port by John Stringer.
+18 November 2026.  Arnold (c) Kevin Thacker, GPL-2.0.  Amiga port by John Stringer.
 
 This package holds the changes made to Arnold while porting it to 68k AmigaOS 3.x (AGA),
 as patches against the upstream source, plus a ready-to-run Amiga build.
@@ -249,6 +249,11 @@ Monitor and tape:
        (the VSYNC bit, keyboard and joystick, tape, the sound chip) now are too: a
        game polling the VSYNC bit saw it 4 NOPs late before.
 
+2.0 (Amiga host only): the core patches are 1.9's, and the series has the same 51
+patches. 0050 holds the new host code: CD32 pads read the way FAmiga reads them, a
+"KTRL CD32+" pad type (NO_CD32KIT), and the launcher words, ENV:AmiEmu/Display and
+return codes, with Arnold starting Arnold-060 by itself on a 68060 (NO_LUPA).
+
 Tools:
 
  0010  Diagnostics for hardware tracing (TRACE_HW, PAL_COUNT; off by default)
@@ -283,6 +288,8 @@ How it was tested
   VSYNC probes now match exactly. Over 1500 frames, patch 46 changes 9 of 81 cartridges
   (all in their sound) and patch 47 moves the timing of 62; both checked in play on
   an A1200. With NO_PRI_CLEAR and NO_PPI_IOTIME the build matches 1.8 on all 81.
+- 2.0 (patch 50 only): with NO_LUPA and NO_CD32KIT the host's object code is 1.9's.
+  Patches 1-49 are 1.9's; steps 48-51 build headless with the same checksums as 1.9's.
 - Frame end at VSYNC (patch 41): with the host hook, the same sound, registers and RAM
   at every point of the old frame grid; save states resume exactly, and states move
   between this build and 1.7 both ways (patch 42).
@@ -295,15 +302,21 @@ How it was tested
   Caprice32 and MAME show the same Sonic GX corruption the old code had.
 - Amiga: WinUAE regression runs, and real hardware. An A1200 with a PiStorm32 (Emu68)
   runs at full speed using 39-58% of the frame budget with sound. Sonic GX runs at 50 fps
-  without frame skip (about 60% of the frame time). BigMig (MiSTer) was also tested.
+  without frame skip (about 60% of the frame time). BigMig (MiSTer) was tested up to
+  1.9; it is no longer supported from 2.0.
 
 
 Amiga build
 -----------
 See amiga/Arnold/README.txt. In short: CPC 6128 Plus / GX4000 cartridges (.cpr), disks
 (.dsk, with the system cartridge's BASIC and AMSDOS) and snapshots (.sna). It needs an
-AGA Amiga with a 68040 or better (PiStorm/Emu68, 68060, BigMig), with sound through Paula.
-Help opens the menu. New in 1.9: on the RTG screen with HDMI sound, a missed timing
+AGA Amiga with a 68040 or better (PiStorm/Emu68 or a 68040/68060 card), with sound through
+Paula. Help opens the menu. New in 2.0: the program Arnold with two presets as white
+cartridges, AGA and RTG; on a 68060 card Arnold starts Arnold-060 by itself; CD32 pads read
+the way FAmiga reads them (Afrotechmods) and a "KTRL CD32+" pad type; launcher words (AGA,
+RTG, ONEGAME, PROFILE=, PREFS=), ENV:AmiEmu/Display and return codes, as in AmiPCEngine,
+AmiGameBoy and AmiMSX; BigMig (MiSTer) is no longer supported.
+1.9 brought: on the RTG screen with HDMI sound, a missed timing
 check in the frame lock no longer holds up the emulation for a whole frame (the occasional
 small hitch some sessions had every few seconds), and the I/O timing patches (0046, 0047).
 1.8 brought: less delay from joystick to picture (on a PiStorm A1200

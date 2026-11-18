@@ -1,6 +1,6 @@
-From f917a6800cb72315f7e64d80c9668d205a3be7bf Mon Sep 17 00:00:00 2001
+From 5c528d063c2ef52a1ac4d99a3c83d1c7cbf402ae Mon Sep 17 00:00:00 2001
 From: John Stringer <jcec_1@yahoo.co.uk>
-Date: Mon, 9 Nov 2026 21:20:49 +0000
+Date: Wed, 18 Nov 2026 21:49:51 +0000
 Subject: [PATCH 09/51] Plus: raise the programmable raster interrupt at HSYNC
  start
 

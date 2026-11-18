@@ -1,6 +1,6 @@
-From eba8d37f2cadc3d196bfc19306002479f593bdfe Mon Sep 17 00:00:00 2001
+From 1c4a827878a9a58ed05741aa1af3d4dc478ddbf5 Mon Sep 17 00:00:00 2001
 From: John Stringer <jcec_1@yahoo.co.uk>
-Date: Mon, 9 Nov 2026 21:21:02 +0000
+Date: Wed, 18 Nov 2026 21:50:09 +0000
 Subject: [PATCH 45/51] Diagnostics: Z80 opcode-timing trace (Z80TRACE; off by
  default)
 

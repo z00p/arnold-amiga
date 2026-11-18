@@ -15,6 +15,12 @@
 #include <string.h>
 #include <stdlib.h>
 #include "amiga_sys.h"
+#ifndef NO_LUPA
+#include <exec/execbase.h>
+#include <dos/var.h>
+#include <dos/dostags.h>
+#include <stdio.h>
+#endif
 
 struct Library *IconBase;
 
@@ -41,7 +47,11 @@ static int read_tooltypes(STRPTR name, struct SysStart *st)
 	tt = (char *)FindToolType((STRPTR *)dobj->do_ToolTypes, (STRPTR)"REMAP");
 	if (tt) strncpy(st->remap, tt, sizeof st->remap - 1);   /* REMAP=RSHIFT:M,... (key remap) */
 	tt = (char *)FindToolType((STRPTR *)dobj->do_ToolTypes, (STRPTR)"PAD");
+#ifndef NO_CD32KIT
+	if (tt) st->pad = !strcmp(tt, "KTRL") || !strcmp(tt, "CD32+") || atoi(tt) == 2 ? 2 : !strcmp(tt, "CD32") || atoi(tt) == 1;   /* PAD=KTRL: the low clock */
+#else
 	if (tt) st->pad = !strcmp(tt, "CD32") || atoi(tt) == 1;
+#endif
 	tt = (char *)FindToolType((STRPTR *)dobj->do_ToolTypes, (STRPTR)"SPEED");
 	if (tt) st->speed = Sys_ParseSpeed(tt);   /* SPEED=50 or SPEED=DISPLAY */
 	tt = (char *)FindToolType((STRPTR *)dobj->do_ToolTypes, (STRPTR)"VIDEO");
@@ -70,6 +80,12 @@ static int read_tooltypes(STRPTR name, struct SysStart *st)
 	if (tt) st->scan = Sys_ParseScan(tt);   /* SCANLINES=OFF|25|50|75|BLENDLIGHT|BLEND|BLENDSTRONG (RTG screen, 1.2) */
 	tt = (char *)FindToolType((STRPTR *)dobj->do_ToolTypes, (STRPTR)"TAPE");
 	if (tt) strncpy(st->tape, tt, SYS_PATH - 1);   /* TAPE=<file.cdt> */
+#ifndef NO_LUPA
+	if (FindToolType((STRPTR *)dobj->do_ToolTypes, (STRPTR)"ONEGAME")) Sys_LupaOneGame = 1;   /* Lupa: Help quits to Workbench */
+	if (FindToolType((STRPTR *)dobj->do_ToolTypes, (STRPTR)"AGA")) st->rtg = 0;               /* Lupa: the AGA screen */
+	tt = (char *)FindToolType((STRPTR *)dobj->do_ToolTypes, (STRPTR)"PROFILE");
+	if (tt) strncpy(Sys_LupaProfile, tt, sizeof Sys_LupaProfile - 1);   /* Lupa: AUTO|FAST|030 */
+#endif
 	FreeDiskObject(dobj);
 	return 1;
 }
@@ -196,12 +212,132 @@ int Sys_WBStart(int argc, char **argv, struct SysStart *st)
 			if (pre.rtg >= 0) st->rtg = pre.rtg;
 			if (pre.scan >= 0) st->scan = pre.scan;
 			if (pre.tape[0]) strcpy(st->tape, pre.tape);
-		} else if (NameFromLock(wa[1].wa_Lock, (STRPTR)st->media, SYS_PATH))
+		} else if (NameFromLock(wa[1].wa_Lock, (STRPTR)st->media, SYS_PATH)) {
 			AddPart((STRPTR)st->media, wa[1].wa_Name, SYS_PATH);
+#ifndef NO_LUPA
+			if (pre.rtg >= 0) st->rtg = pre.rtg;   /* Lupa: RTG / AGA on the game's own icon */
+#endif
+		}
 		CurrentDir(old);
 	}
 	return 1;
 }
+
+#ifndef NO_LUPA
+int  Sys_LupaOneGame;
+char Sys_LupaProfile[16];
+
+/* ENV:AmiEmu/Display (the machine-wide display choice, framework section 2.3 step 3) */
+int Sys_EnvDisplay(void)
+{
+	char v[16];
+	int i;
+	if (GetVar((STRPTR)"AmiEmu/Display", (STRPTR)v, sizeof v, GVF_GLOBAL_ONLY) <= 0) return -1;
+	for (i = 0; v[i]; i++) { if (v[i] >= 'a' && v[i] <= 'z') v[i] -= 32; if (v[i] == ' ' || v[i] == '\t' || v[i] == '\n') { v[i] = 0; break; } }
+	return !strcmp(v, "AGA") ? 0 : !strcmp(v, "RTG") ? 1 : !strcmp(v, "AUTO") ? 2 : -1;
+}
+
+/* PROFILE=AUTO on a 68060: Arnold-060 (built for it) runs instead, with the same words, from
+ * this program's drawer; we wait and hand back its return code. Shell starts only. */
+#if !defined(__mc68060__)
+/* a 68060 and PROGDIR:Arnold-060 there: its full name in dir */
+static int find060(char *dir)
+{
+	BPTR l;
+	if (!(SysBase->AttnFlags & (1 << 7))) return 0;   /* AFB_68060 */
+	if (!NameFromLock(GetProgramDir(), (STRPTR)dir, SYS_PATH) || !AddPart((STRPTR)dir, (STRPTR)"Arnold-060", SYS_PATH)) return 0;
+	if (!(l = Lock((STRPTR)dir, SHARED_LOCK))) return 0;
+	UnLock(l);
+	return 1;
+}
+
+/* one more word for the command line, quoted; 0 if it doesn't fit or has a quote */
+static int add_word(char *cmd, int *n, int size, const char *w)
+{
+	if (strchr(w, '"') || *n + (int)strlen(w) + 4 >= size) return 0;
+	*n += sprintf(cmd + *n, " \"%s\"", w);
+	return 1;
+}
+#endif
+
+/* Workbench: the icons' settings (as Sys_WBStart read them) become the words of a Shell start of
+ * Arnold-060; input and output NIL:. A bare preset icon (no game) opens the menu, as here. */
+int Sys_Rerun060WB(const struct SysStart *st)
+{
+#if defined(__mc68060__)
+	(void)st;
+	return -1;
+#else
+	static char cmd[2400];
+	char dir[SYS_PATH], w[SYS_PATH + 16];
+	int n, ok = 1;
+	BPTR in, out;
+	LONG r;
+	if (!find060(dir)) return -1;
+	n = sprintf(cmd, "\"%s\"", dir);
+#define W(...) do { sprintf(w, __VA_ARGS__); ok &= add_word(cmd, &n, sizeof cmd, w); } while (0)
+	if (st->prefs[0]) W("PREFS=%s", st->prefs);
+	if (st->media[0]) W("%s", st->media);
+	if (st->menu || !st->media[0]) W("MENU");
+	if (st->hires) W("HIRES");
+	if (st->tall) W("TALL");
+	if (st->wide) W("WIDE");
+	if (st->nosound) W("NOSOUND");
+	if (st->skip >= 0) W("SKIP=%d", st->skip);
+	if (st->refresh > 0) W("REFRESH=%d", st->refresh);
+	if (st->joykeys >= 0) W("JOYKEYS=%d", st->joykeys);
+	if (st->remap[0]) W("REMAP=%s", st->remap);
+	if (st->pad >= 0) W("PAD=%d", st->pad);
+	if (st->speed >= 0) W("SPEED=%d", st->speed);
+	if (st->video >= 0) W("VIDEO=%d", st->video);
+	if (st->model >= 0 && st->model < SYS_MODELS) W("MODEL=%s", Sys_ModelNames[st->model]);
+	if (st->diskwrite >= 0) W("DISKWRITE=%d", st->diskwrite);
+	if (st->fasttape >= 0) W("FASTTAPE=%d", st->fasttape);
+	if (st->tapesound >= 0) W("TAPESOUND=%d", st->tapesound);
+	if (st->autotape >= 0) W("AUTOTAPE=%d", st->autotape);
+	if (st->hdmisound >= 0) W("HDMISOUND=%d", st->hdmisound);
+	if (st->rtglock >= 0) W("RTGLOCK=%d", st->rtglock);
+	if (st->tone >= 0) W("TONE=%d", st->tone);
+	if (st->rtg >= 0) W("RTG=%d", st->rtg);
+	if (st->scan >= 0 && st->scan < SYS_SCANS) W("SCANLINES=%s", Sys_ScanWords[st->scan]);
+	if (st->tape[0]) W("TAPE=%s", st->tape);
+	if (Sys_RtgVblank) W("RTGVBL=1");
+	if (Sys_LupaOneGame) W("ONEGAME");
+#undef W
+	if (!ok) return -1;
+	in = Open((STRPTR)"NIL:", MODE_OLDFILE);
+	out = Open((STRPTR)"NIL:", MODE_NEWFILE);
+	if (!in || !out) { if (in) Close(in); if (out) Close(out); return -1; }
+	Sys_Log("68060: running %s", cmd);
+	Sys_LogClose();                     /* Arnold-060 writes the log */
+	r = SystemTags((STRPTR)cmd, SYS_Input, (ULONG)in, SYS_Output, (ULONG)out, TAG_DONE);
+	Close(in); Close(out);
+	if (r < 0) { Sys_LogOpen(); Sys_Log("68060: Arnold-060 didn't start, running here"); return -1; }
+	return (int)r;
+#endif
+}
+
+int Sys_Rerun060(int argc, char **argv)
+{
+#if defined(__mc68060__)
+	(void)argc; (void)argv;
+	return -1;                          /* this is Arnold-060 */
+#else
+	static char cmd[1200];
+	char dir[SYS_PATH];
+	int i, n;
+	LONG r;
+	if (!find060(dir)) return -1;
+	n = sprintf(cmd, "\"%s\"", dir);
+	for (i = 1; i < argc; i++) {
+		if (strchr(argv[i], '"') || n + strlen(argv[i]) + 4 >= sizeof cmd) return -1;
+		n += sprintf(cmd + n, " \"%s\"", argv[i]);
+	}
+	r = SystemTagList((STRPTR)cmd, NULL);   /* our own Input() and Output(), waits */
+	return r < 0 ? -1 : (int)r;
+#endif
+}
+#endif
 
 /* ---- setting words shared by prefs, arguments and ToolTypes ---- */
 const char *Sys_ModelNames[SYS_MODELS] = { "464", "664", "6128", "PLUS", "GX4000" };

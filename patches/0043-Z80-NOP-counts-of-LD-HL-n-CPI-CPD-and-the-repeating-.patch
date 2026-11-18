@@ -1,6 +1,6 @@
-From bcbbc9c0008b6f1defcb1c1125e89ff612445b02 Mon Sep 17 00:00:00 2001
+From ab3a399295ef0bdea06767902f10d23d3240b3ce Mon Sep 17 00:00:00 2001
 From: John Stringer <jcec_1@yahoo.co.uk>
-Date: Mon, 9 Nov 2026 21:21:01 +0000
+Date: Wed, 18 Nov 2026 21:50:08 +0000
 Subject: [PATCH 43/51] Z80: NOP counts of LD (HL),n, CPI/CPD and the repeating
  block instructions
 

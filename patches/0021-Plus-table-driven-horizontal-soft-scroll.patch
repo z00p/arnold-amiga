@@ -1,6 +1,6 @@
-From 4dce3752c3d9a617fb46354e397567024ac2f22b Mon Sep 17 00:00:00 2001
+From 3735ee66be6c17791125ad228fab2f98ea657bcd Mon Sep 17 00:00:00 2001
 From: John Stringer <jcec_1@yahoo.co.uk>
-Date: Mon, 9 Nov 2026 21:20:53 +0000
+Date: Wed, 18 Nov 2026 21:49:57 +0000
 Subject: [PATCH 21/51] Plus: table-driven horizontal soft scroll
 
 The per-pixel shift in Render_ScrollGraphicsData moves each input bit to a

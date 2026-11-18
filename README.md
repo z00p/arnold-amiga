@@ -1,7 +1,7 @@
 # Arnold for Amiga
 
 Amstrad CPC 6128 Plus / GX4000 and CPC 464/664/6128 emulator for AGA Amigas with a 68040 or better: an A1200
-with a PiStorm32 (Emu68), 68060 cards, or BigMig on MiSTer. It is a port of Kevin Thacker's
+with a PiStorm32 (Emu68) or a 68040/68060 card. It is a port of Kevin Thacker's
 **Arnold** to 68k AmigaOS 3.x, with the front end modelled on AmiMSX. GPL-2.0.
 
 Arnold is (c) Kevin Thacker. The port starts from rofl0r's GitHub mirror of Arnold
@@ -31,7 +31,7 @@ and asked for it to keep the Arnold name.
 - RTG screen (experimental, `RTG`): on an RTG board with an 8-bit mode (the PiStorm's VideoCore,
   WinUAE's uaegfx) the emulation and the menu show on an RTG screen instead of AGA, with optional
   scanlines (`SCANLINES=`: Hard 25/50/75%, Blended light/normal/strong; on a PiStorm at 960x540,
-  exactly half of its 1080p output). The "Arnold RTG" preset starts there with Hard 50%; N in the
+  exactly half of its 1080p output). The RTG icon starts there with Hard 50%; N in the
   menu cycles the scanline options. Frames are written just after the display's vertical blank, so
   there is no tearing (`RTGVBL=0` for the old immediate writes). Off by default: the AGA screen is
   unchanged.
@@ -77,6 +77,20 @@ the emulation's spare time, and the checks after it are spaced further apart. Pl
 interrupts: writing a new interrupt line cancels one already waiting, as on a real Plus. Keyboard,
 joystick, VSYNC and sound chip accesses now happen at their exact cycle (the VSYNC bit was seen
 4 NOPs late). Save states are the same format as 1.8's.
+
+Icons, CD32 pads and launchers (2.0): next to the program, `Arnold`, the drawer has two presets
+as white cartridges, `AGA` (the AGA screen) and `RTG` (the RTG screen with Hard 50% scanlines); on a
+68060 card Arnold starts the 68060 build, `Arnold-060`, by itself. The BigMig and PiStorm presets
+are gone: BigMig (MiSTer) is no longer supported (1.9 stays on the Releases page). The old presets
+stay if you unpack over 1.9 (delete them by hand).
+CD32 pads are read the way FAmiga reads them (Afrotechmods; the CD32 kit in the emulator
+developers' notes), and Pad has a third choice, "KTRL CD32+" (`PAD=KTRL`): the low clock, for pads
+whose buttons don't all work, or flicker, with "CD32" (a KTRL CD32 needs it). Launchers: the same command words as AmiPCEngine, AmiGameBoy
+and AmiMSX (`AGA` or `RTG`, `ONEGAME`, `MENU`, `PROFILE=AUTO|FAST|030`, `PREFS=`), the
+machine-wide display choice `ENV:AmiEmu/Display` (AGA, RTG or AUTO) and return codes (0, 5 for a
+fallback, 10 a game that can't be loaded, 20 no screen), so a launcher such as Lupa can start a
+game in any of them the same way. With `ONEGAME`, Help quits to Workbench. The emulation is
+unchanged; save states are the same format as 1.9's.
 
 CD32 pad fix (1.7.1): with Pad set to CD32, the pad's buttons are read again. Built with
 optimisation, the read lost the write that puts the pad in CD32 mode, so the buttons never came
@@ -126,16 +140,15 @@ Arnold for Amiga targets PiStorm/Emu68-class machines.
 
 - **A1200 with a PiStorm32 CM4:** the games tested run at full speed (Sonic GX at 50 fps without
   frame skip, measured, springs included). On a real A1200 Sonic GX uses about 60% of the frame
-  time. Use `Arnold` or the PiStorm preset.
-- **BigMig (MiSTer):** games currently run below full speed; use `Arnold-060` with frame skip (the BigMig
-  preset, which uses BigMig's RTG screen: faster than AGA there).
+  time. Use the `AGA` or `RTG` preset.
+- **BigMig (MiSTer):** no longer supported from 2.0 (1.9 has the BigMig preset).
 - **Real 68060 accelerator cards** have not been tested; expect games below full speed.
 - **68030 machines** are too slow for games (1.6 had an `Arnold-030` build for trying BASIC).
 
 ## Download
 
 The release zip holds the Amiga drawer (two builds, `Arnold` for the 68040 and `Arnold-060` for
-the 68060, both soft-float), icons, presets, the Plus system cartridge, the CPC 464/664/6128 system ROMs
+the 68060, both soft-float), the `AGA` and `RTG` presets, the Plus system cartridge, the CPC 464/664/6128 system ROMs
 and a user README. See the
 Releases page. The RTG code uses the RTG display framework (rtgfw, MIT licence; its
 licence text is `LICENSE-rtgfw` in the package and `arnold/src/amiga/rtgfw/LICENSE` here).
@@ -209,3 +222,4 @@ cartridge and whatever you put in `run/carts`.
 
 Arnold by Kevin Thacker. Amiga port by John Stringer, 2026. The GX4000 pixel-art icon and
 the menu are the port's own. CPCEC by CNGSoft was the accuracy reference for the Plus fixes.
+The CD32 pad reads ("CD32" and "KTRL CD32+") are FAmiga's, by Afrotechmods.

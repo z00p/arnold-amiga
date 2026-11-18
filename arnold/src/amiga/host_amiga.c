@@ -662,6 +662,9 @@ static unsigned char *cart_data;      /* kept: the core may refer to it */
 
 /* Prefs: a text file of key=value lines. PREFS=<file> ToolType or P=<file>
  * argument names it; default PROGDIR:Arnold.prefs. Save Prefs writes it. */
+#ifndef NO_LUPA
+static int prefs_rtg_seen;            /* Lupa: the prefs file set rtg= (it comes before ENV:AmiEmu/Display) */
+#endif
 static void prefs_load(void)
 {
 	FILE *f = fopen(menu.prefs, "r");
@@ -678,7 +681,11 @@ static void prefs_load(void)
 		else if (!strcmp(line, "refresh")) refresh = atoi(v);
 		else if (!strcmp(line, "joykeys")) joykeys = atoi(v);
 		else if (!strcmp(line, "remap")) remap_parse(v);
+#ifndef NO_CD32KIT
+		else if (!strcmp(line, "pad")) Sys_PadType = atoi(v) == 1 ? 1 : atoi(v) == 2 ? 2 : 0;   /* 2: KTRL CD32+ (2.0) */
+#else
 		else if (!strcmp(line, "pad")) Sys_PadType = atoi(v) == 1;
+#endif
 		else if (!strcmp(line, "speed")) { int k = Sys_ParseSpeed(v); if (k >= 0) menu.speed = k; }
 		else if (!strcmp(line, "video")) { int k = Sys_ParseVideo(v); if (k >= 0) menu.video = k; }
 		else if (!strcmp(line, "model")) { int k = Sys_ParseModel(v); if (k >= 0) menu.model = k; }
@@ -689,7 +696,11 @@ static void prefs_load(void)
 		else if (!strcmp(line, "fasttape")) menu.fasttape = atoi(v) ? 1 : 0;
 		else if (!strcmp(line, "tapesound")) menu.tapesound = atoi(v) ? 1 : 0;
 		else if (!strcmp(line, "autotape")) menu.autotape = atoi(v) ? 1 : 0;
+#ifndef NO_LUPA
+		else if (!strcmp(line, "rtg")) { menu.rtg = atoi(v) ? 1 : 0; prefs_rtg_seen = 1; }
+#else
 		else if (!strcmp(line, "rtg")) menu.rtg = atoi(v) ? 1 : 0;
+#endif
 		else if (!strcmp(line, "hdmisound")) menu.hdmisound = atoi(v) ? 1 : 0;
 		else if (!strcmp(line, "tone")) { int k = Sys_ParseTone(v); if (k >= 0) menu.tone = k; }
 		else if (!strcmp(line, "rtglock")) rtglock = atoi(v);   /* sonic16 test setting, as RTGLOCK=n */
@@ -1295,6 +1306,14 @@ static int open_emulation(void)
 	return 1;
 }
 
+#ifndef NO_LUPA
+/* PROFILE=: 0 AUTO, 1 FAST, 2 030 (Arnold has one profile: it runs FAST, rc 5), -1 not a profile word (rc 5) */
+static int lupa_profile(const char *v)
+{
+	return !kwcmp(v, "AUTO") ? 0 : !kwcmp(v, "FAST") ? 1 : !kwcmp(v, "030") ? 2 : -1;
+}
+#endif
+
 int main(int argc, char **argv)
 {
 	unsigned char *data; unsigned long len;
@@ -1302,6 +1321,15 @@ int main(int argc, char **argv)
 	int i, want_menu = 0, ndisk = 0, action, nosound = 0, hires = 0, tall = 0, wide = 0, media_given = 0, rtg = -1, scan = -1;
 	int load_slot = 0, pending_load = 0;
 	struct SysStart st;
+#ifndef NO_LUPA
+	int onegame = 0, profile = 0, rc = 0;   /* Lupa: ONEGAME, PROFILE=, the return code */
+
+	for (i = 1; i < argc; i++) {          /* Shell, PROFILE=AUTO (the default) on a 68060: Arnold-060 runs instead */
+		if (!kwncmp(argv[i], "PROFILE=", 8)) profile = lupa_profile(argv[i] + 8);
+		else if (!kwcmp(argv[i], "PROFILE") && i + 1 < argc) profile = lupa_profile(argv[++i]);
+	}
+	if (argc > 0 && profile == 0) { int r = Sys_Rerun060(argc, argv); if (r >= 0) return r; }
+#endif
 
 	KeyScript_AmigaKey = amiga_key_code;   /* before KEYS= loads a script */
 	strcpy(menu.cart, "PROGDIR:roms/system.cpr");
@@ -1315,6 +1343,9 @@ int main(int argc, char **argv)
 	Sys_LogStart(argc);
 	for (i = 1; i < argc; i++) Sys_Log("arg %d: %s", i, argv[i]);
 	if (Sys_WBStart(argc, argv, &st)) {
+#ifndef NO_LUPA
+		if (!Sys_LupaProfile[0] || !kwcmp(Sys_LupaProfile, "AUTO")) { int r = Sys_Rerun060WB(&st); if (r >= 0) return r; }   /* a 68060: Arnold-060 */
+#endif
 		Sys_Log("wb start: prefs '%s' media '%s' menu %d skip %d", st.prefs, st.media, st.menu, st.skip);
 		if (st.prefs[0]) strncpy(menu.prefs, st.prefs, SYS_PATH - 1);
 		want_menu = st.menu; nosound = st.nosound; hires = st.hires;
@@ -1338,6 +1369,10 @@ int main(int argc, char **argv)
 		if (st.tone >= 0) menu.tone = st.tone;   /* hdmifilt: TONE ToolType */
 		if (st.scan >= 0) scan = st.scan;
 		if (st.rtg >= 0) rtg = st.rtg;
+#ifndef NO_LUPA
+		onegame = Sys_LupaOneGame;
+		if (Sys_LupaProfile[0]) profile = lupa_profile(Sys_LupaProfile);
+#endif
 		if (st.tape[0]) strncpy(menu.tape, st.tape, SYS_PATH - 1);
 		if (has_ext(st.media, ".cpr")) { strncpy(menu.cart, st.media, SYS_PATH - 1); media_given = 1; }
 		else if (has_ext(st.media, ".dsk")) { strncpy(menu.diska, st.media, SYS_PATH - 1); menu.diskb[0] = 0; media_given = 1; }
@@ -1347,6 +1382,10 @@ int main(int argc, char **argv)
 	} else {
 		for (i = 1; i < argc; i++)
 			if (!kwncmp(argv[i], "P=", 2)) strncpy(menu.prefs, argv[i] + 2, SYS_PATH - 1);
+#ifndef NO_LUPA
+			else if (!kwncmp(argv[i], "PREFS=", 6)) strncpy(menu.prefs, argv[i] + 6, SYS_PATH - 1);   /* Lupa: PREFS= = P= */
+			else if (!kwcmp(argv[i], "PREFS") && i + 1 < argc) strncpy(menu.prefs, argv[++i], SYS_PATH - 1);
+#endif
 		prefs_load();
 		for (i = 1; i < argc; i++) {
 			if (!kwcmp(argv[i], "NOSOUND")) nosound = 1;
@@ -1380,6 +1419,9 @@ int main(int argc, char **argv)
 			else if (!kwncmp(argv[i], "REMAP=", 6)) remap_parse(argv[i] + 6);
 			else if (!kwcmp(argv[i], "CD32") || !kwcmp(argv[i], "PAD=CD32") || !kwcmp(argv[i], "PAD=1")) Sys_PadType = 1;
 			else if (!kwcmp(argv[i], "PAD=0") || !kwcmp(argv[i], "PAD=STANDARD")) Sys_PadType = 0;
+#ifndef NO_CD32KIT
+			else if (!kwcmp(argv[i], "PAD=KTRL") || !kwcmp(argv[i], "PAD=CD32+") || !kwcmp(argv[i], "PAD=2")) Sys_PadType = 2;   /* the low clock */
+#endif
 			else if (!kwncmp(argv[i], "SPEED=", 6)) { int k = Sys_ParseSpeed(argv[i] + 6); if (k >= 0) menu.speed = k; }
 			else if (!kwncmp(argv[i], "VIDEO=", 6)) { int k = Sys_ParseVideo(argv[i] + 6); if (k >= 0) menu.video = k; }
 			else if (!kwncmp(argv[i], "MODEL=", 6)) { int k = Sys_ParseModel(argv[i] + 6); if (k >= 0) menu.model = k; }
@@ -1421,12 +1463,31 @@ int main(int argc, char **argv)
 			else if (!kwncmp(argv[i], "HELPAFTER=", 10)) help_after = atol(argv[i] + 10);
 			else if (!kwncmp(argv[i], "HELPEVERY=", 10)) help_after = help_every = atol(argv[i] + 10);
 			else if (!kwncmp(argv[i], "P=", 2)) ;
+#ifndef NO_LUPA
+			else if (!kwcmp(argv[i], "AGA")) rtg = 0;                        /* Lupa contract (15 Nov 2026) */
+			else if (!kwcmp(argv[i], "ONEGAME")) onegame = 1;
+			else if (!kwncmp(argv[i], "PROFILE=", 8)) ;                      /* read before the start */
+			else if (!kwcmp(argv[i], "PROFILE") && i + 1 < argc) i++;
+			else if (!kwncmp(argv[i], "PREFS=", 6)) ;
+			else if (!kwcmp(argv[i], "PREFS") && i + 1 < argc) i++;
+			else if (!kwncmp(argv[i], "RTGMODE=", 8)) Sys_Log("RTGMODE= not supported yet: the automatic mode");
+			else if (!kwcmp(argv[i], "RTGMODE") && i + 1 < argc) { i++; Sys_Log("RTGMODE not supported yet: the automatic mode"); }
+#endif
 			else if (has_ext(argv[i], ".cpr")) { strncpy(menu.cart, argv[i], SYS_PATH - 1); media_given = 1; }
 			else if (has_ext(argv[i], ".dsk")) { if (!ndisk) menu.diskb[0] = 0; strncpy(ndisk++ ? menu.diskb : menu.diska, argv[i], SYS_PATH - 1); media_given = 1; }
 			else if (has_ext(argv[i], ".sna")) { sna = argv[i]; media_given = 1; }
 			else if (has_ext(argv[i], ".cdt")) { strncpy(menu.tape, argv[i], SYS_PATH - 1); media_given = 1; }
 		}
 	}
+#ifndef NO_LUPA
+	if (rtg < 0 && !prefs_rtg_seen) {      /* no word, ToolType or prefs line: ENV:AmiEmu/Display (AUTO: RTG if there is a board) */
+		int d = Sys_EnvDisplay();
+		if (d == 2) d = Sys_RtgAvailable() ? 1 : 0;
+		if (d >= 0) { rtg = d; Sys_Log("display from ENV:AmiEmu/Display: %s", d ? "RTG" : "AGA"); }
+	}
+	if (profile < 0 || profile == 2) { rc = 5; Sys_Log("profile: %s, Arnold has one profile (rc 5)", profile == 2 ? "030" : "not a profile word"); }
+	if (onegame) Sys_Log("ONEGAME: Help quits");
+#endif
 	Sys_Log("prefs '%s': sound %d hires %d skip %d refresh %d model %s video %s speed %s cart '%s' fasttape %d tapesound %d", menu.prefs, menu.sound, menu.hires, skip_max, refresh,
 		Sys_ModelNames[menu.model], Sys_VideoNames[menu.video], Sys_SpeedNames[menu.speed], menu.cart, menu.fasttape, menu.tapesound);
 	Sys_VideoMode = menu.video;
@@ -1451,7 +1512,11 @@ int main(int argc, char **argv)
 	CPC_SkipNextFrameHook = skip_hook;
 
 	action = want_menu ? SYS_MENU_QUIT : SYS_MENU_POWER;
+#ifndef NO_LUPA
+	if (!want_menu && !power_on()) { if (onegame) { rc = 10; goto lupa_exit; } want_menu = 1; }   /* the requester was on Workbench */
+#else
 	if (!want_menu && !power_on()) want_menu = 1;
+#endif
 	if (!want_menu && sna && load_media("snapshot", sna, &data, &len)) {
 		/* an Arnold save state resumes exactly; any other .sna loads as before (upstream, lossy) */
 		char msg[300];
@@ -1511,7 +1576,11 @@ int main(int argc, char **argv)
 			if (action == SYS_MENU_CONTINUE || action == SYS_MENU_RESET) { apply_disks(); apply_tape(0); }   /* disk swap, tape change or rewind */
 			if (action == SYS_MENU_RESET) { if (tape_in[0] && TapeImage_GetCurrentBlock() == 0) tape_autostart("reset"); else TapeAuto_Stop(); }   /* a tape at its start loads again */
 		}
+#ifndef NO_LUPA
+		{ int ok = open_emulation(); Sys_MenuClose(); if (!ok && onegame) { rc = 20; break; } if (!ok) { want_menu = 1; pending_load = 0; continue; } }
+#else
 		{ int ok = open_emulation(); Sys_MenuClose(); if (!ok) { want_menu = 1; pending_load = 0; continue; } }
+#endif
 #ifndef NO_VSYNCCUT
 		{ static int said; CPC_AudioFrameHook = vsynccut ? audio_frame : NULL; if (!said++) Sys_Log("frame end: %s", vsynccut ? "at the CPC VSYNC" : "fixed (as 1.7)"); }
 #ifndef NO_JOYREREAD
@@ -1564,12 +1633,24 @@ int main(int argc, char **argv)
 			perf_report(stdout);
 			break;
 		}
+#ifndef NO_LUPA
+		if (onegame) break;               /* Lupa: Help leaves to Workbench (changed disks are written below) */
+#endif
 		want_menu = 1;
 	}
+#ifndef NO_LUPA
+lupa_exit:
+	if (Sys_RtgDead && rc < 5) rc = 5;    /* RTG was asked for and AGA was used */
+	Sys_Log("return code %d", rc);
+#endif
 	flush_disks("exit");
 	if (audio_open) Sys_AudioClose();
 	if (display_open) Sys_CloseDisplay();
 	Sys_Log("exit");
 	Sys_LogClose();
+#ifndef NO_LUPA
+	return rc;
+#else
 	return 0;
+#endif
 }

@@ -37,6 +37,41 @@ ULONG Sys_JoyRaw(int port) { return port >= 0 && port < 4 ? joy_last_raw[port] :
  * low = pressed). Each step waits on CIA reads, which run at real Amiga
  * speed whatever the CPU. Order: blue, red, yellow, green, forward, reverse,
  * play. Returns the 7 button bits (bit set = pressed). */
+#ifndef NO_CD32KIT
+/* 2.0 (NO_CD32KIT: as 1.9): the read of emu-dev-docs CD32 kit 2 (kits/cd32pad/cd32read.s, from FAmiga by
+ * Afrotechmods): pin 6 is written from a copy of the port byte (the image clock: WinUAE and FS-UAE follow
+ * it), a 35-read latch wait, 3 + 3 CIA reads a clock pulse, the nine bits read before each pulse. Two
+ * clocks, chosen in the menu: "CD32 pad" (pin 6 idles high, each pulse goes low then high) and "KTRL
+ * CD32+" (lowclk: the low clock, pin 6 idles low, each pulse goes high then low). FAmiga's tests: the
+ * first KTRL CD32 right with the first, the KTRL CD32+ and the Mega Multi adapter right with the second. */
+static unsigned read_cd32_buttons(int lowclk)
+{
+	volatile UBYTE *pra = &ciaa.ciapra, *ddra = &ciaa.ciaddra;
+	unsigned bits = 0;
+	int i, d;
+	UBYTE img, dummy;
+	Disable();
+	img = *pra | 0x80;              /* pin 6 at its idle level: high, or low for the low clock */
+	if (lowclk) img &= ~0x80;
+	*pra = img;
+	*ddra |= 0x80;                 /* an output, held there while pin 5 falls (no clock edge) */
+	*pra = img;                    /* again now it is an output (UAE takes its first level from this write) */
+	CUSTOM->potgo = 0x6f00;        /* port 2: pin 5 low (CD32 mode, the pad latches), pin 9 input */
+	for (d = 0; d < 35; d++) dummy = *pra;
+	for (i = 0; i < 9; i++) {
+		if (!(CUSTOM->potinp & 0x4000)) bits |= 1u << i;
+		img ^= 0x80; *pra = img;      /* the pulse's first half */
+		for (d = 0; d < 3; d++) dummy = *pra;
+		img ^= 0x80; *pra = img;      /* back to idle: the next bit */
+		for (d = 0; d < 3; d++) dummy = *pra;
+	}
+	CUSTOM->potgo = 0xff00;        /* pin 5 high again: 2-button mode */
+	*ddra &= ~0x80;                /* fire line back to input */
+	Enable();
+	(void)dummy;
+	return bits;
+}
+#else
 static unsigned read_cd32_buttons(void)
 {
 	/* Returns 9 bits, set = low on pin 9: the 7 buttons, then the pad's ID
@@ -69,6 +104,7 @@ static unsigned read_cd32_buttons(void)
 	(void)dummy;
 	return bits;
 }
+#endif
 
 /* Joystick port 2 (lowlevel.library port 1). No auto-detection (John's
  * decision, 17 Oct 2026, after AmiMSX: lowlevel.library's CD32 detection was
@@ -102,14 +138,22 @@ unsigned Sys_ReadJoystick(void)
 	if (Sys_NoCD32) Sys_PadType = 0;
 	if (pad_logged != Sys_PadType) {
 		pad_logged = Sys_PadType;
+#ifndef NO_CD32KIT
+		Sys_Log("joystick: port 2 read as %s", Sys_PadType == 2 ? "a CD32 pad, the low clock (KTRL CD32+)" : Sys_PadType ? "a CD32 pad" : "a standard 2-button joystick");
+#else
 		Sys_Log("joystick: port 2 read as %s", Sys_PadType ? "a CD32 pad" : "a standard 2-button joystick");
+#endif
 	}
 	if (j & 0x0002) m |= SYS_JOY_RIGHT;
 	if (j & 0x0200) m |= SYS_JOY_LEFT;
 	if (((j >> 1) ^ j) & 0x0001) m |= SYS_JOY_DOWN;
 	if (((j >> 9) ^ (j >> 8)) & 0x0001) m |= SYS_JOY_UP;
 	if (Sys_PadType) {
+#ifndef NO_CD32KIT
+		unsigned b = read_cd32_buttons(Sys_PadType == 2);
+#else
 		unsigned b = read_cd32_buttons();
+#endif
 		joy_last_raw[1] = b;
 #ifndef NO_CD32PLAIN
 		/* 1.8 (emu-dev-docs cross-review, as AmiMSX): a plain pad answers every clock with the

@@ -1,6 +1,6 @@
-From 31cd8f61da82e7c0a0453ba36c81579aa3b7000c Mon Sep 17 00:00:00 2001
+From dddd8b610f428ac181250c0afd8d0d65b64eedcb Mon Sep 17 00:00:00 2001
 From: John Stringer <jcec_1@yahoo.co.uk>
-Date: Mon, 9 Nov 2026 21:21:02 +0000
+Date: Wed, 18 Nov 2026 21:50:10 +0000
 Subject: [PATCH 47/51] I/O timing: PPI accesses at their own I/O cycle
 
 Only CRTC writes were timed at the cycle of the OUT; every other port was

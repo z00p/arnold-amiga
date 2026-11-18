@@ -43,7 +43,11 @@ enum { G_CART, G_CARTLOAD, G_CARTEJECT, G_DISKA, G_DISKALOAD, G_DISKAEJECT,
 /* menu item ids (nm_UserData) */
 enum { M_NONE, M_LOADCART, M_LOADA, M_LOADB, M_EJECTALL, M_KEYS, M_SHOT, M_SAVE, M_SAVEGAME, M_FORGETGAME, M_QUIT,
        M_SOUND, M_HIRES, M_SKIP0, M_SKIP1, M_SKIP2, M_SKIP3, M_SKIP5, M_REF1, M_REF2, M_REF3, M_REF4,
-       M_JOY0, M_JOY1, M_JOY2, M_JOY3, M_PAD0, M_PAD1, M_SPEED50, M_SPEEDDISP,
+       M_JOY0, M_JOY1, M_JOY2, M_JOY3, M_PAD0, M_PAD1,
+#ifndef NO_CD32KIT
+       M_PAD2,
+#endif
+       M_SPEED50, M_SPEEDDISP,
        M_VIDAUTO, M_VIDPAL, M_VIDNTSC, M_TALL, M_WIDE, M_DISKWRITE, M_MODEL464, M_MODEL664, M_MODEL6128, M_MODELPLUS, M_MODELGX,
        M_LOADTAPE, M_REWIND, M_FASTTAPE, M_TAPESOUND, M_KEYEDIT, M_KEYMAPSUB, M_RTG,
        M_SCAN0, M_SCAN1, M_SCAN2, M_SCAN3, M_SCAN4, M_SCAN5, M_SCAN6,
@@ -84,7 +88,13 @@ static const int skip_values[] = { 0, 1, 2, 3, 5 };
 static const char *skip_short[] = { "off", "1", "2", "3", "5" };
 static const char *refresh_short[] = { "all", "1/2", "1/3", "1/4" };
 static const char *joykey_short[] = { "off", "cursors", "QAOP", "cursors X" };
+#ifndef NO_CD32KIT
+static const char *pad_short[] = { "normal", "CD32", "CD32+" };
+#define PAD_IX(m) ((m)->pad >= 0 && (m)->pad <= 2 ? (m)->pad : 0)
+#else
 static const char *pad_short[] = { "normal", "CD32" };
+#define PAD_IX(m) ((m)->pad ? 1 : 0)
+#endif
 /* the cycle gadgets' choices (NULL-terminated for GadTools) */
 static STRPTR model_labels[] = { (STRPTR)"CPC 464", (STRPTR)"CPC 664", (STRPTR)"CPC 6128", (STRPTR)"CPC 6128 Plus", (STRPTR)"GX4000", NULL };
 static STRPTR video_labels[] = { (STRPTR)"Auto (as Workbench)", (STRPTR)"PAL", (STRPTR)"NTSC", NULL };
@@ -162,6 +172,9 @@ static struct NewMenu nm[] = {
 	{ NM_ITEM, (STRPTR)"Pad in port 2", NULL, 0, 0, NULL },
 	{ NM_SUB, (STRPTR)"Normal joystick / 2-button pad", NULL, CHECKIT, X(0), (APTR)M_PAD0 },
 	{ NM_SUB, (STRPTR)"CD32 pad", NULL, CHECKIT, X(1), (APTR)M_PAD1 },
+#ifndef NO_CD32KIT
+	{ NM_SUB, (STRPTR)"KTRL CD32+ (try if buttons flicker)", NULL, CHECKIT, X(2), (APTR)M_PAD2 },
+#endif
 	{ NM_ITEM, (STRPTR)"Key map", NULL, 0, 0, (APTR)M_KEYMAPSUB },   /* sub-items: the presets, added by build_menu_table */
 	{ NM_ITEM, (STRPTR)"Edit key map...", (STRPTR)"E", 0, 0, (APTR)M_KEYEDIT },
 	{ NM_TITLE, (STRPTR)"Display", NULL, 0, 0, NULL },
@@ -289,13 +302,13 @@ static void draw_settings(struct SysMenu *m)
 	const char *snd = !m->sound ? "off" : (m->hdmisound && m->rtg && !m->hdmifail ? "HDMI" : "Paula");   /* HDMI only on the RTG screen, and if the driver opened */
 	sprintf(l, "Sound %s  Screen %s  Skip %s  Refresh %s  Joykeys %s  Pad %s",
 		snd, scrn, skip_short[skip_index(m->skip)],
-		refresh_short[rf], joykey_short[jk], pad_short[m->pad ? 1 : 0]);
+		refresh_short[rf], joykey_short[jk], pad_short[PAD_IX(m)]);
 	sprintf(mid, "Sound %s  Screen %s  Skip %s  Ref %s  Joy %s  Pad %s",
 		snd, scrn, skip_short[skip_index(m->skip)],
-		refresh_short[rf], joykey_short[jk], pad_short[m->pad ? 1 : 0]);
+		refresh_short[rf], joykey_short[jk], pad_short[PAD_IX(m)]);
 	sprintf(comp, "Snd %s Scr %s Skip %s Ref %s Joy %s Pad %s",
 		snd, scrn, skip_short[skip_index(m->skip)],
-		refresh_short[rf], joykey_short[jk], pad_short[m->pad ? 1 : 0]);
+		refresh_short[rf], joykey_short[jk], pad_short[PAD_IX(m)]);
 	KeyMap_FitLine(out, 74, l, mid, comp, m->remap);   /* 74 chars: the window ends at 8 px per char from x 20 */   /* adds "Keys: RShift=M" (or "Keys: 3 remapped") */
 	for (n = strlen(out); n < 74; n++) out[n] = ' ';
 	out[n] = 0;
@@ -417,7 +430,7 @@ static void set_checks(struct SysMenu *m)
 {
 	int i;
 	int on[] = { M_SKIP0 + skip_index(m->skip), M_REF1 + refresh_index(m->refresh),
-	             M_JOY0 + (m->joykeys >= 0 && m->joykeys <= 3 ? m->joykeys : 0), M_PAD0 + (m->pad ? 1 : 0),
+	             M_JOY0 + (m->joykeys >= 0 && m->joykeys <= 3 ? m->joykeys : 0), M_PAD0 + PAD_IX(m),
 	             M_SPEED50 + (m->speed ? 1 : 0), M_VIDAUTO + video_of(m), M_MODEL464 + model_of(m),
 	             M_SCAN0 + (m->scan > 0 && m->scan < SYS_SCANS ? m->scan : 0),
 	             M_TONE0 + (m->tone > 0 && m->tone <= 2 ? m->tone : 0) };
@@ -554,7 +567,7 @@ static int open_menu(struct SysMenu *m)
 	if (!g) { close_menu(); return 0; }
 	if (!make_menus(m)) { close_menu(); return 0; }
 	/* version, credit and build time (date and hh:mm) in the title bar */
-	sprintf(wintitle, "Arnold v1.9 for Amiga - core: Kevin Thacker - built %.6s %.4s %.5s", __DATE__, __DATE__ + 7, __TIME__);
+	sprintf(wintitle, "Arnold v2.0 for Amiga - core: Kevin Thacker - built %.6s %.4s %.5s", __DATE__, __DATE__ + 7, __TIME__);
 	mwin = OpenWindowTags(NULL, WA_CustomScreen, (ULONG)mscr, WA_Left, wl, WA_Top, wt,
 		WA_Width, 640, WA_Height, wh,
 		WA_Title, (ULONG)wintitle,
@@ -722,7 +735,11 @@ static int menu_pick(struct SysMenu *m, struct MenuItem *item)
 	case M_SKIP0: case M_SKIP1: case M_SKIP2: case M_SKIP3: case M_SKIP5: m->skip = skip_values[id - M_SKIP0]; break;
 	case M_REF1: case M_REF2: case M_REF3: case M_REF4: m->refresh = id - M_REF1 + 1; break;
 	case M_JOY0: case M_JOY1: case M_JOY2: case M_JOY3: m->joykeys = id - M_JOY0; break;
+#ifndef NO_CD32KIT
+	case M_PAD0: case M_PAD1: case M_PAD2: m->pad = id - M_PAD0; break;
+#else
 	case M_PAD0: case M_PAD1: m->pad = id - M_PAD0; break;
+#endif
 	case M_SPEED50: case M_SPEEDDISP: m->speed = id - M_SPEED50; set_cycle(G_SPEED, m->speed); break;
 	case M_VIDAUTO: case M_VIDPAL: case M_VIDNTSC:
 		if (m->video != id - M_VIDAUTO) { m->video = id - M_VIDAUTO; if (menu_rtg) { set_cycle(G_VIDEO, m->video); break; } return MENU_REOPEN; }
