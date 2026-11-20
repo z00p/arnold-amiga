@@ -1,6 +1,6 @@
-From 35d0105630c70d293690893c5d4256f5279d49dd Mon Sep 17 00:00:00 2001
+From 22f387a491ccb67feff5ef15e14fea3f5770a723 Mon Sep 17 00:00:00 2001
 From: John Stringer <jcec_1@yahoo.co.uk>
-Date: Wed, 18 Nov 2026 21:50:07 +0000
+Date: Fri, 20 Nov 2026 19:03:07 +0000
 Subject: [PATCH 41/51] Frame end at the CPC's VSYNC; sound kept on the fixed
  grid
 

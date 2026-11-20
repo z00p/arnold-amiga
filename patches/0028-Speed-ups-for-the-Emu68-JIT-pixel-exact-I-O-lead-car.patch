@@ -1,6 +1,6 @@
-From 523bfa15c182b69b648a1937224389671abcf46c Mon Sep 17 00:00:00 2001
+From 50352e5b6a2f14b558cea3181442f32f9543ef06 Mon Sep 17 00:00:00 2001
 From: John Stringer <jcec_1@yahoo.co.uk>
-Date: Wed, 18 Nov 2026 21:50:00 +0000
+Date: Fri, 20 Nov 2026 19:03:02 +0000
 Subject: [PATCH 28/51] Speed-ups for the Emu68 JIT (pixel-exact); I/O lead
  carried over
 

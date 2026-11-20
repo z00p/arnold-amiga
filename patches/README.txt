@@ -1,6 +1,6 @@
-Arnold for Amiga 2.0 - patch set and Amiga build
+Arnold for Amiga 2.1 - patch set and Amiga build
 =================================================
-18 November 2026.  Arnold (c) Kevin Thacker, GPL-2.0.  Amiga port by John Stringer.
+20 November 2026.  Arnold (c) Kevin Thacker, GPL-2.0.  Amiga port by John Stringer.
 
 This package holds the changes made to Arnold while porting it to 68k AmigaOS 3.x (AGA),
 as patches against the upstream source, plus a ready-to-run Amiga build.
@@ -249,6 +249,13 @@ Monitor and tape:
        (the VSYNC bit, keyboard and joystick, tape, the sound chip) now are too: a
        game polling the VSYNC bit saw it 4 NOPs late before.
 
+2.1 (Amiga host only): the core patches are 2.0's, and the series has the same 51
+patches. 0049 (rtgfw, vendored from rtg-framework f5678a3) adds diagnostics for boards
+without vblank timing (NO_RTGDIAG). 0050 holds the new host code: the RTG screen reopens
+as one page with plain writes when a board's vblank timing can't be measured
+(NO_VBLFALLBACK), RTGVBL=0 reaches Arnold-060 (NO_RTGVBL060), a longer CD32 latch wait
+(NO_CD32LATCH200) and a message when there is no AGA or RTG screen (NO_NEEDAGA).
+
 2.0 (Amiga host only): the core patches are 1.9's, and the series has the same 51
 patches. 0050 holds the new host code: CD32 pads read the way FAmiga reads them, a
 "KTRL CD32+" pad type (NO_CD32KIT), and the launcher words, ENV:AmiEmu/Display and
@@ -288,6 +295,9 @@ How it was tested
   VSYNC probes now match exactly. Over 1500 frames, patch 46 changes 9 of 81 cartridges
   (all in their sound) and patch 47 moves the timing of 62; both checked in play on
   an A1200. With NO_PRI_CLEAR and NO_PPI_IOTIME the build matches 1.8 on all 81.
+- 2.1 (patches 49-50 only): with NO_RTGDIAG, NO_VBLFALLBACK, NO_RTGVBL060, NO_CD32LATCH200
+  and NO_NEEDAGA the object code is 2.0's but the version strings. Patches 1-48 are 2.0's;
+  steps 48-51 build headless with the same checksums as 2.0's.
 - 2.0 (patch 50 only): with NO_LUPA and NO_CD32KIT the host's object code is 1.9's.
   Patches 1-49 are 1.9's; steps 48-51 build headless with the same checksums as 1.9's.
 - Frame end at VSYNC (patch 41): with the host hook, the same sound, registers and RAM
@@ -309,9 +319,13 @@ How it was tested
 Amiga build
 -----------
 See amiga/Arnold/README.txt. In short: CPC 6128 Plus / GX4000 cartridges (.cpr), disks
-(.dsk, with the system cartridge's BASIC and AMSDOS) and snapshots (.sna). It needs an
-AGA Amiga with a 68040 or better (PiStorm/Emu68 or a 68040/68060 card), with sound through
-Paula. Help opens the menu. New in 2.0: the program Arnold with two presets as white
+(.dsk, with the system cartridge's BASIC and AMSDOS) and snapshots (.sna). It needs a
+68040 or better (PiStorm/Emu68 or a 68040/68060 card) and AGA or an RTG card, with sound
+through Paula. Help opens the menu. New in 2.1: when a board's vblank timing can't be
+measured, the RTG screen reopens as one page instead of staying blank; RTGVBL=0 reaches
+Arnold-060; a longer CD32 latch wait; PadTest.dsk shows joystick 0 as games read it;
+without AGA or RTG, a message says what Arnold needs.
+2.0 brought: the program Arnold with two presets as white
 cartridges, AGA and RTG; on a 68060 card Arnold starts Arnold-060 by itself; CD32 pads read
 the way FAmiga reads them (Afrotechmods) and a "KTRL CD32+" pad type; launcher words (AGA,
 RTG, ONEGAME, PROFILE=, PREFS=), ENV:AmiEmu/Display and return codes, as in AmiPCEngine,

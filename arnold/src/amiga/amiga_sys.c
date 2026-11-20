@@ -28,7 +28,7 @@
 #include <stdarg.h>
 
 unsigned long __stack = 256 * 1024;   /* libnix: enlarge the stack at start */
-static const char ver[] __attribute__((used)) = "$VER: Arnold 2.0 (15.11.2026) Amiga port, GPL-2.0";
+static const char ver[] __attribute__((used)) = "$VER: Arnold 2.1 (20.11.2026) Amiga port, GPL-2.0";
 
 /* ---- diagnostic log ---- */
 static FILE *logf;
@@ -562,6 +562,9 @@ int Sys_RtgWanted, Sys_RtgActive, Sys_RtgBlit, Sys_RtgBuffers = 1, Sys_RtgGrabOn
  * into a staging frame. Falls back to plain direct writes if the board gives no steady blank.
  * On by default from 1.4 (John's A1200 tear test, 27 Oct: the clean one); RTGVBL=0 for plain writes. */
 int Sys_RtgVblank = 1;
+#ifndef NO_VBLFALLBACK
+int Sys_RtgVblFallback = 1;           /* issue #1 (2.1): VBLFALLBACK=0 = as 2.0; NO_VBLFALLBACK builds 2.0 */
+#endif
 /* Scanlines on the RTG screen (1.2, 26 Oct 2026; rtgfw RtgOpen.scan): SYS_SCAN_* = the Scanlines
  * setting. Off is the 1x picture as before. The others draw the picture at 2x (each CPC pixel
  * 2x2) into a bigger RTG mode, the lower row of each pair being the scanline: hard = the line
@@ -585,6 +588,24 @@ static unsigned long rtg_errs;
  * marks like lores; the pilot's "every line every frame" workaround is gone. */
 
 static void rtg_log(const char *line) { Sys_Log("%s", line); }
+
+#ifndef NO_NEEDAGA
+/* 2.1 (issue #1's ECS A1000): no picture is possible without AGA or an RTG screen. On an
+ * OCS/ECS Amiga the 8-bit AGA screen can't open, so say what Arnold needs instead of
+ * "Can't open the display". NO_NEEDAGA: as 2.0. */
+const char *Sys_DisplayError(void)
+{
+	if (GfxBase->ChipRevBits0 & GFXF_AA_ALICE) return "Can't open the display";
+	Sys_Log("display: no AGA chipset (ChipRevBits0 %02x)", (unsigned)GfxBase->ChipRevBits0);
+	if (Sys_RtgWanted)
+		return "This Amiga has no AGA chipset, and the RTG screen\n"
+		       "could not be opened either. Arnold needs an AGA\n"
+		       "Amiga or an RTG card with an 8-bit (256 colour) mode.";
+	return "Arnold needs an AGA Amiga (A1200, A4000, CD32)\n"
+	       "or an RTG graphics card. With a card, tick\n"
+	       "RTG screen in the menu.";
+}
+#endif
 
 int Sys_RtgAvailable(void)
 {
@@ -673,6 +694,17 @@ static int rtg_open_display(int cw, int ch, int hires)
 	rtg_o.log = rtg_log;
 	if (!Sys_RtgAvailable()) e = RTG_E_NOMODE;
 	else e = rtg_open(&rtg_o);
+#ifndef NO_VBLFALLBACK
+	/* issue #1 (2.1, on by default; VBLFALLBACK=0 or NO_VBLFALLBACK: as 2.0): RTGVBL asked for, but no steady blank from the pans,
+	 * so rtgfw writes straight into page 0 of a two-page screen whose display offset the calibration pans have
+	 * moved (a driver that defers or drops a pan can leave page 1, the surround pen, on show). Reopen the
+	 * screen as one page without RTGVBL: nothing ever pans it (the 26 Oct pilot's way, seen working at 400x300). */
+	if (e == RTG_OK && Sys_RtgVblFallback && (rtg_o.flags & RTG_F_VBLANK) && rtg_x_vbl_next(NULL, NULL) != RTG_OK) {
+		Sys_Log("rtg: issue1: no vblank timing on this board: the screen reopened as one page, plain direct writes");
+		rtg_o.flags &= ~RTG_F_VBLANK;
+		e = rtg_open(&rtg_o);
+	}
+#endif
 	if (e != RTG_OK) {
 		Sys_Log("rtg: open failed (%s): using the AGA screen", rtg_error_text(e));
 		snprintf(Sys_RtgStatus, sizeof Sys_RtgStatus, "RTG screen: %s, AGA used.",

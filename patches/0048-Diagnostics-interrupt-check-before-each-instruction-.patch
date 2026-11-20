@@ -1,6 +1,6 @@
-From a88d145a311f24455ddc5bc2b0e075dd0358e929 Mon Sep 17 00:00:00 2001
+From e5c868e91e7a0eee36530077883a821438911858 Mon Sep 17 00:00:00 2001
 From: John Stringer <jcec_1@yahoo.co.uk>
-Date: Wed, 18 Nov 2026 21:50:11 +0000
+Date: Fri, 20 Nov 2026 19:03:09 +0000
 Subject: [PATCH 48/51] Diagnostics: interrupt check before each instruction
  (IOT_INT_SAMPLE; off by default)
 

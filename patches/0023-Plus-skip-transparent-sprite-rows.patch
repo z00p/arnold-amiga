@@ -1,6 +1,6 @@
-From 0699e8926939985d1b21ef15b10d8cfdaf196a26 Mon Sep 17 00:00:00 2001
+From cb5aa1e38dd04e7ab2423c549c0e01597f3b4216 Mon Sep 17 00:00:00 2001
 From: John Stringer <jcec_1@yahoo.co.uk>
-Date: Wed, 18 Nov 2026 21:49:58 +0000
+Date: Fri, 20 Nov 2026 19:03:00 +0000
 Subject: [PATCH 23/51] Plus: skip transparent sprite rows
 
 A hardware sprite row whose 16 pixels are all pen 0 is skipped, and the pixel

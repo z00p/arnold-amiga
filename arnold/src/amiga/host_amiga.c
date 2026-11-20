@@ -1246,7 +1246,11 @@ static int open_emulation(void)
 	Sys_RtgWanted = menu.rtg;     /* RTG screen (pilot): tried first, the AGA screen if there is none */
 	Sys_RtgScan = menu.scan;      /* RTG scanlines (1.2) */
 	Render_SetRenderingAccuracyForWindowedMode(menu.hires ? RENDERING_ACCURACY_HIGH : RENDERING_ACCURACY_LOW);
+#ifndef NO_NEEDAGA
+	if (!Render_SetDisplayWindowed()) { Sys_MenuError(Sys_DisplayError()); return 0; }
+#else
 	if (!Render_SetDisplayWindowed()) { Sys_MenuError("Can't open the display"); return 0; }
+#endif
 	/* Timing (19 Oct 2026). A 50 Hz display: one CPC frame per VBlank and Paula
 	 * fed from the VBlank, as tuned on PAL. Any other rate (NTSC 60 Hz):
 	 * - Game speed "50 Hz": the E-clock paces the frames, Paula's own interrupt
@@ -1406,6 +1410,15 @@ int main(int argc, char **argv)
 			else if (!kwncmp(argv[i], "PANMIRROR=", 10)) rtg_x_pan_mirror = atoi(argv[i] + 10);   /* rtg17 test: 0 = page 1 black, as 1.6 */
 			else if (!kwncmp(argv[i], "PANLINES=", 9)) rtg_x_pan_lines = atoi(argv[i] + 9);   /* rtg17 test: -1 a page (default), 0 one pan to the same offset */
 			else if (!kwncmp(argv[i], "PANFORBID=", 10)) rtg_x_pan_forbid = atoi(argv[i] + 10);   /* rtg17 test: 0 = anchor pans without Forbid */
+#ifdef ISSUE1
+#ifndef RTGFW_ISSUE1
+#error "ISSUE1 (the PANSTUCK= test word) needs RTGFW_ISSUE1 too: rtg_x_pan_stuck lives in rtgfw.c"
+#endif
+			else if (!kwncmp(argv[i], "PANSTUCK=", 9)) { extern int rtg_x_pan_stuck; rtg_x_pan_stuck = atoi(argv[i] + 9); }   /* issue #1 test: a failed calibration leaves page 1 on show */
+#endif
+#ifndef NO_VBLFALLBACK
+			else if (!kwncmp(argv[i], "VBLFALLBACK=", 12)) { extern int Sys_RtgVblFallback; Sys_RtgVblFallback = atoi(argv[i] + 12); }   /* issue #1 (2.1): 0 = as 2.0 */
+#endif
 			else if (!kwncmp(argv[i], "LEAD=", 5)) Sys_LeadUs = atoi(argv[i] + 5);   /* sonic16: frame lead, us (0 = off) */
 			else if (!kwncmp(argv[i], "LSMARGIN=", 9)) Sys_LateMarginUs = atol(argv[i] + 9);   /* lag18: RTG late start margin, us (0 = off) */
 #ifndef NO_VSYNCCUT

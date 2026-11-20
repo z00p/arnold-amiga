@@ -1,6 +1,6 @@
-From 3c0f312201842254b2d35253a2e833941d5d75f0 Mon Sep 17 00:00:00 2001
+From 10f87a08af77b71b5265b6efcad89d7313880206 Mon Sep 17 00:00:00 2001
 From: John Stringer <jcec_1@yahoo.co.uk>
-Date: Wed, 18 Nov 2026 21:50:08 +0000
+Date: Fri, 20 Nov 2026 19:03:07 +0000
 Subject: [PATCH 42/51] Save states: the VSYNC-cut values in a chunk of their
  own (ARNX)
 

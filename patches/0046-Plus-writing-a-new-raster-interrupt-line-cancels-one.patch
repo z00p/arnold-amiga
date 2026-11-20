@@ -1,6 +1,6 @@
-From aaa27a30f94d9237cdc3bf5de70c25f86b9c4a02 Mon Sep 17 00:00:00 2001
+From d950aad9fe3b71e6912c3124b66b6ebd495e10b0 Mon Sep 17 00:00:00 2001
 From: John Stringer <jcec_1@yahoo.co.uk>
-Date: Wed, 18 Nov 2026 21:50:10 +0000
+Date: Fri, 20 Nov 2026 19:03:09 +0000
 Subject: [PATCH 46/51] Plus: writing a new raster interrupt line cancels one
  already waiting
 

@@ -1,6 +1,6 @@
-From e2e87938ec6fe114610f3f2da5099e7bd1072c71 Mon Sep 17 00:00:00 2001
+From 64344031574516db99b8831ba999e0253b9cbb96 Mon Sep 17 00:00:00 2001
 From: John Stringer <jcec_1@yahoo.co.uk>
-Date: Wed, 18 Nov 2026 21:50:02 +0000
+Date: Fri, 20 Nov 2026 19:03:02 +0000
 Subject: [PATCH 30/51] Disk images: write changes back to the .dsk file
 
 dskwrite.c builds a new image for a drive from the file it was loaded from and

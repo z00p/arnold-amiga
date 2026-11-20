@@ -301,7 +301,11 @@ int Sys_Rerun060WB(const struct SysStart *st)
 	if (st->rtg >= 0) W("RTG=%d", st->rtg);
 	if (st->scan >= 0 && st->scan < SYS_SCANS) W("SCANLINES=%s", Sys_ScanWords[st->scan]);
 	if (st->tape[0]) W("TAPE=%s", st->tape);
+#ifndef NO_RTGVBL060
+	W("RTGVBL=%d", Sys_RtgVblank ? 1 : 0);   /* 2.1: RTGVBL=0 too (on by default, so the ToolType's 0 was lost; issue #1) */
+#else
 	if (Sys_RtgVblank) W("RTGVBL=1");
+#endif
 	if (Sys_LupaOneGame) W("ONEGAME");
 #undef W
 	if (!ok) return -1;

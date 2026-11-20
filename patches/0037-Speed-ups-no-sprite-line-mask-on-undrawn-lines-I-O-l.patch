@@ -1,6 +1,6 @@
-From 0596c609a8537b7b7d330cab38881d38e9d8d4ed Mon Sep 17 00:00:00 2001
+From c2ae61f9ca58b413c4b2ce0960f6744141e2e876 Mon Sep 17 00:00:00 2001
 From: John Stringer <jcec_1@yahoo.co.uk>
-Date: Wed, 18 Nov 2026 21:50:05 +0000
+Date: Fri, 20 Nov 2026 19:03:05 +0000
 Subject: [PATCH 37/51] Speed-ups: no sprite line mask on undrawn lines; I/O
  lead tested first
 

@@ -1,6 +1,6 @@
-From 0d7bc59c7ad161f3d9564659ec67a80ffe998513 Mon Sep 17 00:00:00 2001
+From 948db393a3c940895853dfb3346c572bab2dab89 Mon Sep 17 00:00:00 2001
 From: John Stringer <jcec_1@yahoo.co.uk>
-Date: Wed, 18 Nov 2026 21:50:13 +0000
+Date: Fri, 20 Nov 2026 19:03:11 +0000
 Subject: [PATCH 50/51] AmigaOS host (68k AGA): Arnold for Amiga
 
 src/amiga: the AmigaOS 3.x host (AGA screen with chunky-to-planar and triple
@@ -16,20 +16,20 @@ Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
  src/amiga/Makefile         |   50 +
  src/amiga/amiga_audio.c    |  534 +++++++++
  src/amiga/amiga_iff.c      |  103 ++
- src/amiga/amiga_joy.c      |  196 ++++
+ src/amiga/amiga_joy.c      |  211 ++++
  src/amiga/amiga_keymap.c   |  239 ++++
  src/amiga/amiga_logo.c     |  153 +++
  src/amiga/amiga_logo.h     |    6 +
- src/amiga/amiga_menu.c     |  854 +++++++++++++++
- src/amiga/amiga_sys.c      | 2106 ++++++++++++++++++++++++++++++++++++
- src/amiga/amiga_sys.h      |  207 ++++
+ src/amiga/amiga_menu.c     |  854 ++++++++++++++
+ src/amiga/amiga_sys.c      | 2138 ++++++++++++++++++++++++++++++++++++
+ src/amiga/amiga_sys.h      |  210 ++++
  src/amiga/amiga_sys_priv.h |   11 +
- src/amiga/amiga_wb.c       |  394 +++++++
+ src/amiga/amiga_wb.c       |  398 +++++++
  src/amiga/audio_conv.h     |   46 +
  src/amiga/c2p_sh.h         |   48 +
  src/amiga/gamedb.c         |  157 +++
  src/amiga/gamedb.h         |   42 +
- src/amiga/host_amiga.c     | 1656 ++++++++++++++++++++++++++++
+ src/amiga/host_amiga.c     | 1669 ++++++++++++++++++++++++++++
  src/amiga/host_file.c      |   29 +
  src/amiga/keymaplogic.c    |  135 +++
  src/amiga/keymaplogic.h    |   34 +
@@ -40,7 +40,7 @@ Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
  src/amiga/screenshot.h     |    7 +
  src/amiga/tapeauto.c       |   82 ++
  src/amiga/tapeauto.h       |   18 +
- 27 files changed, 7517 insertions(+)
+ 27 files changed, 7584 insertions(+)
  create mode 100644 src/amiga/Makefile
  create mode 100644 src/amiga/amiga_audio.c
  create mode 100644 src/amiga/amiga_iff.c
@@ -776,10 +776,10 @@ index 0000000..224f1af
 +}
 diff --git a/src/amiga/amiga_joy.c b/src/amiga/amiga_joy.c
 new file mode 100644
-index 0000000..f9c25c7
+index 0000000..290c618
 --- /dev/null
 +++ b/src/amiga/amiga_joy.c
-@@ -0,0 +1,196 @@
+@@ -0,0 +1,211 @@
 +/* Arnold on AmigaOS: the joystick port (hardware registers, a CD32 pad read by
 + * hand) and the pads lowlevel.library reports on ports 2-3. Split off amiga_sys.c
 + * (split16, 30 Oct 2026). */
@@ -826,6 +826,21 @@ index 0000000..f9c25c7
 + * clocks, chosen in the menu: "CD32 pad" (pin 6 idles high, each pulse goes low then high) and "KTRL
 + * CD32+" (lowclk: the low clock, pin 6 idles low, each pulse goes high then low). FAmiga's tests: the
 + * first KTRL CD32 right with the first, the KTRL CD32+ and the Mega Multi adapter right with the second. */
++/* 2.1: the latch wait is 200 CIA reads (~0.28 ms; 35 is ~50 us). On John's A1200 (17 Nov 2026) the KTRL
++ * CD32 pad flickered green/yellow/play with 35 in AmiGameBoy and was solid with 200 (cd32pad.s 1.0's
++ * value); the Mega Multi adapter wants the low clock plus 200. AmiGameBoy and AmiPCEngine ship 200.
++ * NO_CD32LATCH200: 35, as 2.0. */
++#ifndef CD32_LATCH
++#ifndef NO_CD32LATCH200
++#define CD32_LATCH 200
++#else
++#define CD32_LATCH 35
++#endif
++#endif
++/* the clock pulse: CIA reads in each half (test builds: -DCD32_CLK=n; 3 = 2.0 and 2.1) */
++#ifndef CD32_CLK
++#define CD32_CLK 3
++#endif
 +static unsigned read_cd32_buttons(int lowclk)
 +{
 +	volatile UBYTE *pra = &ciaa.ciapra, *ddra = &ciaa.ciaddra;
@@ -839,13 +854,13 @@ index 0000000..f9c25c7
 +	*ddra |= 0x80;                 /* an output, held there while pin 5 falls (no clock edge) */
 +	*pra = img;                    /* again now it is an output (UAE takes its first level from this write) */
 +	CUSTOM->potgo = 0x6f00;        /* port 2: pin 5 low (CD32 mode, the pad latches), pin 9 input */
-+	for (d = 0; d < 35; d++) dummy = *pra;
++	for (d = 0; d < CD32_LATCH; d++) dummy = *pra;
 +	for (i = 0; i < 9; i++) {
 +		if (!(CUSTOM->potinp & 0x4000)) bits |= 1u << i;
 +		img ^= 0x80; *pra = img;      /* the pulse's first half */
-+		for (d = 0; d < 3; d++) dummy = *pra;
++		for (d = 0; d < CD32_CLK; d++) dummy = *pra;
 +		img ^= 0x80; *pra = img;      /* back to idle: the next bit */
-+		for (d = 0; d < 3; d++) dummy = *pra;
++		for (d = 0; d < CD32_CLK; d++) dummy = *pra;
 +	}
 +	CUSTOM->potgo = 0xff00;        /* pin 5 high again: 2-button mode */
 +	*ddra &= ~0x80;                /* fire line back to input */
@@ -1394,7 +1409,7 @@ index 0000000..b22b3c7
 +#endif
 diff --git a/src/amiga/amiga_menu.c b/src/amiga/amiga_menu.c
 new file mode 100644
-index 0000000..ea74073
+index 0000000..b45530d
 --- /dev/null
 +++ b/src/amiga/amiga_menu.c
 @@ -0,0 +1,854 @@
@@ -1967,7 +1982,7 @@ index 0000000..ea74073
 +	if (!g) { close_menu(); return 0; }
 +	if (!make_menus(m)) { close_menu(); return 0; }
 +	/* version, credit and build time (date and hh:mm) in the title bar */
-+	sprintf(wintitle, "Arnold v2.0 for Amiga - core: Kevin Thacker - built %.6s %.4s %.5s", __DATE__, __DATE__ + 7, __TIME__);
++	sprintf(wintitle, "Arnold v2.1 for Amiga - core: Kevin Thacker - built %.6s %.4s %.5s", __DATE__, __DATE__ + 7, __TIME__);
 +	mwin = OpenWindowTags(NULL, WA_CustomScreen, (ULONG)mscr, WA_Left, wl, WA_Top, wt,
 +		WA_Width, 640, WA_Height, wh,
 +		WA_Title, (ULONG)wintitle,
@@ -2254,10 +2269,10 @@ index 0000000..ea74073
 +}
 diff --git a/src/amiga/amiga_sys.c b/src/amiga/amiga_sys.c
 new file mode 100644
-index 0000000..412548d
+index 0000000..ae34577
 --- /dev/null
 +++ b/src/amiga/amiga_sys.c
-@@ -0,0 +1,2106 @@
+@@ -0,0 +1,2138 @@
 +/* Arnold on AmigaOS: screen, c2p, palette and keyboard (joystick: amiga_joy.c, sound: amiga_audio.c).
 + * AmigaOS 3.x, AGA. Built with bebbo's m68k-amigaos-gcc, -noixemul. */
 +#include <exec/types.h>
@@ -2288,7 +2303,7 @@ index 0000000..412548d
 +#include <stdarg.h>
 +
 +unsigned long __stack = 256 * 1024;   /* libnix: enlarge the stack at start */
-+static const char ver[] __attribute__((used)) = "$VER: Arnold 2.0 (15.11.2026) Amiga port, GPL-2.0";
++static const char ver[] __attribute__((used)) = "$VER: Arnold 2.1 (20.11.2026) Amiga port, GPL-2.0";
 +
 +/* ---- diagnostic log ---- */
 +static FILE *logf;
@@ -2822,6 +2837,9 @@ index 0000000..412548d
 + * into a staging frame. Falls back to plain direct writes if the board gives no steady blank.
 + * On by default from 1.4 (John's A1200 tear test, 27 Oct: the clean one); RTGVBL=0 for plain writes. */
 +int Sys_RtgVblank = 1;
++#ifndef NO_VBLFALLBACK
++int Sys_RtgVblFallback = 1;           /* issue #1 (2.1): VBLFALLBACK=0 = as 2.0; NO_VBLFALLBACK builds 2.0 */
++#endif
 +/* Scanlines on the RTG screen (1.2, 26 Oct 2026; rtgfw RtgOpen.scan): SYS_SCAN_* = the Scanlines
 + * setting. Off is the 1x picture as before. The others draw the picture at 2x (each CPC pixel
 + * 2x2) into a bigger RTG mode, the lower row of each pair being the scanline: hard = the line
@@ -2845,6 +2863,24 @@ index 0000000..412548d
 + * marks like lores; the pilot's "every line every frame" workaround is gone. */
 +
 +static void rtg_log(const char *line) { Sys_Log("%s", line); }
++
++#ifndef NO_NEEDAGA
++/* 2.1 (issue #1's ECS A1000): no picture is possible without AGA or an RTG screen. On an
++ * OCS/ECS Amiga the 8-bit AGA screen can't open, so say what Arnold needs instead of
++ * "Can't open the display". NO_NEEDAGA: as 2.0. */
++const char *Sys_DisplayError(void)
++{
++	if (GfxBase->ChipRevBits0 & GFXF_AA_ALICE) return "Can't open the display";
++	Sys_Log("display: no AGA chipset (ChipRevBits0 %02x)", (unsigned)GfxBase->ChipRevBits0);
++	if (Sys_RtgWanted)
++		return "This Amiga has no AGA chipset, and the RTG screen\n"
++		       "could not be opened either. Arnold needs an AGA\n"
++		       "Amiga or an RTG card with an 8-bit (256 colour) mode.";
++	return "Arnold needs an AGA Amiga (A1200, A4000, CD32)\n"
++	       "or an RTG graphics card. With a card, tick\n"
++	       "RTG screen in the menu.";
++}
++#endif
 +
 +int Sys_RtgAvailable(void)
 +{
@@ -2933,6 +2969,17 @@ index 0000000..412548d
 +	rtg_o.log = rtg_log;
 +	if (!Sys_RtgAvailable()) e = RTG_E_NOMODE;
 +	else e = rtg_open(&rtg_o);
++#ifndef NO_VBLFALLBACK
++	/* issue #1 (2.1, on by default; VBLFALLBACK=0 or NO_VBLFALLBACK: as 2.0): RTGVBL asked for, but no steady blank from the pans,
++	 * so rtgfw writes straight into page 0 of a two-page screen whose display offset the calibration pans have
++	 * moved (a driver that defers or drops a pan can leave page 1, the surround pen, on show). Reopen the
++	 * screen as one page without RTGVBL: nothing ever pans it (the 26 Oct pilot's way, seen working at 400x300). */
++	if (e == RTG_OK && Sys_RtgVblFallback && (rtg_o.flags & RTG_F_VBLANK) && rtg_x_vbl_next(NULL, NULL) != RTG_OK) {
++		Sys_Log("rtg: issue1: no vblank timing on this board: the screen reopened as one page, plain direct writes");
++		rtg_o.flags &= ~RTG_F_VBLANK;
++		e = rtg_open(&rtg_o);
++	}
++#endif
 +	if (e != RTG_OK) {
 +		Sys_Log("rtg: open failed (%s): using the AGA screen", rtg_error_text(e));
 +		snprintf(Sys_RtgStatus, sizeof Sys_RtgStatus, "RTG screen: %s, AGA used.",
@@ -4366,10 +4413,10 @@ index 0000000..412548d
 +void Sys_PacingRestart(void) { pace_restart = 1; }
 diff --git a/src/amiga/amiga_sys.h b/src/amiga/amiga_sys.h
 new file mode 100644
-index 0000000..8267730
+index 0000000..acfda2c
 --- /dev/null
 +++ b/src/amiga/amiga_sys.h
-@@ -0,0 +1,207 @@
+@@ -0,0 +1,210 @@
 +/* Arnold on AmigaOS: the OS-facing half of the host. No Arnold headers here
 + * (cpcglob.h has its own BOOL, which clashes with exec/types.h), so
 + * host_amiga.c talks to the Amiga through this small interface only. */
@@ -4464,6 +4511,9 @@ index 0000000..8267730
 +int  Sys_Menu(struct SysMenu *m);
 +void Sys_MenuClose(void);           /* closes the menu screen Sys_Menu leaves open (call after the emulation screen is up) */
 +void Sys_MenuError(const char *text);
++#ifndef NO_NEEDAGA
++const char *Sys_DisplayError(void);   /* 2.1: the display didn't open: what Arnold needs on an OCS/ECS Amiga (no AGA), else "Can't open the display" */
++#endif
 +extern void (*Sys_MenuOpenedHook)(void);   /* called once a new menu screen is up (RTG: the host then closes the emulation screen, so nothing else shows between) */
 +int  Sys_MenuOnRtg(void);           /* the menu screen open now is an RTG screen */
 +void Sys_ShowPicture(void *screen, const char *name);   /* amiga_iff.c: modal IFF viewer */
@@ -4596,10 +4646,10 @@ index 0000000..d316dd0
 +#endif
 diff --git a/src/amiga/amiga_wb.c b/src/amiga/amiga_wb.c
 new file mode 100644
-index 0000000..310463d
+index 0000000..2448f88
 --- /dev/null
 +++ b/src/amiga/amiga_wb.c
-@@ -0,0 +1,394 @@
+@@ -0,0 +1,398 @@
 +/* Arnold on AmigaOS: Workbench start. With libnix, main() gets argc == 0 and
 + * argv == the WBStartup message. We read the PREFS ToolType from the icon we
 + * were started from (Arnold's own, or a preset project icon) and take a project icon
@@ -4903,7 +4953,11 @@ index 0000000..310463d
 +	if (st->rtg >= 0) W("RTG=%d", st->rtg);
 +	if (st->scan >= 0 && st->scan < SYS_SCANS) W("SCANLINES=%s", Sys_ScanWords[st->scan]);
 +	if (st->tape[0]) W("TAPE=%s", st->tape);
++#ifndef NO_RTGVBL060
++	W("RTGVBL=%d", Sys_RtgVblank ? 1 : 0);   /* 2.1: RTGVBL=0 too (on by default, so the ToolType's 0 was lost; issue #1) */
++#else
 +	if (Sys_RtgVblank) W("RTGVBL=1");
++#endif
 +	if (Sys_LupaOneGame) W("ONEGAME");
 +#undef W
 +	if (!ok) return -1;
@@ -5313,10 +5367,10 @@ index 0000000..eaaa6ea
 +#endif
 diff --git a/src/amiga/host_amiga.c b/src/amiga/host_amiga.c
 new file mode 100644
-index 0000000..f49a0db
+index 0000000..209b76e
 --- /dev/null
 +++ b/src/amiga/host_amiga.c
-@@ -0,0 +1,1656 @@
+@@ -0,0 +1,1669 @@
 +/* Arnold host for AmigaOS: implements src/cpc/host.h on top of amiga_sys.c.
 + * The core renders into an 8-bit chunky buffer (384 x 272, one byte per
 + * pixel, PaletteRemap indices); amiga_sys converts it to AGA bitplanes.
@@ -6565,7 +6619,11 @@ index 0000000..f49a0db
 +	Sys_RtgWanted = menu.rtg;     /* RTG screen (pilot): tried first, the AGA screen if there is none */
 +	Sys_RtgScan = menu.scan;      /* RTG scanlines (1.2) */
 +	Render_SetRenderingAccuracyForWindowedMode(menu.hires ? RENDERING_ACCURACY_HIGH : RENDERING_ACCURACY_LOW);
++#ifndef NO_NEEDAGA
++	if (!Render_SetDisplayWindowed()) { Sys_MenuError(Sys_DisplayError()); return 0; }
++#else
 +	if (!Render_SetDisplayWindowed()) { Sys_MenuError("Can't open the display"); return 0; }
++#endif
 +	/* Timing (19 Oct 2026). A 50 Hz display: one CPC frame per VBlank and Paula
 +	 * fed from the VBlank, as tuned on PAL. Any other rate (NTSC 60 Hz):
 +	 * - Game speed "50 Hz": the E-clock paces the frames, Paula's own interrupt
@@ -6725,6 +6783,15 @@ index 0000000..f49a0db
 +			else if (!kwncmp(argv[i], "PANMIRROR=", 10)) rtg_x_pan_mirror = atoi(argv[i] + 10);   /* rtg17 test: 0 = page 1 black, as 1.6 */
 +			else if (!kwncmp(argv[i], "PANLINES=", 9)) rtg_x_pan_lines = atoi(argv[i] + 9);   /* rtg17 test: -1 a page (default), 0 one pan to the same offset */
 +			else if (!kwncmp(argv[i], "PANFORBID=", 10)) rtg_x_pan_forbid = atoi(argv[i] + 10);   /* rtg17 test: 0 = anchor pans without Forbid */
++#ifdef ISSUE1
++#ifndef RTGFW_ISSUE1
++#error "ISSUE1 (the PANSTUCK= test word) needs RTGFW_ISSUE1 too: rtg_x_pan_stuck lives in rtgfw.c"
++#endif
++			else if (!kwncmp(argv[i], "PANSTUCK=", 9)) { extern int rtg_x_pan_stuck; rtg_x_pan_stuck = atoi(argv[i] + 9); }   /* issue #1 test: a failed calibration leaves page 1 on show */
++#endif
++#ifndef NO_VBLFALLBACK
++			else if (!kwncmp(argv[i], "VBLFALLBACK=", 12)) { extern int Sys_RtgVblFallback; Sys_RtgVblFallback = atoi(argv[i] + 12); }   /* issue #1 (2.1): 0 = as 2.0 */
++#endif
 +			else if (!kwncmp(argv[i], "LEAD=", 5)) Sys_LeadUs = atoi(argv[i] + 5);   /* sonic16: frame lead, us (0 = off) */
 +			else if (!kwncmp(argv[i], "LSMARGIN=", 9)) Sys_LateMarginUs = atol(argv[i] + 9);   /* lag18: RTG late start margin, us (0 = off) */
 +#ifndef NO_VSYNCCUT

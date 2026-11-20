@@ -1006,6 +1006,19 @@ int32_t rtg_open(RTG_REG(RtgOpen *, o, a0))
 	R.surround_need = (UBYTE)((1 << RTGC_MAXBUF) - 1);
 	R.open = 1;
 	if (o->flags & RTG_F_VBLANK) vt_start();   /* else (or if it fails) plain direct writes */
+#ifndef NO_RTGDIAG
+	{	/* issue #1: what the board gave (bitmap rows and row bytes against the screen, the lock) and where the display is */
+		struct BitMap *bm = R.scr->RastPort.BitMap;
+		UBYTE *a = NULL; LONG b = 0;
+		APTR h = lock_bm(bm, &a, &b);
+		if (h) unlock_bm(bm, h);
+		logf_(1, "rtgfw: issue1: screen %dx%d, %d page(s), bitmap %ld rows x %ld bytes (width %ld), lock %s at %08lx bpr %ld",
+		      R.scr_w, R.scr_h, (o->flags & RTG_F_VBLANK) ? 2 : 1, (long)bm->Rows, (long)bm->BytesPerRow, (long)GetBitMapAttr(bm, BMA_WIDTH),
+		      h ? "ok" : "FAILED", (unsigned long)a, (long)b);
+		logf_(1, "rtgfw: issue1: display offset %d,%d, vblank task %s",
+		      (int)R.scr->ViewPort.RasInfo->RxOffset, (int)R.scr->ViewPort.RasInfo->RyOffset, V.task ? "running" : "off (plain direct writes)");
+	}
+#endif
 
 	o->out_mode_id = GetVPModeID(&R.scr->ViewPort);
 	o->out_w = (uint16_t)R.scr_w; o->out_h = (uint16_t)R.scr_h;
@@ -1239,6 +1252,12 @@ int rtg_x_pan_flip = 1;
 int rtg_x_pan_lowpri = 1;
 int rtg_x_pan_testmiss = 0;
 int rtg_x_pan_backoff = 1;   /* vsync19: 0 = anchors every 1 s, then 4 s, whatever happens (1.8) */
+#ifdef RTGFW_ISSUE1
+int rtg_x_pan_stuck = 0;     /* issue #1 test (WinUAE model, not in releases): see vt_entry */
+#endif
+#ifndef NO_RTGDIAG
+static ULONG vt_lock_fails;  /* issue #1 (2.1 diagnostics; NO_RTGDIAG: as 2.0): vt_write / vt_mirror found no bitmap address (silent before) */
+#endif
 ULONG rtg_x_pan_long;      /* pans over 5 ms (for the caller's log) */
 /* the byte offset of page p in the screen bitmap */
 static long vt_page(LONG bpr, int p) { return p ? (long)R.scr_h * bpr : 0; }
@@ -1421,6 +1440,9 @@ static void vt_write(void)
 	if (!h || !addr) {
 		if (h) unlock_bm(bm, h);
 		R.errs++;
+#ifndef NO_RTGDIAG
+		vt_lock_fails++;
+#endif
 		ReleaseSemaphore(&V.sem);            /* marks kept: tried again at the next blank */
 		return;
 	}
@@ -1496,6 +1518,11 @@ static void vt_entry(void)
 		V.calib_tries++; V.ok = vt_calibrate();
 		if (!V.ok) { V.calib_tries++; V.ok = vt_calibrate(); }
 	}
+#ifdef RTGFW_ISSUE1
+	/* issue #1 test (PANSTUCK=1): a failed calibration leaves the display on page 1 (the surround pen), as a
+	 * pan back that the driver dropped or deferred would; the direct writes then go to page 0, unseen */
+	if (!V.ok && rtg_x_pan_stuck) { R.scr->ViewPort.RasInfo->RyOffset = (WORD)R.scr_h; ScrollVPort(&R.scr->ViewPort); }
+#endif
 	V.pan_back_max = V.pan_held = V.pair_max = V.pair_long = 0; V.t_run = eclock();   /* rtg17: pan figures for the anchors only */
 	if (V.ok) Signal(V.owner, 1UL << V.ack_bit);   /* if not, the one signal is the one at the end */
 	while (V.ok && !V.quit) {
@@ -1622,6 +1649,11 @@ static void vt_stop(void)
 	logf_(1, "rtgfw: anchor pans below the caller's priority %d, %lu over 5 ms, %lu interval doublings (now %d s)", rtg_x_pan_lowpri, (unsigned long)V.pair_long, (unsigned long)V.backoffs, V.anchor_iv);
 	logf_(1, "rtgfw: anchors %s: %lu flips, %lu put off a write, page %d shown at the end",
 	      V.pan_off && rtg_x_pan_flip ? "flip the pages (one pan)" : "pan there and back", (unsigned long)V.flips, (unsigned long)V.flip_skips, V.front);
+#ifndef NO_RTGDIAG
+	logf_(1, "rtgfw: issue1: %lu bitmap locks failed in the vblank task, display offset at the end %d (page %d written)",
+	      (unsigned long)vt_lock_fails, (int)R.scr->ViewPort.RasInfo->RyOffset, V.front);
+	vt_lock_fails = 0;
+#endif
 	logf_(1, "rtgfw: present to write avg %lu max %lu us",
 	      (unsigned long)(V.wait_n ? ticks_us(V.wait_sum / V.wait_n) : 0), (unsigned long)ticks_us(V.wait_max));
 	{ ULONG k; for (k = 0; k < V.pan_held && k < 8; k++) logf_(1, "rtgfw: pan back waited for a blank %lu ms after the calibration", (unsigned long)V.held_at[k]); }

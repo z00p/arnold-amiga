@@ -44,6 +44,21 @@ ULONG Sys_JoyRaw(int port) { return port >= 0 && port < 4 ? joy_last_raw[port] :
  * clocks, chosen in the menu: "CD32 pad" (pin 6 idles high, each pulse goes low then high) and "KTRL
  * CD32+" (lowclk: the low clock, pin 6 idles low, each pulse goes high then low). FAmiga's tests: the
  * first KTRL CD32 right with the first, the KTRL CD32+ and the Mega Multi adapter right with the second. */
+/* 2.1: the latch wait is 200 CIA reads (~0.28 ms; 35 is ~50 us). On John's A1200 (17 Nov 2026) the KTRL
+ * CD32 pad flickered green/yellow/play with 35 in AmiGameBoy and was solid with 200 (cd32pad.s 1.0's
+ * value); the Mega Multi adapter wants the low clock plus 200. AmiGameBoy and AmiPCEngine ship 200.
+ * NO_CD32LATCH200: 35, as 2.0. */
+#ifndef CD32_LATCH
+#ifndef NO_CD32LATCH200
+#define CD32_LATCH 200
+#else
+#define CD32_LATCH 35
+#endif
+#endif
+/* the clock pulse: CIA reads in each half (test builds: -DCD32_CLK=n; 3 = 2.0 and 2.1) */
+#ifndef CD32_CLK
+#define CD32_CLK 3
+#endif
 static unsigned read_cd32_buttons(int lowclk)
 {
 	volatile UBYTE *pra = &ciaa.ciapra, *ddra = &ciaa.ciaddra;
@@ -57,13 +72,13 @@ static unsigned read_cd32_buttons(int lowclk)
 	*ddra |= 0x80;                 /* an output, held there while pin 5 falls (no clock edge) */
 	*pra = img;                    /* again now it is an output (UAE takes its first level from this write) */
 	CUSTOM->potgo = 0x6f00;        /* port 2: pin 5 low (CD32 mode, the pad latches), pin 9 input */
-	for (d = 0; d < 35; d++) dummy = *pra;
+	for (d = 0; d < CD32_LATCH; d++) dummy = *pra;
 	for (i = 0; i < 9; i++) {
 		if (!(CUSTOM->potinp & 0x4000)) bits |= 1u << i;
 		img ^= 0x80; *pra = img;      /* the pulse's first half */
-		for (d = 0; d < 3; d++) dummy = *pra;
+		for (d = 0; d < CD32_CLK; d++) dummy = *pra;
 		img ^= 0x80; *pra = img;      /* back to idle: the next bit */
-		for (d = 0; d < 3; d++) dummy = *pra;
+		for (d = 0; d < CD32_CLK; d++) dummy = *pra;
 	}
 	CUSTOM->potgo = 0xff00;        /* pin 5 high again: 2-button mode */
 	*ddra &= ~0x80;                /* fire line back to input */

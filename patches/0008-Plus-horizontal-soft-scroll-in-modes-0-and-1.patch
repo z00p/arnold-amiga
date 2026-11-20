@@ -1,6 +1,6 @@
-From ead64785a64a4c9e04023be38798a6272441559f Mon Sep 17 00:00:00 2001
+From afef3bb9bc1cee379f55e7070fd4274fd6e5c0e7 Mon Sep 17 00:00:00 2001
 From: John Stringer <jcec_1@yahoo.co.uk>
-Date: Wed, 18 Nov 2026 21:49:50 +0000
+Date: Fri, 20 Nov 2026 19:02:54 +0000
 Subject: [PATCH 08/51] Plus: horizontal soft scroll in modes 0 and 1
 
 The Plus soft scroll delays the pixel stream by whole pixels of the current

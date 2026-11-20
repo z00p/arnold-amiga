@@ -92,6 +92,9 @@ const char *Host_AmigaKeyName(int rawkey, char *buf);   /* host_amiga.c: remap= 
 int  Sys_Menu(struct SysMenu *m);
 void Sys_MenuClose(void);           /* closes the menu screen Sys_Menu leaves open (call after the emulation screen is up) */
 void Sys_MenuError(const char *text);
+#ifndef NO_NEEDAGA
+const char *Sys_DisplayError(void);   /* 2.1: the display didn't open: what Arnold needs on an OCS/ECS Amiga (no AGA), else "Can't open the display" */
+#endif
 extern void (*Sys_MenuOpenedHook)(void);   /* called once a new menu screen is up (RTG: the host then closes the emulation screen, so nothing else shows between) */
 int  Sys_MenuOnRtg(void);           /* the menu screen open now is an RTG screen */
 void Sys_ShowPicture(void *screen, const char *name);   /* amiga_iff.c: modal IFF viewer */
