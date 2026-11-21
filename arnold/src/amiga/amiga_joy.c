@@ -139,6 +139,9 @@ static int pad_logged = -1;
  * Poseidon). Sys_JoyPortOnly (the read again at the game's read): port 2's hardware only, with the
  * USB pads' bits from the frame start's read (ll_bits); USB pads only change at Poseidon's own rate. */
 int Sys_JoyPortOnly;
+#ifndef NO_USBPADS
+int Sys_UsbPads;                    /* menu "USB pads", USBPADS=, prefs usbpads= (2.1.1) */
+#endif
 static unsigned ll_bits;
 unsigned Sys_ReadJoystick(void)
 {
@@ -188,7 +191,11 @@ unsigned Sys_ReadJoystick(void)
 		/* fire 2 on pin 9 (Amiga standard) or pin 5 (as AmiMSX reads it; some 2-button pads) */
 		if (!(CUSTOM->potinp & 0x4000) || !(CUSTOM->potinp & 0x1000)) m |= SYS_JOY_FIRE2;
 	}
+#ifndef NO_USBPADS
+	if (LowLevelBase && !Sys_JoyPortOnly && Sys_UsbPads) {
+#else
 	if (LowLevelBase && !Sys_JoyPortOnly) {
+#endif
 		unsigned long ll0 = Sys_Micros();
 		unsigned ll = 0;
 		for (port = 2; port < 4; port++) {

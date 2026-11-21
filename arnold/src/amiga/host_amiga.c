@@ -564,7 +564,11 @@ static void joy_apply(void)
 		{SYS_JOY_FIRE1, CPC_KEY_JOY_FIRE1}, {SYS_JOY_FIRE2, CPC_KEY_JOY_FIRE2} };
 	unsigned joy = Sys_ReadJoystick() | kb_joy, diff = joy ^ joy_prev;
 	int i;
+#ifdef KEYLOG_LL   /* test builds: also lowlevel ports 2-3 and the keyboard joystick */
+	if (keylog && diff) { fprintf(keylog, "joy %02x raw %08lx ll2 %08lx ll3 %08lx kb %02x\n", joy, Sys_JoyRaw(1), Sys_JoyRaw(2), Sys_JoyRaw(3), kb_joy); fflush(keylog); }
+#else
 	if (keylog && diff) { fprintf(keylog, "joy %02x raw %08lx\n", joy, Sys_JoyRaw(1)); fflush(keylog); }
+#endif
 	for (i = 0; i < 6; i++)
 		if (diff & jk[i].bit) { if (joy & jk[i].bit) CPC_SetKey(jk[i].key); else CPC_ClearKey(jk[i].key); }
 	joy_prev = joy;
@@ -581,6 +585,11 @@ static void joy_apply(void)
 extern void (*CPC_JoyReadHook)(void);
 static int joyreread = 1;
 #define JR_GAP 2000
+#ifndef NO_KTRLONCE
+#define JR_LOGTXT "read again at the game's read (up to 4 a frame; KTRL CD32+ once a frame)"
+#else
+#define JR_LOGTXT "read again at the game's read (up to 4 a frame)"
+#endif
 #define JR_MAX 4
 static unsigned long jr_last;
 static int jr_n;
@@ -588,6 +597,11 @@ static void joy_reread(void)
 {
 	unsigned long n = CPC_GetNopCount();
 	if (jr_n >= JR_MAX || n - jr_last < JR_GAP) return;
+#ifndef NO_KTRLONCE
+	/* 2.1.1: the low clock (KTRL CD32+) is read once a frame, as CD32 games read a pad: a Mega Multi
+	 * adapter on it misread fire 2 with reads in between (John's A1200, 21 Nov 2026) */
+	if (Sys_PadType == 2) return;
+#endif
 	jr_last = n; jr_n++;
 	Sys_LagReread();
 	{ unsigned long t0 = Sys_Micros(), t;
@@ -702,6 +716,9 @@ static void prefs_load(void)
 		else if (!strcmp(line, "rtg")) menu.rtg = atoi(v) ? 1 : 0;
 #endif
 		else if (!strcmp(line, "hdmisound")) menu.hdmisound = atoi(v) ? 1 : 0;
+#ifndef NO_USBPADS
+		else if (!strcmp(line, "usbpads")) menu.usbpads = atoi(v) ? 1 : 0;
+#endif
 		else if (!strcmp(line, "tone")) { int k = Sys_ParseTone(v); if (k >= 0) menu.tone = k; }
 		else if (!strcmp(line, "rtglock")) rtglock = atoi(v);   /* sonic16 test setting, as RTGLOCK=n */
 		else if (!strcmp(line, "lsmargin")) Sys_LateMarginUs = atol(v);   /* lag18 test setting, as LSMARGIN=us (0: no late start) */
@@ -733,6 +750,9 @@ static void prefs_save(void)
 	fprintf(f, "tapesound=%d\n", global_tapesound);
 	fprintf(f, "autotape=%d\n", global_autotape);
 	fprintf(f, "hdmisound=%d\n", menu.hdmisound);
+#ifndef NO_USBPADS
+	fprintf(f, "usbpads=%d\n", menu.usbpads);
+#endif
 	fprintf(f, "tone=%s\n", Sys_ToneWords[menu.tone >= 0 && menu.tone <= 2 ? menu.tone : 1]);
 	if (rtglock != 1) fprintf(f, "rtglock=%d\n", rtglock);
 	if (Sys_LateMarginUs != 4000) fprintf(f, "lsmargin=%ld\n", Sys_LateMarginUs);
@@ -1369,6 +1389,9 @@ int main(int argc, char **argv)
 		if (st.tapesound >= 0) menu.tapesound = st.tapesound;
 		if (st.autotape >= 0) menu.autotape = autotape_arg = st.autotape;
 		if (st.hdmisound >= 0) menu.hdmisound = st.hdmisound;
+#ifndef NO_USBPADS
+		if (st.usbpads >= 0) menu.usbpads = st.usbpads;
+#endif
 		if (st.rtglock >= 0) rtglock = st.rtglock;   /* rtg17: RTGLOCK ToolType */
 		if (st.tone >= 0) menu.tone = st.tone;   /* hdmifilt: TONE ToolType */
 		if (st.scan >= 0) scan = st.scan;
@@ -1446,6 +1469,10 @@ int main(int argc, char **argv)
 			else if (!kwcmp(argv[i], "AUTOTAPE")) menu.autotape = autotape_arg = 1;
 			else if (!kwncmp(argv[i], "HDMISOUND=", 10)) menu.hdmisound = atoi(argv[i] + 10) ? 1 : 0;
 			else if (!kwcmp(argv[i], "HDMISOUND")) menu.hdmisound = 1;
+#ifndef NO_USBPADS
+			else if (!kwncmp(argv[i], "USBPADS=", 8)) menu.usbpads = atoi(argv[i] + 8) ? 1 : 0;   /* 2.1.1: lowlevel ports 2-3 */
+			else if (!kwcmp(argv[i], "USBPADS")) menu.usbpads = 1;
+#endif
 			else if (!kwncmp(argv[i], "TONE=", 5)) { int k = Sys_ParseTone(argv[i] + 5); if (k >= 0) menu.tone = k; }   /* hdmifilt: Sound tone */
 			else if (!kwcmp(argv[i], "RTG")) rtg = 1;                       /* RTG screen (pilot, 26 Oct 2026) */
 			else if (!kwncmp(argv[i], "RTG=", 4)) rtg = atoi(argv[i] + 4) ? 1 : 0;
@@ -1561,6 +1588,9 @@ int main(int argc, char **argv)
 			if (strcmp(menu.remap, remap_str)) remap_parse(menu.remap);   /* key map editor / preset */
 			skip_max = menu.skip; refresh = menu.refresh > 0 ? menu.refresh : 1; joykeys = menu.joykeys; Sys_PadType = menu.pad;
 			Sys_VideoMode = menu.video;
+#ifndef NO_USBPADS
+			Sys_UsbPads = menu.usbpads;
+#endif
 			{ extern unsigned long Sys_AudioIrqs(void); Sys_Log("menu action %d (audio interrupts so far %lu)", action, Sys_AudioIrqs()); }
 			/* on an RTG menu, Save Prefs / Save for game / Forget / Screenshot keep its screen up (the next menu opens in front of it) */
 			if (action != SYS_MENU_POWER && action != SYS_MENU_RESET && action != SYS_MENU_CONTINUE && action != SYS_MENU_LOADSTATE
@@ -1594,10 +1624,13 @@ int main(int argc, char **argv)
 #else
 		{ int ok = open_emulation(); Sys_MenuClose(); if (!ok) { want_menu = 1; pending_load = 0; continue; } }
 #endif
+#ifndef NO_USBPADS
+		{ static int said = -1; Sys_UsbPads = menu.usbpads; if (said != Sys_UsbPads) { said = Sys_UsbPads; Sys_Log("joystick: USB pads (lowlevel ports 2-3) %s", Sys_UsbPads ? "on" : "off"); } }
+#endif
 #ifndef NO_VSYNCCUT
 		{ static int said; CPC_AudioFrameHook = vsynccut ? audio_frame : NULL; if (!said++) Sys_Log("frame end: %s", vsynccut ? "at the CPC VSYNC" : "fixed (as 1.7)"); }
 #ifndef NO_JOYREREAD
-		{ static int said; CPC_JoyReadHook = joyreread ? joy_reread : NULL; if (!said++) Sys_Log("joystick: %s", joyreread ? "read again at the game's read (up to 4 a frame)" : "read once a frame (as 1.7)"); }
+		{ static int said; CPC_JoyReadHook = joyreread ? joy_reread : NULL; if (!said++) Sys_Log("joystick: %s", joyreread ? JR_LOGTXT : "read once a frame (as 1.7)"); }
 #endif   /* before a state load: its sound grid phase needs the hook */
 #endif
 		if (pending_load) {

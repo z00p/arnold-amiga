@@ -55,6 +55,9 @@ enum { M_NONE, M_LOADCART, M_LOADA, M_LOADB, M_EJECTALL, M_KEYS, M_SHOT, M_SAVE,
        M_AUTOTAPE,   /* auto-start tapes (1.5) */
        M_HDMISOUND,  /* HDMI sound through AHI (RTG screen) */
        M_TONE0, M_TONE1, M_TONE2,   /* Sound tone, Paula and HDMI (hdmifilt) */
+#ifndef NO_USBPADS
+       M_USBPADS,    /* USB pads: lowlevel ports 2-3 (2.1.1) */
+#endif
        M_PRESET0 };   /* M_PRESET0 last: the presets follow it */
 #define MAXPRESETS 12   /* menu entries for KeyMap_Presets (keymaplogic.c) */
 #define MENU_REOPEN (-2)   /* menu_pick: the video mode changed, open the screen again */
@@ -174,6 +177,9 @@ static struct NewMenu nm[] = {
 	{ NM_SUB, (STRPTR)"CD32 pad", NULL, CHECKIT, X(1), (APTR)M_PAD1 },
 #ifndef NO_CD32KIT
 	{ NM_SUB, (STRPTR)"KTRL CD32+ (try if buttons flicker)", NULL, CHECKIT, X(2), (APTR)M_PAD2 },
+#endif
+#ifndef NO_USBPADS
+	{ NM_ITEM, (STRPTR)"USB pads (lowlevel ports 2-3)", NULL, CHECKIT | MENUTOGGLE, 0, (APTR)M_USBPADS },
 #endif
 	{ NM_ITEM, (STRPTR)"Key map", NULL, 0, 0, (APTR)M_KEYMAPSUB },   /* sub-items: the presets, added by build_menu_table */
 	{ NM_ITEM, (STRPTR)"Edit key map...", (STRPTR)"E", 0, 0, (APTR)M_KEYEDIT },
@@ -449,6 +455,9 @@ static void set_checks(struct SysMenu *m)
 		if (id == M_TAPESOUND) want = m->tapesound ? 1 : 0;
 		if (id == M_AUTOTAPE) want = m->autotape ? 1 : 0;
 		if (id == M_HDMISOUND) want = m->hdmisound ? 1 : 0;
+#ifndef NO_USBPADS
+		if (id == M_USBPADS) want = m->usbpads ? 1 : 0;
+#endif
 		if (want) nmx[i].nm_Flags |= CHECKED; else nmx[i].nm_Flags &= ~CHECKED;
 	}
 }
@@ -567,7 +576,7 @@ static int open_menu(struct SysMenu *m)
 	if (!g) { close_menu(); return 0; }
 	if (!make_menus(m)) { close_menu(); return 0; }
 	/* version, credit and build time (date and hh:mm) in the title bar */
-	sprintf(wintitle, "Arnold v2.1 for Amiga - core: Kevin Thacker - built %.6s %.4s %.5s", __DATE__, __DATE__ + 7, __TIME__);
+	sprintf(wintitle, "Arnold v2.1.1 for Amiga - core: Kevin Thacker - built %.6s %.4s %.5s", __DATE__, __DATE__ + 7, __TIME__);
 	mwin = OpenWindowTags(NULL, WA_CustomScreen, (ULONG)mscr, WA_Left, wl, WA_Top, wt,
 		WA_Width, 640, WA_Height, wh,
 		WA_Title, (ULONG)wintitle,
@@ -726,6 +735,11 @@ static int menu_pick(struct SysMenu *m, struct MenuItem *item)
 	case M_HDMISOUND: m->hdmisound = checked; m->hdmifail = 0;
 		status(checked ? "HDMI sound: on the RTG screen, through AHI and emu68hdmi.audio." : "HDMI sound off: Paula.");
 		break;
+#ifndef NO_USBPADS
+	case M_USBPADS: m->usbpads = checked;
+		status(checked ? "USB pads on: lowlevel.library ports 2-3 join the joystick." : "USB pads off: only the pad in port 2.");
+		break;
+#endif
 	case M_TONE0: case M_TONE1: case M_TONE2: m->tone = id - M_TONE0;
 		tone_status(m->tone);
 		break;

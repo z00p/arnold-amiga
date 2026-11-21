@@ -82,6 +82,9 @@ struct SysMenu {
 	int state_slot;          /* save states (1.4): the slot (1-4) of SYS_MENU_SAVESTATE / SYS_MENU_LOADSTATE */
 	char state_label[4][40]; /* the host's labels for the slots ("Slot 1 (empty)"), shown in the Project menu */
 	int autotape;            /* Auto-start tapes (1.5): Power ON / Reset types the load command and presses a key at "Press PLAY" */
+#ifndef NO_USBPADS
+	int usbpads;             /* USB pads (2.1.1): lowlevel.library ports 2-3 OR'd into the joystick; off by default */
+#endif
 };
 #define SYS_STATE_SLOTS 4
 enum { SYS_MODEL_464 = 0, SYS_MODEL_664, SYS_MODEL_6128, SYS_MODEL_PLUS, SYS_MODEL_GX4000, SYS_MODELS };
@@ -101,7 +104,11 @@ void Sys_ShowPicture(void *screen, const char *name);   /* amiga_iff.c: modal IF
 
 /* Workbench start (amiga_wb.c): fills st from the icon's ToolTypes and a
  * project icon; returns 1 when started from Workbench. */
-struct SysStart { char prefs[SYS_PATH], media[SYS_PATH], remap[128]; int menu, hires, tall, wide, nosound, skip, refresh, joykeys, pad, speed, video, model, diskwrite, fasttape, tapesound, rtg, scan; char tape[SYS_PATH]; int autotape, hdmisound, rtglock, tone; };   /* skip -1, refresh 0, others -1: not given */
+struct SysStart { char prefs[SYS_PATH], media[SYS_PATH], remap[128]; int menu, hires, tall, wide, nosound, skip, refresh, joykeys, pad, speed, video, model, diskwrite, fasttape, tapesound, rtg, scan; char tape[SYS_PATH]; int autotape, hdmisound, rtglock, tone;
+#ifndef NO_USBPADS
+	int usbpads;
+#endif
+};   /* skip -1, refresh 0, others -1: not given */
 int Sys_ParseModel(const char *v);   /* "464" "664" "6128" "PLUS" "GX4000" (any case) -> SYS_MODEL_*, -1 if not one */
 int Sys_ParseVideo(const char *v);   /* "AUTO" "PAL" "NTSC" or 0-2 -> 0-2, -1 if not one */
 int Sys_ParseSpeed(const char *v);   /* "50" or 0 -> 0, "DISPLAY" or 1 -> 1, -1 if not one */
@@ -188,6 +195,12 @@ void Sys_LagSample(void);
  * Sys_LagReread: the host has just read it again; the frame's sample time moves to now. jr_*: reads
  * again, frames with one, and how much later than the frame start the last one in a frame was (us). */
 void Sys_LagReread(void);
+#ifndef NO_USBPADS
+/* 2.1.1 (21 Nov 2026): lowlevel.library ports 2-3 (USB pads under Poseidon) only when asked for.
+ * On John's A1200 (Poseidon 4.5, a USB mouse only) port 4 answered as a second reader of the
+ * joystick port, and a CD32 pad read twice a frame by two readers went wrong. */
+extern int Sys_UsbPads;
+#endif
 extern int Sys_JoyPortOnly;         /* Sys_ReadJoystick: port 2 only, the USB pads as at the last full read */
 extern long Sys_LateMarginUs;
 extern int Sys_LeadUs;              /* LEAD=us: AGA frames start this long before the VBlank the frame before goes up at (-1: default) */

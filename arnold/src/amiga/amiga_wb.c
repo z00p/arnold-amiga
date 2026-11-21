@@ -68,6 +68,10 @@ static int read_tooltypes(STRPTR name, struct SysStart *st)
 	if (tt) st->autotape = (!*tt || atoi(tt)) ? 1 : 0;   /* AUTOTAPE=0|1: auto-start tapes (1.5; a bare AUTOTAPE means on) */
 	tt = (char *)FindToolType((STRPTR *)dobj->do_ToolTypes, (STRPTR)"HDMISOUND");
 	if (tt) st->hdmisound = (!*tt || atoi(tt)) ? 1 : 0;   /* HDMISOUND=0|1: on the RTG screen, sound through AHI */
+#ifndef NO_USBPADS
+	tt = (char *)FindToolType((STRPTR *)dobj->do_ToolTypes, (STRPTR)"USBPADS");
+	if (tt) st->usbpads = (!*tt || atoi(tt)) ? 1 : 0;   /* USBPADS=0|1: lowlevel ports 2-3 (2.1.1; a bare USBPADS means on) */
+#endif
 	tt = (char *)FindToolType((STRPTR *)dobj->do_ToolTypes, (STRPTR)"RTGLOCK");
 	if (tt && *tt) st->rtglock = atoi(tt);   /* RTGLOCK=0|1|2: frame lock to the HDMI blank (0 never, 1 with HDMI sound or none, 2 always; rtg17) */
 	tt = (char *)FindToolType((STRPTR *)dobj->do_ToolTypes, (STRPTR)"TONE");
@@ -164,6 +168,9 @@ int Sys_WBStart(int argc, char **argv, struct SysStart *st)
 	memset(st, 0, sizeof *st);
 	st->skip = -1;
 	st->joykeys = -1; st->pad = -1; st->speed = -1; st->video = -1; st->model = -1; st->diskwrite = -1; st->fasttape = -1; st->tapesound = -1; st->rtg = -1; st->scan = -1; st->autotape = -1; st->hdmisound = -1; st->rtglock = -1; st->tone = -1;
+#ifndef NO_USBPADS
+	st->usbpads = -1;
+#endif
 	if (argc != 0) return 0;
 	wbs = (struct WBStartup *)argv;
 	if (!wbs || wbs->sm_NumArgs < 1) return 0;
@@ -182,6 +189,9 @@ int Sys_WBStart(int argc, char **argv, struct SysStart *st)
 		pre.skip = -1;
 		pre.joykeys = -1; pre.pad = -1; pre.speed = -1; pre.video = -1; pre.model = -1; pre.diskwrite = -1;
 		pre.fasttape = -1; pre.tapesound = -1; pre.rtg = -1; pre.scan = -1; pre.autotape = -1; pre.hdmisound = -1; pre.rtglock = -1; pre.tone = -1;
+#ifndef NO_USBPADS
+		pre.usbpads = -1;
+#endif
 		if (IconBase && read_tooltypes(wa[1].wa_Name, &pre) && pre.prefs[0]) {
 			char dir[SYS_PATH];
 			if (strchr(pre.prefs, ':') == NULL && NameFromLock(wa[1].wa_Lock, (STRPTR)dir, SYS_PATH)) {
@@ -207,6 +217,9 @@ int Sys_WBStart(int argc, char **argv, struct SysStart *st)
 			if (pre.tapesound >= 0) st->tapesound = pre.tapesound;
 			if (pre.autotape >= 0) st->autotape = pre.autotape;
 			if (pre.hdmisound >= 0) st->hdmisound = pre.hdmisound;
+#ifndef NO_USBPADS
+			if (pre.usbpads >= 0) st->usbpads = pre.usbpads;
+#endif
 			if (pre.rtglock >= 0) st->rtglock = pre.rtglock;
 			if (pre.tone >= 0) st->tone = pre.tone;
 			if (pre.rtg >= 0) st->rtg = pre.rtg;
@@ -296,6 +309,9 @@ int Sys_Rerun060WB(const struct SysStart *st)
 	if (st->tapesound >= 0) W("TAPESOUND=%d", st->tapesound);
 	if (st->autotape >= 0) W("AUTOTAPE=%d", st->autotape);
 	if (st->hdmisound >= 0) W("HDMISOUND=%d", st->hdmisound);
+#ifndef NO_USBPADS
+	if (st->usbpads >= 0) W("USBPADS=%d", st->usbpads);
+#endif
 	if (st->rtglock >= 0) W("RTGLOCK=%d", st->rtglock);
 	if (st->tone >= 0) W("TONE=%d", st->tone);
 	if (st->rtg >= 0) W("RTG=%d", st->rtg);
