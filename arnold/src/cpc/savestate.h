@@ -29,7 +29,7 @@ typedef struct
 	/* the host's own data, stored as is (byte order is the host's job) */
 	const unsigned char *host;
 	unsigned long hostlen;
-	/* no longer used: every inserted disk is stored in the state (John, 28 Oct 2026) */
+	/* no longer used: every inserted disk is stored in the state (z00p, 28 Oct 2026) */
 	int embed_disk[2];
 } SAVESTATE_INFO;
 

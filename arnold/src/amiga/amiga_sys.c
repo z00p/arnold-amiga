@@ -467,7 +467,7 @@ static void vs_place(int b, int r)
 }
 #endif
 
-/* ---- video mode and display rate (19 Oct 2026, John's A1200 in NTSC) ----
+/* ---- video mode and display rate (19 Oct 2026, z00p's A1200 in NTSC) ----
  * Sys_VideoMode: 0 Auto (the default monitor, as Workbench), 1 PAL, 2 NTSC.
  * A forced PAL or NTSC mode that the system can't show (its monitor driver
  * not mounted) falls back to Auto. */
@@ -502,7 +502,7 @@ static void measure_vblank(ULONG modeid)
 	if (t1 > t0) Sys_DisplayFrameUs = (t1 - t0) / 6;
 	measured_mode = modeid;
 #ifndef NO_PALBEAM
-	/* A PAL screen whose beam runs at 60 Hz (21 Oct 2026, John's A1200: 16.86 ms
+	/* A PAL screen whose beam runs at 60 Hz (21 Oct 2026, z00p's A1200: 16.86 ms
 	 * VBlank for 0.8 and 0.9 alike, PAL DisplayFlags): another program wrote
 	 * BEAMCON0 = NTSC and left it (AmiMSX does for 60 Hz MSX games), and graphics
 	 * never rewrites it for a PAL view on a PAL machine. The 256-line screen then
@@ -541,7 +541,7 @@ unsigned long Sys_ChipClock(void)
 }
 
 /* ---- RTG screen (pilot, 26 Oct 2026; DESIGN.md 9.2 of rtg-framework) ----
- * The single-buffer way (John's choice after the A1200 bench: ChangeScreenBuffer waits for
+ * The single-buffer way (z00p's choice after the A1200 bench: ChangeScreenBuffer waits for
  * the 60 Hz HDMI flip there, ~8-9 ms): rtgfw opens one 8-bit CLUT RTG screen and a backdrop
  * window, and every shown frame writes the core's changed chunky lines straight into that
  * screen's bitmap under a lock (path A + C), with the changed palette range loaded once a
@@ -560,7 +560,7 @@ int Sys_RtgWanted, Sys_RtgActive, Sys_RtgBlit, Sys_RtgBuffers = 1, Sys_RtgGrabOn
  * after the display's vertical blank (found by panning a two-page screen), and the copy (well
  * under 1 ms) stays ahead of the scan: no tearing, and rtg_present only copies the changed lines
  * into a staging frame. Falls back to plain direct writes if the board gives no steady blank.
- * On by default from 1.4 (John's A1200 tear test, 27 Oct: the clean one); RTGVBL=0 for plain writes. */
+ * On by default from 1.4 (z00p's A1200 tear test, 27 Oct: the clean one); RTGVBL=0 for plain writes. */
 int Sys_RtgVblank = 1;
 #ifndef NO_VBLFALLBACK
 int Sys_RtgVblFallback = 1;           /* issue #1 (2.1): VBLFALLBACK=0 = as 2.0; NO_VBLFALLBACK builds 2.0 */
@@ -948,7 +948,7 @@ int Sys_OpenDisplay(int cw, int ch, int hires)
 	 * rows 8-263 of the 272 are shown; a game drawn from the top of the frame
 	 * (Pinball Dreams' score row starts at row 2) loses its first lines. Full
 	 * height takes the mode's full vertical overscan, up to all 272 rows. */
-	/* NTSC (19 Oct 2026, John): standard overscan is only about 200 lines, which
+	/* NTSC (19 Oct 2026, z00p): standard overscan is only about 200 lines, which
 	 * crops games drawn to the screen edges. Take the mode's full vertical
 	 * overscan (OSCAN_MAX, about 240 lines; at most 240 here, centred in it)
 	 * and keep the standard horizontal extent (MAX starts left of what a
@@ -1205,7 +1205,7 @@ void Sys_OsdMessage(const char *text)
 	osd_w = osd_h = 0;
 	if (!strcmp(osd_text, ">>")) {
 		/* fast-forward: a tape deck's fast-forward symbol, two solid triangles
-		 * (29 Oct 2026, John), easier to spot than the two characters */
+		 * (29 Oct 2026, z00p), easier to spot than the two characters */
 		osd_h = 15; osd_w = 2 * 13 + 2;
 		for (y = 0; y < osd_h; y++) {
 			int len = 1 + 12 * (7 - (y < 7 ? 7 - y : y - 7)) / 7;   /* 1..13..1 pixels wide, point at row 7 */

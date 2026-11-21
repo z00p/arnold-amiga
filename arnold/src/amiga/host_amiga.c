@@ -289,7 +289,7 @@ void Host_SetPaletteEntry(int i, unsigned char r, unsigned char g, unsigned char
 	/* Amiga colour 0 also fills the screen surround (everything outside the
 	 * picture), so it shows the CPC's border colour, as a real monitor does
 	 * out to the tube's edge: blue for BASIC, black for most Plus games
-	 * (19 Oct 2026, John). The core's entry 0 itself is black (blanking). */
+	 * (19 Oct 2026, z00p). The core's entry 0 itself is black (blanking). */
 	/* Render_Black0Used (render5.c): black pens were on entry 0 during this
 	 * frame, so colour 0 stays black for it (the border turned another colour
 	 * part way down; the surround follows a frame later). */
@@ -465,7 +465,7 @@ static int joykey(int code, int down)
 	return only;
 }
 
-/* Key remap (20 Oct 2026, John): Amiga key -> CPC key, from remap= in the prefs
+/* Key remap (20 Oct 2026, z00p): Amiga key -> CPC key, from remap= in the prefs
  * or a game's .prefs, or REMAP= (ToolType or argument), e.g. "RSHIFT:M,RALT:SPACE".
  * The CPC has one Shift in its matrix, so this is how Right Shift can be a
  * different key (Pinball Dreams: right flipper = M). A remapped key gives only
@@ -599,7 +599,7 @@ static void joy_reread(void)
 	if (jr_n >= JR_MAX || n - jr_last < JR_GAP) return;
 #ifndef NO_KTRLONCE
 	/* 2.1.1: the low clock (KTRL CD32+) is read once a frame, as CD32 games read a pad: a Mega Multi
-	 * adapter on it misread fire 2 with reads in between (John's A1200, 21 Nov 2026) */
+	 * adapter on it misread fire 2 with reads in between (z00p's A1200, 21 Nov 2026) */
 	if (Sys_PadType == 2) return;
 #endif
 	jr_last = n; jr_n++;
@@ -623,7 +623,7 @@ BOOL Host_ProcessSystemEvents(void)
 		script_frame++;
 	}
 	{ static long hb; if (++hb % 50 == 0) Sys_Heartbeat(hb, behind_us); }
-	/* GX4000 with the Plus system cartridge (19 Oct 2026, John): that cartridge
+	/* GX4000 with the Plus system cartridge (19 Oct 2026, z00p): that cartridge
 	 * shows the f1 BASIC / f2 Burnin' Rubber menu (the console came with a
 	 * game-only cartridge instead), and a console has no keyboard: press f2
 	 * for it, held for a few frames once the menu is up */
@@ -1192,7 +1192,7 @@ static int power_on(void)
 	int plus = model == SYS_MODEL_PLUS || model == SYS_MODEL_GX4000;
 	flush_disks("power on");   /* before the next game's prefs can change diskwrite */
 	if (plus) {
-		/* no cartridge chosen (John ejected it to boot a disk, 17 Oct 2026): the
+		/* no cartridge chosen (z00p ejected it to boot a disk, 17 Oct 2026): the
 		 * Plus needs one, so the system cartridge (BASIC + AMSDOS) goes in */
 		if (!menu.cart[0]) strcpy(menu.cart, "PROGDIR:roms/system.cpr");
 		if (!load_media("cartridge", menu.cart, &data, &len)) return 0;
@@ -1311,7 +1311,7 @@ static int open_emulation(void)
 	 * Paula then drops a block every ~14 s). */
 	Sys_PaceLock = Sys_RtgActive && (rtglock == 2 || (rtglock == 1 && (!audio_open || Sys_AudioAhiOn())));
 	if (!Sys_PaceLock) Sys_AudioLock(0);
-	/* vsync19 (John, 9 Nov 2026: the picture stopped on RTG with Paula, the music went on): the anchor pan below
+	/* vsync19 (z00p, 9 Nov 2026: the picture stopped on RTG with Paula, the music went on): the anchor pan below
 	 * the emulator only when its frames are timed to the HDMI refresh (it is then idle before each blank). Untimed,
 	 * its busy part can sit on the blank for seconds (the rates differ by ~30 us a frame) and the pan, below it,
 	 * never saw a blank: no writes until the phase drifted off. */
@@ -1359,7 +1359,7 @@ int main(int argc, char **argv)
 	strcpy(menu.cart, "PROGDIR:roms/system.cpr");
 	strcpy(menu.prefs, "PROGDIR:Arnold.prefs");
 	menu.sound = 1;
-	menu.tone = 1;   /* hdmifilt: Sound tone soft (John, 4 Nov) */
+	menu.tone = 1;   /* hdmifilt: Sound tone soft (z00p, 4 Nov) */
 	menu.diskwrite = 1;
 	menu.fasttape = 1; menu.tapesound = 0; menu.autotape = 1;
 	menu.model = SYS_MODEL_PLUS; menu.running_model = -1;

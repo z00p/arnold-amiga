@@ -1,6 +1,6 @@
-From 10f87a08af77b71b5265b6efcad89d7313880206 Mon Sep 17 00:00:00 2001
-From: John Stringer <jcec_1@yahoo.co.uk>
-Date: Fri, 20 Nov 2026 19:03:07 +0000
+From 63ee40dfadd152002ced7529489a927a9e9e86c0 Mon Sep 17 00:00:00 2001
+From: z00p <4281321+z00p@users.noreply.github.com>
+Date: Sat, 21 Nov 2026 14:00:38 +0000
 Subject: [PATCH 42/51] Save states: the VSYNC-cut values in a chunk of their
  own (ARNX)
 
@@ -59,7 +59,7 @@ index 4417d71..2305128 100644
 +}
  #endif
 diff --git a/src/cpc/savestate.c b/src/cpc/savestate.c
-index 0cdf38e..22b481f 100644
+index 4480361..704d650 100644
 --- a/src/cpc/savestate.c
 +++ b/src/cpc/savestate.c
 @@ -6,6 +6,9 @@
@@ -249,7 +249,7 @@ index 0cdf38e..22b481f 100644
  		out->host = host; out->hostlen = hostlen;
  		for (d = 0; d < 2; d++) {
 diff --git a/src/cpc/savestate.h b/src/cpc/savestate.h
-index d7b208f..cd5ce9a 100644
+index 559c232..0054d2c 100644
 --- a/src/cpc/savestate.h
 +++ b/src/cpc/savestate.h
 @@ -95,6 +95,10 @@ void SS_Printer(SS_IO *io);

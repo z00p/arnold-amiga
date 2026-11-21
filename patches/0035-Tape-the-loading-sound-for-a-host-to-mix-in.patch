@@ -1,6 +1,6 @@
-From d1ae0372cc1b409aef60776eee30f75087f0df5d Mon Sep 17 00:00:00 2001
-From: John Stringer <jcec_1@yahoo.co.uk>
-Date: Fri, 20 Nov 2026 19:03:04 +0000
+From 443e1be085f9e8656de64b86ff7467107a4da014 Mon Sep 17 00:00:00 2001
+From: z00p <4281321+z00p@users.noreply.github.com>
+Date: Sat, 21 Nov 2026 14:00:35 +0000
 Subject: [PATCH 35/51] Tape: the loading sound, for a host to mix in
 
 The tape signal as sound, as CPCEC does it. While a host sets TapeAudio_On,

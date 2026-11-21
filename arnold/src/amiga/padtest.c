@@ -3,7 +3,7 @@
  *   hw   - the plain hardware read (directions, fire 1 on CIA-A, fire 2 on POTINP)
  *   ll   - lowlevel.library ReadJoyPort(1): its idea of the device and buttons
  *   cd32 - the CD32 shift-register read (7 buttons + 2 ID bits)
- * A line is printed whenever anything changes. 15 Oct 2026, for John's KTRL CD32 pad
+ * A line is printed whenever anything changes. 15 Oct 2026, for z00p's KTRL CD32 pad
  * (modes: CD32, single fire, dual fire, run'n'jump). */
 #include <exec/types.h>
 #include <hardware/custom.h>

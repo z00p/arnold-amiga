@@ -5,7 +5,7 @@ HD=${HD:-/opt/src/hc-new/src/hd}
 A=${A:-$(cd "$(dirname "$0")/.." && pwd)}
 K=$A/tests/keys/generic.keys
 same=0; diff=0
-# Cart set: John's local test carts (run/carts, not in git) when present, else the
+# Cart set: z00p's local test carts (run/carts, not in git) when present, else the
 # repo's homebrew set (carts/homebrew). SET=homebrew forces the repo set.
 if [ -z "$SET" ] && [ -d "$A/run/carts" ]; then
   CARTS=("$A/arnold/roms/cpcplus/system.cpr" "$A"/run/carts/*.cpr "$A"/run/carts/top80/*.cpr)

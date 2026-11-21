@@ -1,6 +1,6 @@
-From 28ac2235d169f530788d5da8c31ba5ce488676f4 Mon Sep 17 00:00:00 2001
-From: John Stringer <jcec_1@yahoo.co.uk>
-Date: Fri, 20 Nov 2026 19:03:01 +0000
+From d07478a16a3ad56cd66f5b81ca71e2a92d2dab6c Mon Sep 17 00:00:00 2001
+From: z00p <4281321+z00p@users.noreply.github.com>
+Date: Sat, 21 Nov 2026 14:00:31 +0000
 Subject: [PATCH 26/51] Sound: AY rendering closer to the chip
 
 Measured against a reference AY render (and CPCEC): tones were point-sampled

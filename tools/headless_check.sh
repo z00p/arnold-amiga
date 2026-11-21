@@ -22,7 +22,7 @@ cp $A/arnold/src/amiga/keyscript.c $A/arnold/src/amiga/keyscript.h $A/arnold/src
 EXTRA="$NEWFLAGS" build /opt/src/hc-new; EXTRA="" build /opt/src/hc-ref
 KEYS=$A/tests/keys/generic.keys
 same=0; diff=0
-# Cart set: John's local test carts (run/carts, not in git) when present, else the
+# Cart set: z00p's local test carts (run/carts, not in git) when present, else the
 # repo's homebrew set (carts/homebrew). SET=homebrew forces the repo set.
 if [ -z "$SET" ] && [ -d "$A/run/carts" ]; then
   CARTS=("$A/arnold/roms/cpcplus/system.cpr" "$A"/run/carts/*.cpr "$A"/run/carts/top80/*.cpr)

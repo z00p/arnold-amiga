@@ -1,7 +1,7 @@
 /* Arnold on AmigaOS: the menu screen (GadTools), styled after the OS 3.2 prefs
- * editors. 17 Oct 2026 (John): the settings live in pull-down menus (Options,
+ * editors. 17 Oct 2026 (z00p): the settings live in pull-down menus (Options,
  * Controls, Display) and the window keeps what changes from game to game.
- * 19 Oct 2026 (John's A1200 in NTSC): reworked to fit a 200-line screen
+ * 19 Oct 2026 (z00p's A1200 in NTSC): reworked to fit a 200-line screen
  * without scrolling: header with the logo and a Settings group of editable
  * cycle gadgets (Model, Video mode, Game speed, as in AmiMSX), the Media
  * group, a one-line summary of the other settings, the Power ON / Reset /
@@ -63,7 +63,7 @@ enum { M_NONE, M_LOADCART, M_LOADA, M_LOADB, M_EJECTALL, M_KEYS, M_SHOT, M_SAVE,
 #define MENU_REOPEN (-2)   /* menu_pick: the video mode changed, open the screen again */
 
 /* Pens of the 16-colour menu screen (16 Oct 2026, styled after the OS 3.2
- * prefs editors at John's request): the classic grey / black / white / blue
+ * prefs editors at z00p's request): the classic grey / black / white / blue
  * Workbench look with black text, 3D bevels and a blue active title bar.
  * Pens 8-15 are the GX4000 picture in the logo (amiga_logo.c). */
 enum { P_BG = 0, P_BLACK, P_WHITE, P_BLUE, P_RED, P_DARK, P_LIGHT, P_DBLUE };
@@ -851,7 +851,7 @@ int Sys_Menu(struct SysMenu *m)
 			}
 		}
 		take_strings(m);
-		/* 19 Oct 2026 (John): the menu screen stays open until the host has opened
+		/* 19 Oct 2026 (z00p): the menu screen stays open until the host has opened
 		 * the emulation screen in front of it (Sys_MenuClose), so Power ON or
 		 * Continue no longer flashes the Workbench for a frame or two */
 		if (reopen) menu_detach(&old);   /* freed when the next one is open */

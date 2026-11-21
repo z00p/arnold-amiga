@@ -16,10 +16,11 @@ TRAILER="Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>"
 
 pre()  { git archive "$1" "${@:2}" | tar -x -C $WT; }
 post() { git archive "$1" "${@:2}" | tar -x -C $WT --strip-components=1; }
+zname() { for f in "$@"; do sed -i 's/\bJ[o]hn\b/z00p/g' "$WT/$f"; done; }   # files taken from old commits: the author is credited as z00p (21 Nov 2026)
 commit() {  # subject, body
   git -C $WT add -A src
   if git -C $WT diff --cached --quiet; then echo "(nothing for: $1)"; return; fi
-  printf '%s\n\n%s\n\n%s\n' "$1" "$2" "$TRAILER" | git -C $WT -c user.name="John Stringer" -c user.email="jcec_1@yahoo.co.uk" commit -q -F -
+  printf '%s\n\n%s\n\n%s\n' "$1" "$2" "$TRAILER" | git -C $WT -c user.name="z00p" -c user.email="4281321+z00p@users.noreply.github.com" commit -q -F -
   echo "ok: $1 ($(git -C $WT diff --shortstat HEAD^ HEAD))"
 }
 
@@ -379,6 +380,7 @@ instead of stored after every instruction. NO_IOTAKE_TEST. Pixel-exact
 (headless checksums, frame skip on and off, whole-run frame checksums)."
 
 post $B14 arnold/src/cpc arnold/src/objects.mak
+zname src/cpc/savestate.c src/cpc/savestate.h
 commit "Save states: save and load the whole machine exactly" "cpc/savestate.c: SaveState_Save / SaveState_Load / SaveState_Check for a host,
 between two CPCEmulation_Run calls. The file is a standard SNA v3 (upstream's
 writer: RAM and registers for other emulators) with an extra ARNS chunk: a
@@ -454,6 +456,7 @@ builds the old loop."
 
 # joy18 (8 Nov 2026): the VSYNC-cut values move to their own chunk, so 1.7 loads 1.8's states
 post 82f7a2a arnold/src/cpc/arnold.c arnold/src/cpc/savestate.c arnold/src/cpc/savestate.h
+zname src/cpc/savestate.c src/cpc/savestate.h
 commit "Save states: the VSYNC-cut values in a chunk of their own (ARNX)" "The previous patch stored the frame end's place on the sound grid (AudioAt,
 VcutPrevE) at the end of the LOOP section. A build without it (1.7) then
 refused such a state, its LOOP section 16 bytes longer than expected. The two

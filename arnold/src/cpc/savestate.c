@@ -296,7 +296,7 @@ static void ss_gather(SS_MEDIA *md, const SAVESTATE_INFO *info, int embed_all)
 		md->disk_present[d] = (f & DISKIMAGE_DISK_INSERTED) != 0;
 		if (md->disk_present[d]) {
 			ss_disk_crc(d, &md->disk_crc[d]);
-			/* John, 28 Oct 2026: every inserted disk travels with the state, so a load is
+			/* z00p, 28 Oct 2026: every inserted disk travels with the state, so a load is
 			 * never refused for a disk (the game may have written to it since) */
 			md->disk_embedded[d] = 1;
 		}

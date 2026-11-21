@@ -1,6 +1,6 @@
-From c39ad2e3db2abb2778311a7145e040222fb9e91b Mon Sep 17 00:00:00 2001
-From: John Stringer <jcec_1@yahoo.co.uk>
-Date: Fri, 20 Nov 2026 19:03:00 +0000
+From 792d50c5694831ce14e3d37b89a1f1fb0a9f8641 Mon Sep 17 00:00:00 2001
+From: z00p <4281321+z00p@users.noreply.github.com>
+Date: Sat, 21 Nov 2026 14:00:31 +0000
 Subject: [PATCH 24/51] Plus: merge only the sprite pixels a lores host reads
 
 Two exact speed-ups of the Plus sprite merge for a host that renders every

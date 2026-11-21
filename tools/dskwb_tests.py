@@ -63,7 +63,7 @@ def prog_hiscore():
         a.op_w(0x22, 'far'); a.db(0x79); a.op_w(0x32, 'farrom')          # ld (far),hl; ld a,c; ld (far+2),a
         a.op_w(0x21, 0x5000); a.op_w(0x11, (track << 8) | 1); a.db(0x0E, sector)   # hl=buf, d=track e=drive B, c=sector
         a.db(0xDF); a.dw('far')                                          # rst &18: far call
-    for track, sector, text in ((20, 0xC5, 'HISCORE 12345 JOHN'), (39, 0xC2, 'HISCORE 2 KEVIN')):
+    for track, sector, text in ((20, 0xC5, 'HISCORE 12345 Z00P'), (39, 0xC2, 'HISCORE 2 KEVIN')):
         bios('rd', track, sector, 'r')
         a.op_w(0x21, 'h%d' % track); a.op_w(0x11, 0x5000); a.op_w(0x01, len(text)); a.db(0xED, 0xB0)   # ldir the text in
         bios('wr', track, sector, 'w')
@@ -71,7 +71,7 @@ def prog_hiscore():
     a.L('fail'); make_dsk.emit_print(a, 'bad'); a.db(0xC9)
     a.L('rd'); a.db(0x84); a.L('wr'); a.db(0x85)
     a.L('far'); a.db(0, 0); a.L('farrom'); a.db(0)
-    a.L('h20'); a.db('HISCORE 12345 JOHN'); a.L('h39'); a.db('HISCORE 2 KEVIN')
+    a.L('h20'); a.db('HISCORE 12345 Z00P'); a.L('h39'); a.db('HISCORE 2 KEVIN')
     a.L('ok'); a.db('HISCORE SAVED', 13, 10, 0); a.L('bad'); a.db('NO BIOS', 13, 10, 0)
     return a.build()
 
@@ -176,7 +176,7 @@ def main():
     new = open(e, 'rb').read()
     rng = diff_ranges(orig, new) if len(orig) == len(new) else None
     s = sectors(e)
-    ok = rng is not None and s[(20, 0, 0xC5)].startswith(b'HISCORE 12345 JOHN') and s[(39, 0, 0xC2)].startswith(b'HISCORE 2 KEVIN')
+    ok = rng is not None and s[(20, 0, 0xC5)].startswith(b'HISCORE 12345 Z00P') and s[(39, 0, 0xC2)].startswith(b'HISCORE 2 KEVIN')
     check('hiscore sectors written', ok, str(rng))
     # every changed byte is inside those two sectors' data
     im = read_image(e)

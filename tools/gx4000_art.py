@@ -1,4 +1,4 @@
-"""GX4000 console, top view, in pixel-art style (after John's photo and the Genesis example,
+"""GX4000 console, top view, in pixel-art style (after z00p's photo and the Genesis example,
 16 Oct 2026). draw(W, H) renders the design at any size with hard pixel edges.
 
 python gx4000_art.py  -> gx4000_preview.png (icon size and menu size, 4x)

@@ -1,4 +1,4 @@
-/* Arnold on AmigaOS: the key map editor (24 Oct 2026, John: "key mapping presets
+/* Arnold on AmigaOS: the key map editor (24 Oct 2026, z00p: "key mapping presets
  * with a simple UI to handle key mapping for a game").
  * A small GadTools window on the menu screen: the list of "Amiga key -> CPC key"
  * pairs, Add / Remove / Clear, the list of CPC keys, OK and Cancel. Add waits for

@@ -1,6 +1,6 @@
-From 317e234ee753c7e998a8740bae5bf74e5a76a556 Mon Sep 17 00:00:00 2001
-From: John Stringer <jcec_1@yahoo.co.uk>
-Date: Fri, 20 Nov 2026 19:03:01 +0000
+From ad94756731f47eccac49804439ab10af91ee84a0 Mon Sep 17 00:00:00 2001
+From: z00p <4281321+z00p@users.noreply.github.com>
+Date: Sat, 21 Nov 2026 14:00:32 +0000
 Subject: [PATCH 27/51] Plus: ASIC register writes at their write cycle, DMA at
  HSYNC start
 

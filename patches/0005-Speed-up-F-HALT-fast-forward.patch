@@ -1,6 +1,6 @@
-From 6caa7a6ede7ff2f6bbd3a7a9285fb8e8dc24492d Mon Sep 17 00:00:00 2001
-From: John Stringer <jcec_1@yahoo.co.uk>
-Date: Fri, 20 Nov 2026 19:02:53 +0000
+From c535f9022e45e32b8d3d905d320181da54407d8b Mon Sep 17 00:00:00 2001
+From: z00p <4281321+z00p@users.noreply.github.com>
+Date: Sat, 21 Nov 2026 14:00:23 +0000
 Subject: [PATCH 05/51] Speed-up F: HALT fast-forward
 
 While the Z80 is halted, its cycles are batched up to the next CRTC event that

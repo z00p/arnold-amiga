@@ -41,7 +41,7 @@ def render():
     f = ImageFont.truetype('C:/Windows/Fonts/ariblk.ttf', 34 * S)
     d.text((146 * S, -4 * S), 'Arnold', font=f, fill=255)
     word = word.resize((W, H), Image.BOX)
-    # sharpened (John, 16 Oct): unsharp mask, then narrow grey bands so only
+    # sharpened (z00p, 16 Oct): unsharp mask, then narrow grey bands so only
     # the true edge pixels go grey
     from PIL import ImageFilter
     word = word.filter(ImageFilter.UnsharpMask(radius=1, percent=120, threshold=0))

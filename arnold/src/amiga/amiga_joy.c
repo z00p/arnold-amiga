@@ -29,7 +29,7 @@ static ULONG joy_last_raw[4];
 ULONG Sys_JoyRaw(int port) { return port >= 0 && port < 4 ? joy_last_raw[port] : 0; }
 
 /* CD32 pad on port 2, read by us (15 Oct 2026). On the A1200 PiStorm,
- * lowlevel.library saw John's KTRL CD32 pad as a game controller but only
+ * lowlevel.library saw z00p's KTRL CD32 pad as a game controller but only
  * ever reported the red button: on a CPU that fast its shift-register reads
  * outrun the pad. This is the usual routine games use (cf. Codetapper's
  * CD32 pad notes): pin 5 low selects CD32 mode, pin 6 (fire) becomes the
@@ -44,7 +44,7 @@ ULONG Sys_JoyRaw(int port) { return port >= 0 && port < 4 ? joy_last_raw[port] :
  * clocks, chosen in the menu: "CD32 pad" (pin 6 idles high, each pulse goes low then high) and "KTRL
  * CD32+" (lowclk: the low clock, pin 6 idles low, each pulse goes high then low). FAmiga's tests: the
  * first KTRL CD32 right with the first, the KTRL CD32+ and the Mega Multi adapter right with the second. */
-/* 2.1: the latch wait is 200 CIA reads (~0.28 ms; 35 is ~50 us). On John's A1200 (17 Nov 2026) the KTRL
+/* 2.1: the latch wait is 200 CIA reads (~0.28 ms; 35 is ~50 us). On z00p's A1200 (17 Nov 2026) the KTRL
  * CD32 pad flickered green/yellow/play with 35 in AmiGameBoy and was solid with 200 (cd32pad.s 1.0's
  * value); the Mega Multi adapter wants the low clock plus 200. AmiGameBoy and AmiPCEngine ship 200.
  * NO_CD32LATCH200: 35, as 2.0. */
@@ -91,7 +91,7 @@ static unsigned read_cd32_buttons(void)
 {
 	/* Returns 9 bits, set = low on pin 9: the 7 buttons, then the pad's ID
 	 * bits (a CD32 pad gives 8th = 0, 9th = 1 here). As AmiMSX does it
-	 * (John's decision, 17 Oct 2026): pin 6 is driven HIGH as an output
+	 * (z00p's decision, 17 Oct 2026): pin 6 is driven HIGH as an output
 	 * before pin 5 falls, otherwise a held red button gives a spurious clock;
 	 * the edges are timed with CIA reads, which run at real Amiga speed
 	 * whatever the CPU. Order: blue, red, yellow, green, forward, reverse,
@@ -121,7 +121,7 @@ static unsigned read_cd32_buttons(void)
 }
 #endif
 
-/* Joystick port 2 (lowlevel.library port 1). No auto-detection (John's
+/* Joystick port 2 (lowlevel.library port 1). No auto-detection (z00p's
  * decision, 17 Oct 2026, after AmiMSX: lowlevel.library's CD32 detection was
  * wrong for his adapters and even for a plain joystick, and a plain joystick
  * read as a CD32 pad has its fire line driven as a clock, so nothing works).

@@ -1,6 +1,6 @@
-From 3b2e57d6eaf0769bfdc09d2c55edb935492fc650 Mon Sep 17 00:00:00 2001
-From: John Stringer <jcec_1@yahoo.co.uk>
-Date: Fri, 20 Nov 2026 19:02:56 +0000
+From 02815bbe6c6f2de735e8a6125635e7f080158120 Mon Sep 17 00:00:00 2001
+From: z00p <4281321+z00p@users.noreply.github.com>
+Date: Sat, 21 Nov 2026 14:00:26 +0000
 Subject: [PATCH 13/51] Z80: overflow flag on SUB, SBC, CP and SBC HL
 
 For A - r the overflow flag must be (A^r)&(A^result)&0x80; the core used

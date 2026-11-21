@@ -1,6 +1,6 @@
-From 5ea5ac084bc6dbda2dba40cae92c2970a683abfb Mon Sep 17 00:00:00 2001
-From: John Stringer <jcec_1@yahoo.co.uk>
-Date: Sat, 21 Nov 2026 13:30:39 +0000
+From 5ecf9a5ff099a31d05c406688fa243de75d516b0 Mon Sep 17 00:00:00 2001
+From: z00p <4281321+z00p@users.noreply.github.com>
+Date: Sat, 21 Nov 2026 14:00:41 +0000
 Subject: [PATCH 50/51] AmigaOS host (68k AGA): Arnold for Amiga
 
 src/amiga: the AmigaOS 3.x host (AGA screen with chunky-to-planar and triple
@@ -127,7 +127,7 @@ index 0000000..414e6a1
 +.PHONY: all clean
 diff --git a/src/amiga/amiga_audio.c b/src/amiga/amiga_audio.c
 new file mode 100644
-index 0000000..c5cc21a
+index 0000000..ab6c613
 --- /dev/null
 +++ b/src/amiga/amiga_audio.c
 @@ -0,0 +1,534 @@
@@ -474,7 +474,7 @@ index 0000000..c5cc21a
 +	Disable();
 +	aud_run = 0;
 +	aud_rd = aud_wr = Sys_AudioCount = 0;
-+	/* 19 Oct 2026 (NTSC menu shear on John's A1200): with the audio DMA off,
++	/* 19 Oct 2026 (NTSC menu shear on z00p's A1200): with the audio DMA off,
 +	 * an enabled AUD0 interrupt doesn't stop. Paula drops to manual mode and
 +	 * asks for a new word every sample period once the handler clears the
 +	 * request: about 22000 level-4 interrupts a second for as long as the
@@ -776,7 +776,7 @@ index 0000000..224f1af
 +}
 diff --git a/src/amiga/amiga_joy.c b/src/amiga/amiga_joy.c
 new file mode 100644
-index 0000000..d9ce061
+index 0000000..52342bf
 --- /dev/null
 +++ b/src/amiga/amiga_joy.c
 @@ -0,0 +1,218 @@
@@ -811,7 +811,7 @@ index 0000000..d9ce061
 +ULONG Sys_JoyRaw(int port) { return port >= 0 && port < 4 ? joy_last_raw[port] : 0; }
 +
 +/* CD32 pad on port 2, read by us (15 Oct 2026). On the A1200 PiStorm,
-+ * lowlevel.library saw John's KTRL CD32 pad as a game controller but only
++ * lowlevel.library saw z00p's KTRL CD32 pad as a game controller but only
 + * ever reported the red button: on a CPU that fast its shift-register reads
 + * outrun the pad. This is the usual routine games use (cf. Codetapper's
 + * CD32 pad notes): pin 5 low selects CD32 mode, pin 6 (fire) becomes the
@@ -826,7 +826,7 @@ index 0000000..d9ce061
 + * clocks, chosen in the menu: "CD32 pad" (pin 6 idles high, each pulse goes low then high) and "KTRL
 + * CD32+" (lowclk: the low clock, pin 6 idles low, each pulse goes high then low). FAmiga's tests: the
 + * first KTRL CD32 right with the first, the KTRL CD32+ and the Mega Multi adapter right with the second. */
-+/* 2.1: the latch wait is 200 CIA reads (~0.28 ms; 35 is ~50 us). On John's A1200 (17 Nov 2026) the KTRL
++/* 2.1: the latch wait is 200 CIA reads (~0.28 ms; 35 is ~50 us). On z00p's A1200 (17 Nov 2026) the KTRL
 + * CD32 pad flickered green/yellow/play with 35 in AmiGameBoy and was solid with 200 (cd32pad.s 1.0's
 + * value); the Mega Multi adapter wants the low clock plus 200. AmiGameBoy and AmiPCEngine ship 200.
 + * NO_CD32LATCH200: 35, as 2.0. */
@@ -873,7 +873,7 @@ index 0000000..d9ce061
 +{
 +	/* Returns 9 bits, set = low on pin 9: the 7 buttons, then the pad's ID
 +	 * bits (a CD32 pad gives 8th = 0, 9th = 1 here). As AmiMSX does it
-+	 * (John's decision, 17 Oct 2026): pin 6 is driven HIGH as an output
++	 * (z00p's decision, 17 Oct 2026): pin 6 is driven HIGH as an output
 +	 * before pin 5 falls, otherwise a held red button gives a spurious clock;
 +	 * the edges are timed with CIA reads, which run at real Amiga speed
 +	 * whatever the CPU. Order: blue, red, yellow, green, forward, reverse,
@@ -903,7 +903,7 @@ index 0000000..d9ce061
 +}
 +#endif
 +
-+/* Joystick port 2 (lowlevel.library port 1). No auto-detection (John's
++/* Joystick port 2 (lowlevel.library port 1). No auto-detection (z00p's
 + * decision, 17 Oct 2026, after AmiMSX: lowlevel.library's CD32 detection was
 + * wrong for his adapters and even for a plain joystick, and a plain joystick
 + * read as a CD32 pad has its fire line driven as a clock, so nothing works).
@@ -1000,11 +1000,11 @@ index 0000000..d9ce061
 +}
 diff --git a/src/amiga/amiga_keymap.c b/src/amiga/amiga_keymap.c
 new file mode 100644
-index 0000000..4d8deae
+index 0000000..f8af7d2
 --- /dev/null
 +++ b/src/amiga/amiga_keymap.c
 @@ -0,0 +1,239 @@
-+/* Arnold on AmigaOS: the key map editor (24 Oct 2026, John: "key mapping presets
++/* Arnold on AmigaOS: the key map editor (24 Oct 2026, z00p: "key mapping presets
 + * with a simple UI to handle key mapping for a game").
 + * A small GadTools window on the menu screen: the list of "Amiga key -> CPC key"
 + * pairs, Add / Remove / Clear, the list of CPC keys, OK and Cancel. Add waits for
@@ -1416,14 +1416,14 @@ index 0000000..b22b3c7
 +#endif
 diff --git a/src/amiga/amiga_menu.c b/src/amiga/amiga_menu.c
 new file mode 100644
-index 0000000..637e90e
+index 0000000..8cd3d1e
 --- /dev/null
 +++ b/src/amiga/amiga_menu.c
 @@ -0,0 +1,868 @@
 +/* Arnold on AmigaOS: the menu screen (GadTools), styled after the OS 3.2 prefs
-+ * editors. 17 Oct 2026 (John): the settings live in pull-down menus (Options,
++ * editors. 17 Oct 2026 (z00p): the settings live in pull-down menus (Options,
 + * Controls, Display) and the window keeps what changes from game to game.
-+ * 19 Oct 2026 (John's A1200 in NTSC): reworked to fit a 200-line screen
++ * 19 Oct 2026 (z00p's A1200 in NTSC): reworked to fit a 200-line screen
 + * without scrolling: header with the logo and a Settings group of editable
 + * cycle gadgets (Model, Video mode, Game speed, as in AmiMSX), the Media
 + * group, a one-line summary of the other settings, the Power ON / Reset /
@@ -1485,7 +1485,7 @@ index 0000000..637e90e
 +#define MENU_REOPEN (-2)   /* menu_pick: the video mode changed, open the screen again */
 +
 +/* Pens of the 16-colour menu screen (16 Oct 2026, styled after the OS 3.2
-+ * prefs editors at John's request): the classic grey / black / white / blue
++ * prefs editors at z00p's request): the classic grey / black / white / blue
 + * Workbench look with black text, 3D bevels and a blue active title bar.
 + * Pens 8-15 are the GX4000 picture in the logo (amiga_logo.c). */
 +enum { P_BG = 0, P_BLACK, P_WHITE, P_BLUE, P_RED, P_DARK, P_LIGHT, P_DBLUE };
@@ -2273,7 +2273,7 @@ index 0000000..637e90e
 +			}
 +		}
 +		take_strings(m);
-+		/* 19 Oct 2026 (John): the menu screen stays open until the host has opened
++		/* 19 Oct 2026 (z00p): the menu screen stays open until the host has opened
 +		 * the emulation screen in front of it (Sys_MenuClose), so Power ON or
 +		 * Continue no longer flashes the Workbench for a frame or two */
 +		if (reopen) menu_detach(&old);   /* freed when the next one is open */
@@ -2290,7 +2290,7 @@ index 0000000..637e90e
 +}
 diff --git a/src/amiga/amiga_sys.c b/src/amiga/amiga_sys.c
 new file mode 100644
-index 0000000..6b3a298
+index 0000000..9f28e6f
 --- /dev/null
 +++ b/src/amiga/amiga_sys.c
 @@ -0,0 +1,2138 @@
@@ -2763,7 +2763,7 @@ index 0000000..6b3a298
 +}
 +#endif
 +
-+/* ---- video mode and display rate (19 Oct 2026, John's A1200 in NTSC) ----
++/* ---- video mode and display rate (19 Oct 2026, z00p's A1200 in NTSC) ----
 + * Sys_VideoMode: 0 Auto (the default monitor, as Workbench), 1 PAL, 2 NTSC.
 + * A forced PAL or NTSC mode that the system can't show (its monitor driver
 + * not mounted) falls back to Auto. */
@@ -2798,7 +2798,7 @@ index 0000000..6b3a298
 +	if (t1 > t0) Sys_DisplayFrameUs = (t1 - t0) / 6;
 +	measured_mode = modeid;
 +#ifndef NO_PALBEAM
-+	/* A PAL screen whose beam runs at 60 Hz (21 Oct 2026, John's A1200: 16.86 ms
++	/* A PAL screen whose beam runs at 60 Hz (21 Oct 2026, z00p's A1200: 16.86 ms
 +	 * VBlank for 0.8 and 0.9 alike, PAL DisplayFlags): another program wrote
 +	 * BEAMCON0 = NTSC and left it (AmiMSX does for 60 Hz MSX games), and graphics
 +	 * never rewrites it for a PAL view on a PAL machine. The 256-line screen then
@@ -2837,7 +2837,7 @@ index 0000000..6b3a298
 +}
 +
 +/* ---- RTG screen (pilot, 26 Oct 2026; DESIGN.md 9.2 of rtg-framework) ----
-+ * The single-buffer way (John's choice after the A1200 bench: ChangeScreenBuffer waits for
++ * The single-buffer way (z00p's choice after the A1200 bench: ChangeScreenBuffer waits for
 + * the 60 Hz HDMI flip there, ~8-9 ms): rtgfw opens one 8-bit CLUT RTG screen and a backdrop
 + * window, and every shown frame writes the core's changed chunky lines straight into that
 + * screen's bitmap under a lock (path A + C), with the changed palette range loaded once a
@@ -2856,7 +2856,7 @@ index 0000000..6b3a298
 + * after the display's vertical blank (found by panning a two-page screen), and the copy (well
 + * under 1 ms) stays ahead of the scan: no tearing, and rtg_present only copies the changed lines
 + * into a staging frame. Falls back to plain direct writes if the board gives no steady blank.
-+ * On by default from 1.4 (John's A1200 tear test, 27 Oct: the clean one); RTGVBL=0 for plain writes. */
++ * On by default from 1.4 (z00p's A1200 tear test, 27 Oct: the clean one); RTGVBL=0 for plain writes. */
 +int Sys_RtgVblank = 1;
 +#ifndef NO_VBLFALLBACK
 +int Sys_RtgVblFallback = 1;           /* issue #1 (2.1): VBLFALLBACK=0 = as 2.0; NO_VBLFALLBACK builds 2.0 */
@@ -3244,7 +3244,7 @@ index 0000000..6b3a298
 +	 * rows 8-263 of the 272 are shown; a game drawn from the top of the frame
 +	 * (Pinball Dreams' score row starts at row 2) loses its first lines. Full
 +	 * height takes the mode's full vertical overscan, up to all 272 rows. */
-+	/* NTSC (19 Oct 2026, John): standard overscan is only about 200 lines, which
++	/* NTSC (19 Oct 2026, z00p): standard overscan is only about 200 lines, which
 +	 * crops games drawn to the screen edges. Take the mode's full vertical
 +	 * overscan (OSCAN_MAX, about 240 lines; at most 240 here, centred in it)
 +	 * and keep the standard horizontal extent (MAX starts left of what a
@@ -3501,7 +3501,7 @@ index 0000000..6b3a298
 +	osd_w = osd_h = 0;
 +	if (!strcmp(osd_text, ">>")) {
 +		/* fast-forward: a tape deck's fast-forward symbol, two solid triangles
-+		 * (29 Oct 2026, John), easier to spot than the two characters */
++		 * (29 Oct 2026, z00p), easier to spot than the two characters */
 +		osd_h = 15; osd_w = 2 * 13 + 2;
 +		for (y = 0; y < osd_h; y++) {
 +			int len = 1 + 12 * (7 - (y < 7 ? 7 - y : y - 7)) / 7;   /* 1..13..1 pixels wide, point at row 7 */
@@ -4434,7 +4434,7 @@ index 0000000..6b3a298
 +void Sys_PacingRestart(void) { pace_restart = 1; }
 diff --git a/src/amiga/amiga_sys.h b/src/amiga/amiga_sys.h
 new file mode 100644
-index 0000000..650e855
+index 0000000..0c819c8
 --- /dev/null
 +++ b/src/amiga/amiga_sys.h
 @@ -0,0 +1,223 @@
@@ -4637,7 +4637,7 @@ index 0000000..650e855
 +void Sys_LagReread(void);
 +#ifndef NO_USBPADS
 +/* 2.1.1 (21 Nov 2026): lowlevel.library ports 2-3 (USB pads under Poseidon) only when asked for.
-+ * On John's A1200 (Poseidon 4.5, a USB mouse only) port 4 answered as a second reader of the
++ * On z00p's A1200 (Poseidon 4.5, a USB mouse only) port 4 answered as a second reader of the
 + * joystick port, and a CD32 pad read twice a frame by two readers went wrong. */
 +extern int Sys_UsbPads;
 +#endif
@@ -5417,7 +5417,7 @@ index 0000000..eaaa6ea
 +#endif
 diff --git a/src/amiga/host_amiga.c b/src/amiga/host_amiga.c
 new file mode 100644
-index 0000000..7eb4557
+index 0000000..744cef5
 --- /dev/null
 +++ b/src/amiga/host_amiga.c
 @@ -0,0 +1,1702 @@
@@ -5712,7 +5712,7 @@ index 0000000..7eb4557
 +	/* Amiga colour 0 also fills the screen surround (everything outside the
 +	 * picture), so it shows the CPC's border colour, as a real monitor does
 +	 * out to the tube's edge: blue for BASIC, black for most Plus games
-+	 * (19 Oct 2026, John). The core's entry 0 itself is black (blanking). */
++	 * (19 Oct 2026, z00p). The core's entry 0 itself is black (blanking). */
 +	/* Render_Black0Used (render5.c): black pens were on entry 0 during this
 +	 * frame, so colour 0 stays black for it (the border turned another colour
 +	 * part way down; the surround follows a frame later). */
@@ -5888,7 +5888,7 @@ index 0000000..7eb4557
 +	return only;
 +}
 +
-+/* Key remap (20 Oct 2026, John): Amiga key -> CPC key, from remap= in the prefs
++/* Key remap (20 Oct 2026, z00p): Amiga key -> CPC key, from remap= in the prefs
 + * or a game's .prefs, or REMAP= (ToolType or argument), e.g. "RSHIFT:M,RALT:SPACE".
 + * The CPC has one Shift in its matrix, so this is how Right Shift can be a
 + * different key (Pinball Dreams: right flipper = M). A remapped key gives only
@@ -6022,7 +6022,7 @@ index 0000000..7eb4557
 +	if (jr_n >= JR_MAX || n - jr_last < JR_GAP) return;
 +#ifndef NO_KTRLONCE
 +	/* 2.1.1: the low clock (KTRL CD32+) is read once a frame, as CD32 games read a pad: a Mega Multi
-+	 * adapter on it misread fire 2 with reads in between (John's A1200, 21 Nov 2026) */
++	 * adapter on it misread fire 2 with reads in between (z00p's A1200, 21 Nov 2026) */
 +	if (Sys_PadType == 2) return;
 +#endif
 +	jr_last = n; jr_n++;
@@ -6046,7 +6046,7 @@ index 0000000..7eb4557
 +		script_frame++;
 +	}
 +	{ static long hb; if (++hb % 50 == 0) Sys_Heartbeat(hb, behind_us); }
-+	/* GX4000 with the Plus system cartridge (19 Oct 2026, John): that cartridge
++	/* GX4000 with the Plus system cartridge (19 Oct 2026, z00p): that cartridge
 +	 * shows the f1 BASIC / f2 Burnin' Rubber menu (the console came with a
 +	 * game-only cartridge instead), and a console has no keyboard: press f2
 +	 * for it, held for a few frames once the menu is up */
@@ -6615,7 +6615,7 @@ index 0000000..7eb4557
 +	int plus = model == SYS_MODEL_PLUS || model == SYS_MODEL_GX4000;
 +	flush_disks("power on");   /* before the next game's prefs can change diskwrite */
 +	if (plus) {
-+		/* no cartridge chosen (John ejected it to boot a disk, 17 Oct 2026): the
++		/* no cartridge chosen (z00p ejected it to boot a disk, 17 Oct 2026): the
 +		 * Plus needs one, so the system cartridge (BASIC + AMSDOS) goes in */
 +		if (!menu.cart[0]) strcpy(menu.cart, "PROGDIR:roms/system.cpr");
 +		if (!load_media("cartridge", menu.cart, &data, &len)) return 0;
@@ -6734,7 +6734,7 @@ index 0000000..7eb4557
 +	 * Paula then drops a block every ~14 s). */
 +	Sys_PaceLock = Sys_RtgActive && (rtglock == 2 || (rtglock == 1 && (!audio_open || Sys_AudioAhiOn())));
 +	if (!Sys_PaceLock) Sys_AudioLock(0);
-+	/* vsync19 (John, 9 Nov 2026: the picture stopped on RTG with Paula, the music went on): the anchor pan below
++	/* vsync19 (z00p, 9 Nov 2026: the picture stopped on RTG with Paula, the music went on): the anchor pan below
 +	 * the emulator only when its frames are timed to the HDMI refresh (it is then idle before each blank). Untimed,
 +	 * its busy part can sit on the blank for seconds (the rates differ by ~30 us a frame) and the pan, below it,
 +	 * never saw a blank: no writes until the phase drifted off. */
@@ -6782,7 +6782,7 @@ index 0000000..7eb4557
 +	strcpy(menu.cart, "PROGDIR:roms/system.cpr");
 +	strcpy(menu.prefs, "PROGDIR:Arnold.prefs");
 +	menu.sound = 1;
-+	menu.tone = 1;   /* hdmifilt: Sound tone soft (John, 4 Nov) */
++	menu.tone = 1;   /* hdmifilt: Sound tone soft (z00p, 4 Nov) */
 +	menu.diskwrite = 1;
 +	menu.fasttape = 1; menu.tapesound = 0; menu.autotape = 1;
 +	menu.model = SYS_MODEL_PLUS; menu.running_model = -1;
@@ -7517,7 +7517,7 @@ index 0000000..942cf99
 +#endif
 diff --git a/src/amiga/padtest.c b/src/amiga/padtest.c
 new file mode 100644
-index 0000000..09fcfe5
+index 0000000..9f00dc7
 --- /dev/null
 +++ b/src/amiga/padtest.c
 @@ -0,0 +1,130 @@
@@ -7526,7 +7526,7 @@ index 0000000..09fcfe5
 + *   hw   - the plain hardware read (directions, fire 1 on CIA-A, fire 2 on POTINP)
 + *   ll   - lowlevel.library ReadJoyPort(1): its idea of the device and buttons
 + *   cd32 - the CD32 shift-register read (7 buttons + 2 ID bits)
-+ * A line is printed whenever anything changes. 15 Oct 2026, for John's KTRL CD32 pad
++ * A line is printed whenever anything changes. 15 Oct 2026, for z00p's KTRL CD32 pad
 + * (modes: CD32, single fire, dual fire, run'n'jump). */
 +#include <exec/types.h>
 +#include <hardware/custom.h>

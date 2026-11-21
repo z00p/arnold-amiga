@@ -1,6 +1,6 @@
-From 0554cc3128c092d90dc98e90d8c01fab930afee2 Mon Sep 17 00:00:00 2001
-From: John Stringer <jcec_1@yahoo.co.uk>
-Date: Fri, 20 Nov 2026 19:02:53 +0000
+From 99a8fb8c42972105c07c2fe521b0f7cbafdde87e Mon Sep 17 00:00:00 2001
+From: z00p <4281321+z00p@users.noreply.github.com>
+Date: Sat, 21 Nov 2026 14:00:24 +0000
 Subject: [PATCH 06/51] Fix the 16-bit audio output conversion
 
 AudioEvent_ConvertToOutputFormat_16BitStereo/Mono read the event buffer as

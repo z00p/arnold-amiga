@@ -341,7 +341,7 @@ void Sys_AudioPause(void)
 	Disable();
 	aud_run = 0;
 	aud_rd = aud_wr = Sys_AudioCount = 0;
-	/* 19 Oct 2026 (NTSC menu shear on John's A1200): with the audio DMA off,
+	/* 19 Oct 2026 (NTSC menu shear on z00p's A1200): with the audio DMA off,
 	 * an enabled AUD0 interrupt doesn't stop. Paula drops to manual mode and
 	 * asks for a new word every sample period once the handler clears the
 	 * request: about 22000 level-4 interrupts a second for as long as the

@@ -1,6 +1,6 @@
-From 991d5beb17c03591b52650ef0429d5fc4072ee92 Mon Sep 17 00:00:00 2001
-From: John Stringer <jcec_1@yahoo.co.uk>
-Date: Fri, 20 Nov 2026 19:03:06 +0000
+From 129c15edc243a84646a9ce7ba41c8703b4898fdd Mon Sep 17 00:00:00 2001
+From: z00p <4281321+z00p@users.noreply.github.com>
+Date: Sat, 21 Nov 2026 14:00:37 +0000
 Subject: [PATCH 40/51] Paletted renderer: black pens share entry 0 while the
  border is black
 

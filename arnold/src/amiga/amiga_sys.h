@@ -197,7 +197,7 @@ void Sys_LagSample(void);
 void Sys_LagReread(void);
 #ifndef NO_USBPADS
 /* 2.1.1 (21 Nov 2026): lowlevel.library ports 2-3 (USB pads under Poseidon) only when asked for.
- * On John's A1200 (Poseidon 4.5, a USB mouse only) port 4 answered as a second reader of the
+ * On z00p's A1200 (Poseidon 4.5, a USB mouse only) port 4 answered as a second reader of the
  * joystick port, and a CD32 pad read twice a frame by two readers went wrong. */
 extern int Sys_UsbPads;
 #endif

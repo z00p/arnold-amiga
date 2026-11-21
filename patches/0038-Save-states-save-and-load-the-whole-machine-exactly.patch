@@ -1,6 +1,6 @@
-From 00cffd358416ad0e2c42b3dd87e5b2133ffd7f8d Mon Sep 17 00:00:00 2001
-From: John Stringer <jcec_1@yahoo.co.uk>
-Date: Fri, 20 Nov 2026 19:03:06 +0000
+From 11a2781d30e0ab631ab56063b3ded9d3872b5bf9 Mon Sep 17 00:00:00 2001
+From: z00p <4281321+z00p@users.noreply.github.com>
+Date: Sat, 21 Nov 2026 14:00:36 +0000
 Subject: [PATCH 38/51] Save states: save and load the whole machine exactly
 
 cpc/savestate.c: SaveState_Save / SaveState_Load / SaveState_Check for a host,
@@ -786,7 +786,7 @@ index c88a30a..bd4863e 100644
 +#endif
 diff --git a/src/cpc/savestate.c b/src/cpc/savestate.c
 new file mode 100644
-index 0000000..0cdf38e
+index 0000000..4480361
 --- /dev/null
 +++ b/src/cpc/savestate.c
 @@ -0,0 +1,583 @@
@@ -1085,7 +1085,7 @@ index 0000000..0cdf38e
 +		md->disk_present[d] = (f & DISKIMAGE_DISK_INSERTED) != 0;
 +		if (md->disk_present[d]) {
 +			ss_disk_crc(d, &md->disk_crc[d]);
-+			/* John, 28 Oct 2026: every inserted disk travels with the state, so a load is
++			/* z00p, 28 Oct 2026: every inserted disk travels with the state, so a load is
 +			 * never refused for a disk (the game may have written to it since) */
 +			md->disk_embedded[d] = 1;
 +		}
@@ -1375,7 +1375,7 @@ index 0000000..0cdf38e
 +#endif /* NO_SAVESTATE */
 diff --git a/src/cpc/savestate.h b/src/cpc/savestate.h
 new file mode 100644
-index 0000000..d7b208f
+index 0000000..559c232
 --- /dev/null
 +++ b/src/cpc/savestate.h
 @@ -0,0 +1,112 @@
@@ -1410,7 +1410,7 @@ index 0000000..d7b208f
 +	/* the host's own data, stored as is (byte order is the host's job) */
 +	const unsigned char *host;
 +	unsigned long hostlen;
-+	/* no longer used: every inserted disk is stored in the state (John, 28 Oct 2026) */
++	/* no longer used: every inserted disk is stored in the state (z00p, 28 Oct 2026) */
 +	int embed_disk[2];
 +} SAVESTATE_INFO;
 +

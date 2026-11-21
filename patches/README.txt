@@ -1,6 +1,6 @@
 Arnold for Amiga 2.1.1 - patch set and Amiga build
 ===================================================
-21 November 2026.  Arnold (c) Kevin Thacker, GPL-2.0.  Amiga port by John Stringer.
+21 November 2026.  Arnold (c) Kevin Thacker, GPL-2.0.  Amiga port by z00p.
 
 This package holds the changes made to Arnold while porting it to 68k AmigaOS 3.x (AGA),
 as patches against the upstream source, plus a ready-to-run Amiga build.

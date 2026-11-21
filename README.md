@@ -220,6 +220,6 @@ cartridge and whatever you put in `run/carts`.
 
 ## Credits
 
-Arnold by Kevin Thacker. Amiga port by John Stringer, 2026. The GX4000 pixel-art icon and
+Arnold by Kevin Thacker. Amiga port by z00p, 2026. The GX4000 pixel-art icon and
 the menu are the port's own. CPCEC by CNGSoft was the accuracy reference for the Plus fixes.
 The CD32 pad reads ("CD32" and "KTRL CD32+") are FAmiga's, by Afrotechmods.
